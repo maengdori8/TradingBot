@@ -1,0 +1,40 @@
+trading:
+  symbol: "BTCUSDT"
+  timeframe: "15"          # 분 단위 (1, 3, 5, 15, 30, 60, 240)
+  htf_timeframe: "60"      # 상위 타임프레임 (구조 분석용)
+  leverage: 10
+  mode: "cross"            # cross / isolated
+  run_mode: "paper"        # paper / live
+
+risk:
+  max_risk_per_trade: 0.01   # 자본 대비 최대 손실 1%
+  max_daily_loss: 0.03       # 일일 최대 손실 3%
+  max_open_positions: 3
+  risk_reward_ratio: 2.0     # 최소 RR 비율
+  trailing_stop: false
+
+ict:
+  fvg:
+    min_gap_pct: 0.001       # FVG 최소 갭 비율
+    lookback: 50
+  order_block:
+    lookback: 20
+    min_body_ratio: 0.5      # OB 캔들 최소 몸통 비율
+  structure:
+    lookback: 50
+    swing_strength: 3        # 스윙 포인트 강도 (좌우 캔들 수)
+  kill_zone:
+    london_open: "08:00"     # UTC
+    london_close: "12:00"
+    ny_open: "13:00"
+    ny_close: "17:00"
+    asian_open: "00:00"
+    asian_close: "04:00"
+
+paper:
+  initial_balance: 10000.0   # 가상 시작 잔고 (USDT)
+
+logging:
+  level: "DEBUG"
+  rotation: "10 MB"
+  retention: "7 days"

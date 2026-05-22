@@ -1,0 +1,17 @@
+services:
+  tradingbot:
+    build: .
+    container_name: ict-trading-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./paper_logs:/app/paper_logs
+      - ./config/settings.yaml:/app/config/settings.yaml:ro
+    command: ["paper"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

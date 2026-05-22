@@ -1,0 +1,21 @@
+[Unit]
+Description=ICT Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/TradingBot
+EnvironmentFile=/home/ubuntu/TradingBot/.env
+ExecStart=/home/ubuntu/TradingBot/.venv/bin/python main.py paper
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+StandardOutput=append:/home/ubuntu/TradingBot/logs/bot.log
+StandardError=append:/home/ubuntu/TradingBot/logs/bot_error.log
+
+[Install]
+WantedBy=multi-user.target
