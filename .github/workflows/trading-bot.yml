@@ -34,7 +34,7 @@ jobs:
         run: mkdir -p logs
 
       - name: 봇 실행
-        run: PYTHONPATH=. python src/bot.py
+        run: python -m src.bot
         env:
           DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1507198927152091286/ScSwp9hwmOrSWiLLLRdmG6CUkg4mf6qBSPCpm3tvnW4g3lomXglap-NTB6hj1KRWo0F7"
 
