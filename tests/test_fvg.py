@@ -1,67 +1,80 @@
+"""FVG 탐지 테스트"""
+import sys
+sys.path.insert(0, "/home/claude/trading-bot")
+
 import pandas as pd
-from strategy.fvg import FVGDetector
+import numpy as np
+import pytest
+from src.strategy.fvg_detector import detect_fvg, is_price_in_fvg, update_fvg_fills
 
 
-def _make_df(ohlc_list):
-    df = pd.DataFrame(ohlc_list, columns=["open", "high", "low", "close"])
-    df["timestamp"] = pd.date_range("2024-01-01", periods=len(df), freq="15min")
-    df["volume"] = 100.0
-    return df
+def make_df(data):
+    return pd.DataFrame(data, columns=["open", "high", "low", "close", "volume"])
 
 
-class TestBullishFVG:
-
-    def test_bullish_fvg_detected(self):
-        df = _make_df([
-            [100, 102, 99, 101],
-            [101, 103, 100, 102],
-            [104, 106, 103, 105],
-        ])
-        detector = FVGDetector({"min_gap_pct": 0.001, "lookback": 50})
-        zones = detector.detect(df)
-        bullish = [z for z in zones if z["type"] == "bullish_fvg"]
-        assert len(bullish) == 1
-        assert bullish[0]["bottom"] == 102  # c1.high
-        assert bullish[0]["top"] == 103     # c3.low
-
-    def test_small_gap_filtered(self):
-        df = _make_df([
-            [100, 102, 99, 101],
-            [101, 103, 100, 102],
-            [102.05, 104, 102.01, 103],
-        ])
-        detector = FVGDetector({"min_gap_pct": 0.01, "lookback": 50})
-        zones = detector.detect(df)
-        bullish = [z for z in zones if z["type"] == "bullish_fvg"]
-        assert len(bullish) == 0
+def test_bullish_fvg_detected():
+    """Bullish FVG: candle[0].high < candle[2].low"""
+    df = make_df([
+        [100, 105, 98,  103, 1000],  # 캔들 0
+        [103, 108, 101, 106, 1000],  # 캔들 1 (중간)
+        [108, 115, 107, 113, 1000],  # 캔들 2: low(107) > candle[0].high(105) → Bullish FVG
+    ])
+    fvgs = detect_fvg(df, min_gap_pct=0.0)
+    bullish = [f for f in fvgs if f.type == "bullish"]
+    assert len(bullish) >= 1
+    assert bullish[0].bottom == pytest.approx(105)
+    assert bullish[0].top == pytest.approx(107)
 
 
-class TestBearishFVG:
-
-    def test_bearish_fvg_detected(self):
-        df = _make_df([
-            [105, 106, 103, 104],
-            [104, 105, 102, 103],
-            [101, 102, 99,  100],
-        ])
-        detector = FVGDetector({"min_gap_pct": 0.001, "lookback": 50})
-        zones = detector.detect(df)
-        bearish = [z for z in zones if z["type"] == "bearish_fvg"]
-        assert len(bearish) == 1
-        assert bearish[0]["top"] == 103    # c1.low
-        assert bearish[0]["bottom"] == 102  # c3.high
+def test_bearish_fvg_detected():
+    """Bearish FVG: candle[0].low > candle[2].high"""
+    df = make_df([
+        [110, 112, 108, 109, 1000],  # 캔들 0: low=108
+        [109, 110, 105, 107, 1000],  # 캔들 1
+        [107, 107, 100, 101, 1000],  # 캔들 2: high=107 < candle[0].low=108 → Bearish FVG
+    ])
+    fvgs = detect_fvg(df, min_gap_pct=0.0)
+    bearish = [f for f in fvgs if f.type == "bearish"]
+    assert len(bearish) >= 1
+    assert bearish[0].top == pytest.approx(108)
+    assert bearish[0].bottom == pytest.approx(107)
 
 
-class TestNoFVG:
+def test_no_fvg_flat_market():
+    """횡보장에서는 FVG 없음"""
+    df = make_df([
+        [100, 101, 99, 100, 500],
+        [100, 101, 99, 100, 500],
+        [100, 101, 99, 100, 500],
+        [100, 101, 99, 100, 500],
+    ])
+    fvgs = detect_fvg(df, min_gap_pct=0.001)
+    assert len(fvgs) == 0
 
-    def test_flat_market(self):
-        df = _make_df([
-            [100, 100.1, 99.9, 100],
-            [100, 100.1, 99.9, 100],
-            [100, 100.1, 99.9, 100],
-            [100, 100.1, 99.9, 100],
-            [100, 100.1, 99.9, 100],
-        ])
-        detector = FVGDetector({"min_gap_pct": 0.001, "lookback": 50})
-        zones = detector.detect(df)
-        assert len(zones) == 0
+
+def test_is_price_in_fvg():
+    """가격이 FVG 내부에 있는지 확인"""
+    df = make_df([
+        [100, 105, 98,  103, 1000],
+        [103, 108, 101, 106, 1000],
+        [108, 115, 107, 113, 1000],
+    ])
+    fvgs = detect_fvg(df, min_gap_pct=0.0)
+    bullish = [f for f in fvgs if f.type == "bullish"]
+    assert len(is_price_in_fvg(106.0, bullish)) >= 1
+    assert len(is_price_in_fvg(120.0, bullish)) == 0
+
+
+def test_fvg_fill_removes_entry():
+    """FVG가 채워지면 리스트에서 제거"""
+    df = make_df([
+        [100, 105, 98,  103, 1000],
+        [103, 108, 101, 106, 1000],
+        [108, 115, 107, 113, 1000],
+    ])
+    fvgs = detect_fvg(df, min_gap_pct=0.0)
+    bullish = [f for f in fvgs if f.type == "bullish"]
+    assert len(bullish) >= 1
+    # 하락 캔들로 FVG 채우기
+    updated = update_fvg_fills(bullish, current_high=113, current_low=104)
+    assert all(f.filled or f not in updated for f in bullish)

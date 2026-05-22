@@ -1,0 +1,78 @@
+"""
+시장 구조 분석 — BOS / CHoCH 탐지
+"""
+from __future__ import annotations
+from typing import Literal
+import pandas as pd
+import numpy as np
+
+
+def detect_swing_points(df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
+    """스윙 고점/저점 탐지."""
+    result = df.copy()
+    highs = df["high"].values
+    lows = df["low"].values
+    n = len(df)
+
+    swing_high = np.zeros(n, dtype=bool)
+    swing_low = np.zeros(n, dtype=bool)
+
+    for i in range(lookback, n - lookback):
+        left_h  = highs[i - lookback: i]
+        right_h = highs[i + 1: i + lookback + 1]
+        left_l  = lows[i - lookback: i]
+        right_l = lows[i + 1: i + lookback + 1]
+
+        if highs[i] > left_h.max() and highs[i] > right_h.max():
+            swing_high[i] = True
+        if lows[i] < left_l.min() and lows[i] < right_l.min():
+            swing_low[i] = True
+
+    result["swing_high"] = swing_high
+    result["swing_low"] = swing_low
+    return result
+
+
+def detect_bos(df: pd.DataFrame, lookback: int = 5) -> Literal["bullish", "bearish"] | None:
+    """Break of Structure 탐지."""
+    df_sw = detect_swing_points(df, lookback)
+    sh_idx = df_sw.index[df_sw["swing_high"]]
+    sl_idx = df_sw.index[df_sw["swing_low"]]
+
+    if len(sh_idx) < 2 or len(sl_idx) < 2:
+        return None
+
+    last_close = df["close"].iloc[-1]
+    # 마지막 캔들 제외 이전 스윙 고/저점
+    prev_swing_high = df_sw.loc[sh_idx[-1], "high"]
+    prev_swing_low  = df_sw.loc[sl_idx[-1], "low"]
+
+    if last_close > prev_swing_high:
+        return "bullish"
+    if last_close < prev_swing_low:
+        return "bearish"
+    return None
+
+
+def detect_choch(df: pd.DataFrame, lookback: int = 5) -> Literal["bullish", "bearish"] | None:
+    """Change of Character 탐지."""
+    df_sw = detect_swing_points(df, lookback)
+    sh_idx = df_sw.index[df_sw["swing_high"]]
+    sl_idx = df_sw.index[df_sw["swing_low"]]
+
+    if len(sh_idx) < 3 or len(sl_idx) < 3:
+        return None
+
+    highs_vals = df_sw.loc[sh_idx, "high"].values
+    lows_vals  = df_sw.loc[sl_idx, "low"].values
+
+    is_uptrend   = highs_vals[-1] > highs_vals[-2]
+    is_downtrend = lows_vals[-1]  < lows_vals[-2]
+
+    last_close = df["close"].iloc[-1]
+
+    if is_uptrend and last_close < lows_vals[-2]:
+        return "bearish"
+    if is_downtrend and last_close > highs_vals[-2]:
+        return "bullish"
+    return None

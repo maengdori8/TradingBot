@@ -1,0 +1,24 @@
+fvg:
+  min_gap_pct: 0.001          # FVG 최소 크기 (0.1%)
+  max_age_candles: 50         # FVG 유효 기간 (캔들 수)
+
+order_block:
+  threshold: 0.003            # OB 탐지 임계값 (0.3%)
+  lookback: 20                # 탐지 탐색 범위
+
+market_structure:
+  swing_lookback: 5           # 스윙 포인트 탐지 범위
+
+kill_zone:
+  london_start_utc: "02:00"
+  london_end_utc: "05:00"
+  newyork_start_utc: "07:00"
+  newyork_end_utc: "10:00"
+
+ote:
+  fib_low: 0.618              # OTE 피보나치 하단
+  fib_high: 0.786             # OTE 피보나치 상단
+
+atr:
+  period: 14
+  multiplier: 1.5
