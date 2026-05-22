@@ -1,0 +1,53 @@
+name: ICT Paper Trading Bot
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: 페이퍼 트레이딩 상태 복원
+        uses: actions/cache@v4
+        with:
+          path: logs/
+          key: paper-trading-state
+          restore-keys: paper-trading-state
+
+      - name: logs 디렉토리 생성
+        run: mkdir -p logs
+
+      - name: 봇 실행
+        run: python src/bot.py
+        env:
+          DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1507198927152091286/ScSwp9hwmOrSWiLLLRdmG6CUkg4mf6qBSPCpm3tvnW4g3lomXglap-NTB6hj1KRWo0F7"
+
+      - name: 페이퍼 트레이딩 상태 저장
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: logs/
+          key: paper-trading-state-${{ github.run_id }}
+
+      - name: 실패 시 Discord 알림
+        if: failure()
+        run: |
+          curl -s -X POST "https://discord.com/api/webhooks/1507198927152091286/ScSwp9hwmOrSWiLLLRdmG6CUkg4mf6qBSPCpm3tvnW4g3lomXglap-NTB6hj1KRWo0F7" \
+            -H "Content-Type: application/json" \
+            -d '{"content": "⚠️ **봇 실행 실패** — Actions 로그 확인 필요"}'
