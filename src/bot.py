@@ -12,9 +12,14 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    # Allow direct execution with `python src/bot.py`.
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 load_dotenv()
 
-LOG_DIR = Path(__file__).parent.parent / "logs"
+LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
@@ -29,7 +34,7 @@ logger = logging.getLogger("bot")
 
 
 def load_config() -> dict:
-    path = Path(__file__).parent.parent / "config" / "config.yaml"
+    path = PROJECT_ROOT / "config" / "config.yaml"
     with open(path) as f:
         return yaml.safe_load(f)
 
