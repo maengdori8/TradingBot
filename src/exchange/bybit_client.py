@@ -1,6 +1,7 @@
 """
-Bybit API 클라이언트 — ccxt 기반
-Testnet / 실거래 전환을 config로 제어, 자동 재시도 포함
+멀티 거래소 퍼블릭 클라이언트
+Bybit → BinanceUS → Kraken → Coinbase fallback
+선물 심볼 자동 변환
 """
 from __future__ import annotations
 import logging
@@ -11,68 +12,70 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# (이름, 클래스, 옵션, 선물심볼 지원여부)
+EXCHANGE_CONFIGS = [
+    ("bybit",     ccxt.bybit,     {"options": {"defaultType": "future"}}, True),
+    ("binanceus", ccxt.binanceus, {},                                      False),
+    ("kraken",    ccxt.kraken,    {},                                      False),
+    ("coinbase",  ccxt.coinbase,  {},                                      False),
+]
 
-class BybitClient:
-    """Bybit Futures API 래퍼."""
 
-    def __init__(self, api_key: str = "", api_secret: str = "", testnet: bool = True) -> None:
-        self.testnet = testnet
-        self.exchange = ccxt.bybit({
-            "apiKey": api_key,
-            "secret": api_secret,
-            "options": {"defaultType": "future", "adjustForTimeDifference": True},
-        })
-        if testnet:
-            self.exchange.set_sandbox_mode(True)
-            logger.info("Bybit Testnet 모드")
-        else:
-            logger.info("Bybit 실거래 모드")
+def _spot_symbols(symbol: str) -> list[str]:
+    """'BTC/USDT:USDT' → ['BTC/USDT', 'BTC/USD']"""
+    base = symbol.split(":")[0]
+    coin, quote = base.split("/")
+    result = [base]
+    if quote == "USDT":
+        result.append(f"{coin}/USD")
+    return result
 
-    def _retry(self, func, *args, max_retries: int = 3, **kwargs) -> Any:
-        """최대 3회 재시도, exponential backoff."""
-        for attempt in range(1, max_retries + 1):
+
+class MarketDataClient:
+    """퍼블릭 시세 전용 — 인증 불필요."""
+
+    def __init__(self) -> None:
+        self._clients: dict[str, Any] = {}
+        for name, cls, cfg, _ in EXCHANGE_CONFIGS:
             try:
-                return func(*args, **kwargs)
-            except (ccxt.NetworkError, ccxt.RequestTimeout) as e:
-                wait = 2 ** attempt
-                logger.warning("API 오류 (%d/%d): %s — %ds 후 재시도", attempt, max_retries, e, wait)
-                if attempt == max_retries:
-                    raise
-                time.sleep(wait)
-            except ccxt.BaseError as e:
-                logger.error("ccxt 오류: %s", e)
-                raise
+                self._clients[name] = cls(cfg)
+            except Exception as e:
+                logger.warning("거래소 초기화 실패 [%s]: %s", name, e)
+        logger.info("거래소 초기화 완료: %s", list(self._clients))
 
-    def fetch_balance(self) -> dict[str, Any]:
-        """USDT 잔고 조회."""
-        return self._retry(self.exchange.fetch_balance)
+    def _call(self, method: str, symbol: str, *args, **kwargs) -> tuple[Any, str]:
+        """순서대로 시도, 첫 성공 반환."""
+        for name, _, _, futures_ok in EXCHANGE_CONFIGS:
+            client = self._clients.get(name)
+            if client is None:
+                continue
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 200) -> pd.DataFrame:
-        """OHLCV 캔들 데이터 조회."""
-        raw = self._retry(self.exchange.fetch_ohlcv, symbol, timeframe, limit=limit)
+            candidates = [symbol] if futures_ok else _spot_symbols(symbol)
+
+            for sym in candidates:
+                try:
+                    result = getattr(client, method)(sym, *args, **kwargs)
+                    if name != "bybit":
+                        logger.info("[fallback] %s → %s (%s)", symbol, name, sym)
+                    return result, name
+                except Exception as e:
+                    logger.debug("[%s/%s] %s", name, sym, e)
+
+        raise RuntimeError(f"모든 거래소 실패: {symbol}")
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "15m", limit: int = 200) -> pd.DataFrame:
+        raw, src = self._call("fetch_ohlcv", symbol, timeframe, None, {"limit": limit})
         df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         return df.set_index("timestamp")
 
-    def fetch_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        """오픈 포지션 조회."""
-        positions = self._retry(self.exchange.fetch_positions, [symbol] if symbol else None)
-        return [p for p in positions if float(p.get("contracts", 0)) != 0]
+    def fetch_ticker(self, symbol: str) -> dict:
+        ticker, _ = self._call("fetch_ticker", symbol)
+        return ticker
 
-    def fetch_ticker(self, symbol: str) -> dict[str, Any]:
-        """현재 가격 조회."""
-        return self._retry(self.exchange.fetch_ticker, symbol)
+    def fetch_current_price(self, symbol: str) -> float:
+        return float(self.fetch_ticker(symbol)["last"])
 
-    def create_order(self, symbol: str, order_type: str, side: str, amount: float,
-                     price: float | None = None, params: dict | None = None) -> dict[str, Any]:
-        """주문 생성."""
-        logger.info("주문: %s %s %s qty=%.4f", symbol, side, order_type, amount)
-        return self._retry(self.exchange.create_order, symbol, order_type, side, amount, price, params or {})
 
-    def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any]:
-        """주문 취소."""
-        return self._retry(self.exchange.cancel_order, order_id, symbol)
-
-    def set_leverage(self, symbol: str, leverage: int) -> None:
-        """레버리지 설정."""
-        self._retry(self.exchange.set_leverage, leverage, symbol)
+# 하위 호환
+BybitPublicClient = MarketDataClient
