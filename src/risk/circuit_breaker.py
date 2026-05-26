@@ -1,11 +1,13 @@
 """
 서킷브레이커 — 일일/주간 손실 한도 및 연속 손실 관리
 SQLite로 상태 영속화 (봇 재시작 후에도 유지)
+휴식 후 자동 복귀 + 주간 리셋 (월요일 00:00 UTC)
 """
 from __future__ import annotations
-import sqlite3
+
 import logging
-from datetime import datetime, timezone, timedelta
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -14,6 +16,7 @@ DB_PATH = Path(__file__).parent.parent.parent / "logs" / "circuit_breaker.db"
 
 
 def _get_conn() -> sqlite3.Connection:
+    """SQLite 연결 생성 및 테이블 초기화."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("""
@@ -36,13 +39,20 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def _set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """상태 키-값 저장."""
     now = datetime.now(timezone.utc).isoformat()
-    conn.execute("INSERT OR REPLACE INTO cb_state(key,value,updated_at) VALUES(?,?,?)", (key, value, now))
+    conn.execute(
+        "INSERT OR REPLACE INTO cb_state(key,value,updated_at) VALUES(?,?,?)",
+        (key, value, now),
+    )
     conn.commit()
 
 
 def _get(conn: sqlite3.Connection, key: str, default: str = "") -> str:
-    row = conn.execute("SELECT value FROM cb_state WHERE key=?", (key,)).fetchone()
+    """상태 키-값 조회."""
+    row = conn.execute(
+        "SELECT value FROM cb_state WHERE key=?", (key,)
+    ).fetchone()
     return row[0] if row else default
 
 
@@ -57,22 +67,66 @@ class CircuitBreaker:
         max_consecutive_losses: int = 3,
     ) -> None:
         """
+        서킷브레이커 초기화.
+
         Args:
             trading_capital: 트레이딩 자본 (USDT)
-            daily_loss_limit: 일일 손실 한도 비율
-            weekly_loss_limit: 주간 손실 한도 비율
-            max_consecutive_losses: 최대 연속 손실 횟수
+            daily_loss_limit: 일일 손실 한도 비율 (기본 3%)
+            weekly_loss_limit: 주간 손실 한도 비율 (기본 8%)
+            max_consecutive_losses: 최대 연속 손실 횟수 (기본 3)
         """
-        self.capital = trading_capital
-        self.daily_limit = daily_loss_limit
-        self.weekly_limit = weekly_loss_limit
-        self.max_consec = max_consecutive_losses
+        self.capital: float = trading_capital
+        self.daily_limit: float = daily_loss_limit
+        self.weekly_limit: float = weekly_loss_limit
+        self.max_consec: int = max_consecutive_losses
 
+    # ------------------------------------------------------------------
+    # 주간 리셋
+    # ------------------------------------------------------------------
+
+    def _check_weekly_reset(self, conn: sqlite3.Connection) -> None:
+        """
+        주간 리셋 검사 — 월요일 00:00 UTC에 연속 손실 카운터 및 상태 초기화.
+
+        Args:
+            conn: SQLite 연결
+        """
+        now = datetime.now(timezone.utc)
+        last_reset_str = _get(conn, "last_weekly_reset", "")
+
+        if last_reset_str:
+            last_reset = datetime.fromisoformat(last_reset_str)
+        else:
+            # 최초 실행: 직전 월요일로 설정
+            last_reset = now - timedelta(days=now.weekday())
+            last_reset = last_reset.replace(hour=0, minute=0, second=0, microsecond=0)
+            _set(conn, "last_weekly_reset", last_reset.isoformat())
+
+        # 현재 주의 월요일 00:00 UTC 계산
+        current_monday = now - timedelta(days=now.weekday())
+        current_monday = current_monday.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+        if current_monday > last_reset:
+            # 새 주가 시작됨 — 리셋
+            _set(conn, "consecutive_losses", "0")
+            _set(conn, "rest_until", "")
+            _set(conn, "last_weekly_reset", current_monday.isoformat())
+            logger.info("주간 리셋 완료: 연속 손실 카운터 초기화")
+
+    # ------------------------------------------------------------------
+    # 거래 기록
     # ------------------------------------------------------------------
 
     def record_trade(self, pnl: float) -> None:
-        """거래 결과 기록."""
-        pnl_pct = pnl / self.capital
+        """
+        거래 결과 기록.
+
+        Args:
+            pnl: 실현 손익 (USDT)
+        """
+        pnl_pct = pnl / self.capital if self.capital > 0 else 0.0
         with _get_conn() as conn:
             conn.execute(
                 "INSERT INTO trade_results(pnl, pnl_pct, recorded_at) VALUES(?,?,?)",
@@ -86,26 +140,44 @@ class CircuitBreaker:
                 consec = 0
             _set(conn, "consecutive_losses", str(consec))
             conn.commit()
-        logger.info("거래 기록: PnL=%.2f (%.2f%%) 연속손실=%d", pnl, pnl_pct * 100, consec)
+        logger.info(
+            "거래 기록: PnL=%.2f (%.2f%%) 연속손실=%d", pnl, pnl_pct * 100, consec
+        )
+
+    # ------------------------------------------------------------------
+    # 거래 허용 여부
+    # ------------------------------------------------------------------
 
     def is_trading_allowed(self) -> tuple[bool, str]:
         """
         거래 허용 여부 확인.
 
         Returns:
-            (allowed: bool, reason: str)
+            (allowed: bool, reason: str) 튜플
         """
         with _get_conn() as conn:
             now = datetime.now(timezone.utc)
 
-            # 연속 손실 휴식 체크
+            # 주간 리셋 체크 (월요일 00:00 UTC)
+            self._check_weekly_reset(conn)
+
+            # 연속 손실 휴식 체크 (자동 복귀 포함)
             consec = int(_get(conn, "consecutive_losses", "0"))
             if consec >= self.max_consec:
                 rest_until_str = _get(conn, "rest_until", "")
                 if rest_until_str:
                     rest_until = datetime.fromisoformat(rest_until_str)
                     if now < rest_until:
-                        return False, f"연속 {consec}패 — {rest_until.strftime('%Y-%m-%d %H:%M')} UTC까지 휴식"
+                        return False, (
+                            f"연속 {consec}패 — "
+                            f"{rest_until.strftime('%Y-%m-%d %H:%M')} UTC까지 휴식"
+                        )
+                    # 휴식 기간 만료 — 자동 복귀
+                    _set(conn, "consecutive_losses", "0")
+                    _set(conn, "rest_until", "")
+                    logger.info(
+                        "휴식 기간 만료 — 연속 손실 카운터 리셋, 거래 재개"
+                    )
                 else:
                     rest_until = now + timedelta(days=1)
                     _set(conn, "rest_until", rest_until.isoformat())
@@ -134,14 +206,40 @@ class CircuitBreaker:
 
         return True, "거래 가능"
 
+    # ------------------------------------------------------------------
+    # 조회 / 리셋
+    # ------------------------------------------------------------------
+
     def get_daily_pnl(self) -> float:
-        """오늘 누적 PnL 조회."""
+        """
+        오늘 누적 PnL 조회.
+
+        Returns:
+            오늘 누적 손익 (USDT)
+        """
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         with _get_conn() as conn:
             row = conn.execute(
                 "SELECT SUM(pnl) FROM trade_results WHERE recorded_at >= ?",
                 (today_start.isoformat(),),
+            ).fetchone()
+        return row[0] or 0.0
+
+    def get_weekly_pnl(self) -> float:
+        """
+        이번 주 누적 PnL 조회.
+
+        Returns:
+            이번 주 누적 손익 (USDT)
+        """
+        now = datetime.now(timezone.utc)
+        week_start = now - timedelta(days=now.weekday())
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT SUM(pnl) FROM trade_results WHERE recorded_at >= ?",
+                (week_start.isoformat(),),
             ).fetchone()
         return row[0] or 0.0
 

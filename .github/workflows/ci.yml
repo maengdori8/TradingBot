@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**', 'test/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install test tools
+        run: pip install pytest-cov ruff
+
+      - name: Create config directory
+        run: |
+          mkdir -p config
+          cat > config/strategy_params.yaml << 'EOF'
+          fvg:
+            min_gap_pct: 0.001
+          EOF
+          cat > config/config.yaml << 'EOF'
+          capital:
+            total_capital: 10000
+            trading_allocation: 0.5
+            risk_per_trade: 0.01
+          exchange:
+            leverage: 5
+          risk:
+            min_rr_ratio: 2.0
+            max_positions: 3
+            daily_loss_limit: 0.03
+            weekly_loss_limit: 0.08
+            max_consecutive_losses: 3
+          EOF
+
+      - name: Lint
+        run: ruff check src/ tests/ --select E,F,W --ignore E501
+
+      - name: Unit Tests
+        run: pytest tests/ -v --cov=src --cov-report=term-missing --ignore=tests/integration
+
+      - name: Integration Tests
+        run: pytest tests/integration/ -v

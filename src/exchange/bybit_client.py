@@ -1,26 +1,40 @@
 """
 멀티 거래소 퍼블릭 클라이언트
-Bybit → BinanceUS → Kraken → Coinbase fallback
-선물 심볼 자동 변환
+Bybit(swap) -> Kraken -> Coinbase fallback
+선물 심볼 자동 변환 + 재시도 로직(exponential backoff)
 """
 from __future__ import annotations
+
 import logging
+import time
 from typing import Any
+
 import ccxt
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-EXCHANGE_CONFIGS = [
-    ("bybit",     ccxt.bybit,     {"options": {"defaultType": "swap"}}, True),
-    ("binanceus", ccxt.binanceus, {},                                      False),
-    ("kraken",    ccxt.kraken,    {},                                      False),
-    ("coinbase",  ccxt.coinbase,  {},                                      False),
+# (이름, ccxt 클래스, 설정, 선물심볼 지원 여부)
+EXCHANGE_CONFIGS: list[tuple[str, type, dict[str, Any], bool]] = [
+    ("bybit", ccxt.bybit, {"options": {"defaultType": "swap"}}, True),
+    ("kraken", ccxt.kraken, {}, False),
+    ("coinbase", ccxt.coinbase, {}, False),
 ]
+
+# 재시도 설정
+MAX_RETRIES: int = 3
+RETRY_BASE_DELAY: float = 1.0  # 초 단위
 
 
 def _spot_symbols(symbol: str) -> list[str]:
-    """'BTC/USDT:USDT' → ['BTC/USDT', 'BTC/USD']"""
+    """선물 심볼을 현물 심볼 후보로 변환한다.
+
+    Args:
+        symbol: 선물 심볼 (예: 'BTC/USDT:USDT')
+
+    Returns:
+        현물 심볼 후보 리스트 (예: ['BTC/USDT', 'BTC/USD'])
+    """
     base = symbol.split(":")[0]
     coin, quote = base.split("/")
     result = [base]
@@ -29,20 +43,94 @@ def _spot_symbols(symbol: str) -> list[str]:
     return result
 
 
+def _retry_call(func: Any, *args: Any, **kwargs: Any) -> Any:
+    """API 호출을 exponential backoff 방식으로 재시도한다.
+
+    Args:
+        func: 호출할 함수
+        *args: 위치 인자
+        **kwargs: 키워드 인자
+
+    Returns:
+        함수 호출 결과
+
+    Raises:
+        Exception: 최대 재시도 횟수 초과 시 마지막 예외를 전파한다.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return func(*args, **kwargs)
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    "재시도 %d/%d (%.1fs 후): %s — %s",
+                    attempt, MAX_RETRIES, delay,
+                    type(exc).__name__, str(exc)[:120],
+                )
+                time.sleep(delay)
+            else:
+                logger.error(
+                    "최대 재시도 초과 (%d회): %s — %s",
+                    MAX_RETRIES, type(exc).__name__, str(exc)[:200],
+                )
+        except Exception as exc:
+            # 네트워크 이외 오류는 즉시 전파
+            raise
+    raise last_exc  # type: ignore[misc]
+
+
 class MarketDataClient:
-    """퍼블릭 시세 전용 클라이언트."""
+    """퍼블릭 시세 전용 클라이언트.
+
+    Bybit(swap) -> Kraken -> Coinbase 순으로 fallback하며,
+    각 호출에 exponential backoff 재시도 로직을 적용한다.
+    """
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
         for name, cls, cfg, _ in EXCHANGE_CONFIGS:
             try:
-                self._clients[name] = cls(cfg)
-            except Exception as e:
-                logger.warning("[%s] 초기화 실패: %s", name, e)
-        logger.info("거래소 준비: %s", list(self._clients))
+                client = cls(cfg)
+                logger.info("[%s] 마켓 로딩 시작...", name)
+                _retry_call(client.load_markets)
+                self._clients[name] = client
+                logger.info("[%s] 초기화 완료 (마켓 %d개)", name, len(client.markets))
+            except ccxt.BaseError as exc:
+                logger.error(
+                    "[%s] 초기화 실패 (ccxt): %s — %s",
+                    name, type(exc).__name__, str(exc)[:200],
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] 초기화 실패: %s — %s",
+                    name, type(exc).__name__, str(exc)[:200],
+                )
+        if not self._clients:
+            logger.critical("사용 가능한 거래소가 없습니다!")
+        else:
+            logger.info("거래소 준비 완료: %s", list(self._clients))
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "15m", limit: int = 200) -> pd.DataFrame:
-        """캔들 데이터 조회 — fallback 포함."""
+    def fetch_ohlcv(
+        self, symbol: str, timeframe: str = "15m", limit: int = 200
+    ) -> pd.DataFrame:
+        """캔들 데이터를 조회한다 (fallback + 재시도 포함).
+
+        Args:
+            symbol: 거래 심볼 (예: 'BTC/USDT:USDT')
+            timeframe: 캔들 주기 (예: '15m', '1h', '4h')
+            limit: 조회할 캔들 수
+
+        Returns:
+            OHLCV DataFrame (index=timestamp UTC)
+
+        Raises:
+            RuntimeError: 모든 거래소에서 조회 실패 시
+        """
+        errors: list[str] = []
+
         for name, _, _, futures_ok in EXCHANGE_CONFIGS:
             client = self._clients.get(name)
             if not client:
@@ -50,21 +138,45 @@ class MarketDataClient:
             candidates = [symbol] if futures_ok else _spot_symbols(symbol)
             for sym in candidates:
                 try:
-                    # 인자를 명시적으로 전달 (params dict 방식 제거)
-                    raw = client.fetch_ohlcv(sym, timeframe, limit=limit)
-                    df = pd.DataFrame(raw, columns=["timestamp","open","high","low","close","volume"])
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                    raw = _retry_call(
+                        client.fetch_ohlcv, sym, timeframe, limit=limit
+                    )
+                    df = pd.DataFrame(
+                        raw,
+                        columns=["timestamp", "open", "high", "low", "close", "volume"],
+                    )
+                    df["timestamp"] = pd.to_datetime(
+                        df["timestamp"], unit="ms", utc=True
+                    )
                     df = df.set_index("timestamp")
                     if name != "bybit":
-                        logger.info("[fallback] %s → %s/%s", symbol, name, sym)
+                        logger.info(
+                            "[fallback] %s -> %s/%s (%d candles)",
+                            symbol, name, sym, len(df),
+                        )
                     return df
-                except Exception as e:
-                    logger.debug("[%s/%s] 실패: %s", name, sym, str(e)[:80])
+                except Exception as exc:
+                    err_msg = f"[{name}/{sym}] {type(exc).__name__}: {str(exc)[:120]}"
+                    errors.append(err_msg)
+                    logger.debug("OHLCV 실패: %s", err_msg)
 
-        raise RuntimeError(f"모든 거래소 실패: {symbol}")
+        error_detail = "; ".join(errors) if errors else "클라이언트 없음"
+        raise RuntimeError(f"모든 거래소 OHLCV 실패: {symbol} — {error_detail}")
 
-    def fetch_ticker(self, symbol: str) -> dict:
-        """현재가 조회 — fallback 포함."""
+    def fetch_ticker(self, symbol: str) -> dict[str, Any]:
+        """현재 시세(ticker)를 조회한다 (fallback + 재시도 포함).
+
+        Args:
+            symbol: 거래 심볼
+
+        Returns:
+            ticker dict (ccxt 표준)
+
+        Raises:
+            RuntimeError: 모든 거래소에서 조회 실패 시
+        """
+        errors: list[str] = []
+
         for name, _, _, futures_ok in EXCHANGE_CONFIGS:
             client = self._clients.get(name)
             if not client:
@@ -72,16 +184,29 @@ class MarketDataClient:
             candidates = [symbol] if futures_ok else _spot_symbols(symbol)
             for sym in candidates:
                 try:
-                    ticker = client.fetch_ticker(sym)
+                    ticker = _retry_call(client.fetch_ticker, sym)
                     if name != "bybit":
-                        logger.info("[fallback] ticker %s → %s/%s", symbol, name, sym)
+                        logger.info(
+                            "[fallback] ticker %s -> %s/%s", symbol, name, sym
+                        )
                     return ticker
-                except Exception as e:
-                    logger.debug("[%s/%s] ticker 실패: %s", name, sym, str(e)[:80])
+                except Exception as exc:
+                    err_msg = f"[{name}/{sym}] {type(exc).__name__}: {str(exc)[:120]}"
+                    errors.append(err_msg)
+                    logger.debug("ticker 실패: %s", err_msg)
 
-        raise RuntimeError(f"ticker 조회 실패: {symbol}")
+        error_detail = "; ".join(errors) if errors else "클라이언트 없음"
+        raise RuntimeError(f"ticker 조회 실패: {symbol} — {error_detail}")
 
     def fetch_current_price(self, symbol: str) -> float:
+        """현재가를 조회한다.
+
+        Args:
+            symbol: 거래 심볼
+
+        Returns:
+            현재 가격 (float)
+        """
         return float(self.fetch_ticker(symbol)["last"])
 
 

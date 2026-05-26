@@ -1,9 +1,14 @@
 """
-포지션 사이징 — 리스크 % 기반 수량 계산
+포지션 사이징 — 리스크 % 기반 수량 계산 및 담보금 산출
 """
 from __future__ import annotations
-import pandas as pd
+
+import logging
+
 import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_position_size(
@@ -107,3 +112,27 @@ def calculate_take_profit(
         return entry + risk * rr_ratio
     else:  # Short
         return entry - risk * rr_ratio
+
+
+def calculate_margin(
+    qty: float,
+    entry_price: float,
+    leverage: float,
+) -> float:
+    """
+    레버리지 적용 시 실제 필요 담보금 계산.
+
+    Args:
+        qty: 수량 (코인 단위)
+        entry_price: 진입 가격
+        leverage: 레버리지 배수
+
+    Returns:
+        필요 담보금 (USDT)
+
+    Raises:
+        ValueError: 레버리지가 0 이하인 경우
+    """
+    if leverage <= 0:
+        raise ValueError("레버리지는 양수여야 합니다.")
+    return round((qty * entry_price) / leverage, 8)

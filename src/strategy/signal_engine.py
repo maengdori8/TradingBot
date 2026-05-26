@@ -167,7 +167,7 @@ def generate_signal(
 
     risk = abs(current_price - stop_loss)
     reward = abs(current_price - take_profit)
-    rr = reward / risk if risk > 0 else 0
+    rr = round(reward / risk, 6) if risk > 0 else 0
 
     if rr < min_rr:
         logger.debug(

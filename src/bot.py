@@ -62,12 +62,20 @@ def run() -> None:
             df_15m = client.fetch_ohlcv(symbol, "15m", limit=100)
             logger.info("[%s] 현재가: %.2f", symbol, price)
 
+            # 미실현 손익 갱신
+            paper.update_unrealized_pnl(symbol, price)
+
             # 기존 포지션 SL/TP 체크
             last = df_15m.iloc[-1]
             paper.check_stops(symbol, float(last["high"]), float(last["low"]))
 
-            # 신규 진입 조건 확인
-            allowed, reason = risk.check_trade_allowed(len(paper.positions))
+            # 신규 진입 조건 확인 (중복 포지션 차단 포함)
+            allowed, reason = risk.check_trade_allowed(
+                current_positions=len(paper.positions),
+                positions=paper.get_positions(),
+                symbol=symbol,
+                direction=None,  # 방향은 신호 발생 전이므로 미정
+            )
             if not allowed:
                 logger.info("[%s] 거래 차단: %s", symbol, reason)
                 continue
