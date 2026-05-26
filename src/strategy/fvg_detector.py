@@ -1,14 +1,22 @@
+from __future__ import annotations
+
 """
 Fair Value Gap (FVG) 탐지 — 3봉 패턴
 """
-from __future__ import annotations
-from dataclasses import dataclass, field
+
+import logging
+from dataclasses import dataclass
 from typing import Literal
+
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class FVG:
+    """Fair Value Gap 데이터 클래스."""
+
     type: Literal["bullish", "bearish"]
     top: float
     bottom: float
@@ -16,20 +24,23 @@ class FVG:
     filled: bool = False
 
 
-def detect_fvg(df: pd.DataFrame, min_gap_pct: float = 0.001) -> list[FVG]:
-    """
-    3봉 패턴으로 FVG 탐지.
+def detect_fvg(df: pd.DataFrame, min_gap_pct: float | None = None) -> list[FVG]:
+    """3봉 패턴으로 FVG 를 탐지한다.
 
     Bullish FVG: candle[i-2].high < candle[i].low  (갭 상승)
     Bearish FVG: candle[i-2].low  > candle[i].high (갭 하락)
 
     Args:
         df: OHLCV DataFrame
-        min_gap_pct: 최소 갭 크기 비율
+        min_gap_pct: 최소 갭 크기 비율. None 이면 strategy_params.yaml 값 사용.
 
     Returns:
         미체워진 FVG 리스트
     """
+    if min_gap_pct is None:
+        from . import load_strategy_params
+        min_gap_pct = load_strategy_params()["fvg"]["min_gap_pct"]
+
     fvg_list: list[FVG] = []
     closes = df["close"].values
     highs = df["high"].values
@@ -50,12 +61,12 @@ def detect_fvg(df: pd.DataFrame, min_gap_pct: float = 0.001) -> list[FVG]:
         if gap_top2 > gap_bottom2 and (gap_top2 - gap_bottom2) / mid_price >= min_gap_pct:
             fvg_list.append(FVG(type="bearish", top=gap_top2, bottom=gap_bottom2, candle_index=i))
 
+    logger.debug("FVG 탐지 완료: %d개 발견 (min_gap_pct=%.4f)", len(fvg_list), min_gap_pct)
     return fvg_list
 
 
 def is_price_in_fvg(price: float, fvg_list: list[FVG]) -> list[FVG]:
-    """
-    현재 가격이 속한 미체워진 FVG 반환.
+    """현재 가격이 속한 미체워진 FVG 를 반환한다.
 
     Args:
         price: 현재 가격
@@ -68,8 +79,7 @@ def is_price_in_fvg(price: float, fvg_list: list[FVG]) -> list[FVG]:
 
 
 def update_fvg_fills(fvg_list: list[FVG], current_high: float, current_low: float) -> list[FVG]:
-    """
-    현재 캔들로 체워진 FVG를 표시하고 미체워진 것만 반환.
+    """현재 캔들로 체워진 FVG 를 표시하고 미체워진 것만 반환한다.
 
     Args:
         fvg_list: 기존 FVG 리스트

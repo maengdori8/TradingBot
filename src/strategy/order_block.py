@@ -1,14 +1,22 @@
+from __future__ import annotations
+
 """
 Order Block (OB) 탐지 — 강한 이동 직전 마지막 반대 캔들
 """
-from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from typing import Literal
+
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class OrderBlock:
+    """Order Block 데이터 클래스."""
+
     type: Literal["bullish", "bearish"]
     top: float
     bottom: float
@@ -16,21 +24,32 @@ class OrderBlock:
     strength: float  # 이후 이동 폭
 
 
-def detect_order_blocks(df: pd.DataFrame, threshold: float = 0.003, lookback: int = 3) -> list[OrderBlock]:
-    """
-    OB 탐지: 강한 이동 직전 마지막 반대색 캔들.
+def detect_order_blocks(
+    df: pd.DataFrame,
+    threshold: float | None = None,
+    lookback: int | None = None,
+) -> list[OrderBlock]:
+    """OB 를 탐지한다: 강한 이동 직전 마지막 반대색 캔들.
 
     Bullish OB: 강한 상승 직전 마지막 하락 캔들
     Bearish OB: 강한 하락 직전 마지막 상승 캔들
 
     Args:
         df: OHLCV DataFrame
-        threshold: 강한 이동으로 판단할 최소 변화율
-        lookback: 이동 확인 범위
+        threshold: 강한 이동으로 판단할 최소 변화율. None 이면 yaml 값 사용.
+        lookback: 이동 확인 범위. None 이면 yaml 값 사용.
 
     Returns:
         OB 리스트
     """
+    if threshold is None or lookback is None:
+        from . import load_strategy_params
+        params = load_strategy_params()["order_block"]
+        if threshold is None:
+            threshold = params["threshold"]
+        if lookback is None:
+            lookback = params["lookback"]
+
     ob_list: list[OrderBlock] = []
     closes = df["close"].values
     opens = df["open"].values
@@ -41,8 +60,6 @@ def detect_order_blocks(df: pd.DataFrame, threshold: float = 0.003, lookback: in
         # 이후 이동 폭 계산
         future_high = max(highs[i + 1: i + 1 + lookback])
         future_low = min(lows[i + 1: i + 1 + lookback])
-        body = abs(closes[i] - opens[i])
-        mid = (closes[i] + opens[i]) / 2
 
         # Bullish OB: 현재 캔들이 하락봉이고 이후 강한 상승
         if closes[i] < opens[i]:  # 하락봉
@@ -50,8 +67,8 @@ def detect_order_blocks(df: pd.DataFrame, threshold: float = 0.003, lookback: in
             if strength >= threshold:
                 ob_list.append(OrderBlock(
                     type="bullish",
-                    top=opens[i],    # 하락봉의 시가 (위)
-                    bottom=closes[i],  # 하락봉의 종가 (아래)
+                    top=opens[i],     # 하락봉의 시가 (위)
+                    bottom=closes[i], # 하락봉의 종가 (아래)
                     candle_index=i,
                     strength=strength,
                 ))
@@ -62,18 +79,21 @@ def detect_order_blocks(df: pd.DataFrame, threshold: float = 0.003, lookback: in
             if strength >= threshold:
                 ob_list.append(OrderBlock(
                     type="bearish",
-                    top=closes[i],   # 상승봉의 종가 (위)
+                    top=closes[i],    # 상승봉의 종가 (위)
                     bottom=opens[i],  # 상승봉의 시가 (아래)
                     candle_index=i,
                     strength=strength,
                 ))
 
+    logger.debug(
+        "OB 탐지 완료: %d개 발견 (threshold=%.4f, lookback=%d)",
+        len(ob_list), threshold, lookback,
+    )
     return ob_list
 
 
 def is_price_in_ob(price: float, ob_list: list[OrderBlock]) -> list[OrderBlock]:
-    """
-    현재 가격이 속한 OB 반환.
+    """현재 가격이 속한 OB 를 반환한다.
 
     Args:
         price: 현재 가격
