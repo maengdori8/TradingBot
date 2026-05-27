@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ko" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="60">
+    <title>ICT Paper Trading Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-card: #1a1d23;
+            --bg-body: #0d1117;
+            --green: #00d68f;
+            --red: #ff4d4d;
+            --blue: #4da6ff;
+            --gold: #ffd700;
+            --muted: #8b949e;
+        }
+        body {
+            background: var(--bg-body);
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid #21262d;
+            border-radius: 12px;
+        }
+        .stat-card {
+            text-align: center;
+            padding: 1.2rem;
+        }
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 0.3rem;
+        }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .badge-long {
+            background: rgba(0, 214, 143, 0.15);
+            color: var(--green);
+            border: 1px solid rgba(0, 214, 143, 0.3);
+        }
+        .badge-short {
+            background: rgba(255, 77, 77, 0.15);
+            color: var(--red);
+            border: 1px solid rgba(255, 77, 77, 0.3);
+        }
+        .badge-pass {
+            background: rgba(0, 214, 143, 0.15);
+            color: var(--green);
+        }
+        .badge-fail {
+            background: rgba(255, 77, 77, 0.15);
+            color: var(--red);
+        }
+        .table { color: #c9d1d9; font-size: 0.88rem; }
+        .table thead th {
+            border-bottom-color: #21262d;
+            color: var(--muted);
+            font-weight: 600;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+        }
+        .table td { border-color: #21262d; vertical-align: middle; }
+        .header-bar {
+            background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+            border-bottom: 1px solid #21262d;
+            padding: 1rem 0;
+        }
+        .cb-blocked {
+            background: rgba(255, 77, 77, 0.1);
+            border: 1px solid var(--red);
+            border-radius: 8px;
+            padding: 0.8rem;
+            text-align: center;
+        }
+        .cb-ok {
+            background: rgba(0, 214, 143, 0.05);
+            border: 1px solid rgba(0, 214, 143, 0.2);
+            border-radius: 8px;
+            padding: 0.8rem;
+            text-align: center;
+        }
+        .promote-progress {
+            height: 8px;
+            background: #21262d;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .promote-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s;
+        }
+        .section-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--muted);
+            margin-bottom: 0.8rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #21262d;
+        }
+        .refresh-note {
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+        .mono { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+        #equityChart { max-height: 300px; }
+    </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header-bar">
+    <div class="container-fluid px-4">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <h4 class="mb-0 fw-bold">
+                    <span style="color: var(--blue);">ICT</span> Paper Trading
+                </h4>
+                <small class="text-muted">{{ config.get('exchange', {}).get('symbols', []) | join(', ') }} &middot; {{ config.get('exchange', {}).get('leverage', 5) }}x</small>
+            </div>
+            <div class="text-end">
+                <span class="refresh-note">{{ now }}</span>
+                <br>
+                <span class="refresh-note">60초마다 자동 새로고침</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="container-fluid px-4 py-3">
+
+    <!-- Row 1: Key Stats -->
+    <div class="row g-3 mb-3">
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono">{{ "%.2f"|format(balance) }}</div>
+                <div class="stat-label">잔고 (USDT)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                {% set pnl_val = balance - initial_balance %}
+                <div class="stat-value mono {{ 'positive' if pnl_val >= 0 else 'negative' }}">
+                    {{ "%+.2f"|format(pnl_val) }}
+                </div>
+                <div class="stat-label">총 손익 (USDT)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono {{ 'positive' if perf.win_rate >= 0.5 else 'negative' }}">
+                    {{ "%.1f"|format(perf.win_rate * 100) }}%
+                </div>
+                <div class="stat-label">승률 ({{ perf.total_trades }}건)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono {{ 'positive' if perf.profit_factor >= 1.5 else ('negative' if perf.profit_factor < 1.0 else '') }}">
+                    {{ "%.2f"|format(perf.profit_factor) }}
+                </div>
+                <div class="stat-label">Profit Factor</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono">{{ "%.2f"|format(perf.mdd * 100) }}%</div>
+                <div class="stat-label">최대 낙폭 (MDD)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono {{ 'positive' if perf.sharpe >= 1.0 else '' }}">
+                    {{ "%.2f"|format(perf.sharpe) }}
+                </div>
+                <div class="stat-label">Sharpe Ratio</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 2: Chart + Sidebar -->
+    <div class="row g-3 mb-3">
+        <!-- Equity Curve -->
+        <div class="col-lg-8">
+            <div class="card p-3">
+                <div class="section-title">에쿼티 커브</div>
+                <canvas id="equityChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Sidebar: CB + Promote -->
+        <div class="col-lg-4">
+            <!-- Circuit Breaker -->
+            <div class="card p-3 mb-3">
+                <div class="section-title">서킷브레이커</div>
+                {% if cb_status.is_blocked %}
+                <div class="cb-blocked">
+                    <strong class="negative">BLOCKED</strong>
+                    <div class="mt-1" style="font-size: 0.85rem;">
+                        일일 PnL: <span class="mono negative">{{ "%.2f"|format(cb_status.daily_pnl) }}</span> USDT
+                        &middot; 연패: <span class="mono negative">{{ cb_status.consecutive_losses }}연패</span>
+                    </div>
+                </div>
+                {% else %}
+                <div class="cb-ok">
+                    <strong class="positive">ACTIVE</strong>
+                    <div class="mt-1" style="font-size: 0.85rem;">
+                        일일 PnL: <span class="mono">{{ "%+.2f"|format(cb_status.daily_pnl) }}</span> USDT
+                        &middot; 연패: <span class="mono">{{ cb_status.consecutive_losses }}회</span>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Promote Checker -->
+            <div class="card p-3">
+                <div class="section-title">
+                    실전 전환 기준
+                    <span class="float-end badge {{ 'badge-pass' if promote.eligible else 'badge-fail' }}">
+                        {{ promote.passed_count }}/{{ promote.total_count }}
+                    </span>
+                </div>
+                <div class="promote-progress mb-3">
+                    {% set pct = (promote.passed_count / promote.total_count * 100) if promote.total_count > 0 else 0 %}
+                    <div class="promote-fill" style="width: {{ pct }}%; background: {{ 'var(--green)' if promote.eligible else 'var(--gold)' if pct >= 50 else 'var(--red)' }};"></div>
+                </div>
+                <table class="table table-sm mb-0">
+                    <tbody>
+                    {% for name, c in promote.criteria.items() %}
+                    <tr>
+                        <td style="width: 25px;">{{ '&#10003;' if c.passed else '&#10007;' }}</td>
+                        <td>{{ name }}</td>
+                        <td class="text-end mono {{ 'positive' if c.passed else 'negative' }}">
+                            {% if c.format == 'd' %}
+                                {{ c.value | int }}
+                            {% else %}
+                                {{ ("{0:" + c.format + "}").format(c.value) }}{{ c.get('suffix', '') }}
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-muted mono" style="font-size: 0.78rem;">
+                            {% if c.get('lower_better') %}&le;{% else %}&ge;{% endif %}
+                            {% if c.format == 'd' %}
+                                {{ c.threshold | int }}
+                            {% else %}
+                                {{ ("{0:" + c.format + "}").format(c.threshold) }}{{ c.get('suffix', '') }}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 3: Open Positions -->
+    {% if positions %}
+    <div class="row g-3 mb-3">
+        <div class="col-12">
+            <div class="card p-3">
+                <div class="section-title">오픈 포지션 ({{ positions | length }})</div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                        <tr>
+                            <th>심볼</th>
+                            <th>방향</th>
+                            <th>진입가</th>
+                            <th>수량</th>
+                            <th>손절가</th>
+                            <th>목표가</th>
+                            <th>담보금</th>
+                            <th>R:R</th>
+                            <th>진입 시각</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for p in positions %}
+                        <tr>
+                            <td class="fw-bold">{{ p.symbol }}</td>
+                            <td>
+                                <span class="badge {{ 'badge-long' if p.direction == 'long' else 'badge-short' }}">
+                                    {{ p.direction | upper }}
+                                </span>
+                            </td>
+                            <td class="mono">{{ "%.2f"|format(p.entry_price) }}</td>
+                            <td class="mono">{{ "%.4f"|format(p.qty) }}</td>
+                            <td class="mono negative">{{ "%.2f"|format(p.stop_loss) }}</td>
+                            <td class="mono positive">{{ "%.2f"|format(p.take_profit) }}</td>
+                            <td class="mono">{{ "%.2f"|format(p.margin) }}</td>
+                            <td class="mono">
+                                {% set risk = (p.entry_price - p.stop_loss) | abs %}
+                                {% set reward = (p.take_profit - p.entry_price) | abs %}
+                                {% if risk > 0 %}
+                                    1:{{ "%.1f"|format(reward / risk) }}
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            <td style="font-size: 0.8rem;">{{ p.entry_time[:19] | replace('T', ' ') }}</td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Row 4: Trade Stats + History -->
+    <div class="row g-3 mb-3">
+        <!-- Extra Stats -->
+        <div class="col-lg-3">
+            <div class="card p-3 h-100">
+                <div class="section-title">거래 통계</div>
+                <table class="table table-sm table-borderless mb-0">
+                    <tbody>
+                    <tr>
+                        <td class="text-muted">최대 수익</td>
+                        <td class="text-end mono positive">{{ "%+.4f"|format(perf.best_trade) }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">최대 손실</td>
+                        <td class="text-end mono negative">{{ "%+.4f"|format(perf.worst_trade) }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">평균 수익</td>
+                        <td class="text-end mono positive">{{ "%+.4f"|format(perf.avg_win) }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">평균 손실</td>
+                        <td class="text-end mono negative">{{ "%+.4f"|format(perf.avg_loss) }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">평균 PnL</td>
+                        <td class="text-end mono {{ 'positive' if perf.avg_pnl >= 0 else 'negative' }}">{{ "%+.4f"|format(perf.avg_pnl) }}</td>
+                    </tr>
+                    <tr><td colspan="2"><hr class="my-1" style="border-color: #21262d;"></td></tr>
+                    <tr>
+                        <td class="text-muted">롱 거래</td>
+                        <td class="text-end mono">{{ perf.long_count }}건</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">숏 거래</td>
+                        <td class="text-end mono">{{ perf.short_count }}건</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">초기 자본</td>
+                        <td class="text-end mono">{{ "%.2f"|format(initial_balance) }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">수익률</td>
+                        <td class="text-end mono {{ 'positive' if balance >= initial_balance else 'negative' }}">
+                            {{ "%+.2f"|format((balance - initial_balance) / initial_balance * 100) }}%
+                        </td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Trade History -->
+        <div class="col-lg-9">
+            <div class="card p-3">
+                <div class="section-title">거래 내역 (최근 50건)</div>
+                {% if trades %}
+                <div class="table-responsive" style="max-height: 450px; overflow-y: auto;">
+                    <table class="table table-sm mb-0">
+                        <thead style="position: sticky; top: 0; background: var(--bg-card);">
+                        <tr>
+                            <th>심볼</th>
+                            <th>방향</th>
+                            <th>진입가</th>
+                            <th>청산가</th>
+                            <th>수량</th>
+                            <th>PnL</th>
+                            <th>PnL%</th>
+                            <th>사유</th>
+                            <th>청산 시각</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for t in trades[:50] %}
+                        <tr>
+                            <td class="fw-bold">{{ t.symbol }}</td>
+                            <td>
+                                <span class="badge {{ 'badge-long' if t.direction == 'long' else 'badge-short' }}">
+                                    {{ t.direction | upper }}
+                                </span>
+                            </td>
+                            <td class="mono">{{ "%.2f"|format(t.entry_price) }}</td>
+                            <td class="mono">{{ "%.2f"|format(t.exit_price) }}</td>
+                            <td class="mono">{{ "%.4f"|format(t.qty) }}</td>
+                            <td class="mono {{ 'positive' if t.pnl >= 0 else 'negative' }}">
+                                {{ "%+.4f"|format(t.pnl) }}
+                            </td>
+                            <td class="mono {{ 'positive' if t.pnl_pct >= 0 else 'negative' }}">
+                                {{ "%+.2f"|format(t.pnl_pct * 100) }}%
+                            </td>
+                            <td>
+                                {% if t.status == 'TP' %}
+                                    <span class="positive">TP</span>
+                                {% elif t.status == 'SL' %}
+                                    <span class="negative">SL</span>
+                                {% else %}
+                                    {{ t.status or '-' }}
+                                {% endif %}
+                            </td>
+                            <td style="font-size: 0.8rem;">{{ (t.exit_time or '')[:16] | replace('T', ' ') }}</td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-5">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">&#128202;</div>
+                    아직 거래 내역이 없습니다.<br>
+                    봇이 실행되면 여기에 거래가 표시됩니다.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="text-center text-muted py-3" style="font-size: 0.75rem;">
+        ICT Paper Trading Bot &middot; Leverage {{ config.get('exchange', {}).get('leverage', 5) }}x
+        &middot; Risk {{ (config.get('capital', {}).get('risk_per_trade', 0.01) * 100) }}%/trade
+        &middot; Max {{ config.get('risk', {}).get('max_positions', 2) }} positions
+    </div>
+</div>
+
+<script>
+    // Equity Curve Chart
+    const equityData = {{ equity_json | safe }};
+
+    if (equityData.labels.length > 1) {
+        const ctx = document.getElementById('equityChart').getContext('2d');
+
+        // Gradient fill
+        const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+        const lastVal = equityData.values[equityData.values.length - 1];
+        const firstVal = equityData.values[0];
+
+        if (lastVal >= firstVal) {
+            gradient.addColorStop(0, 'rgba(0, 214, 143, 0.25)');
+            gradient.addColorStop(1, 'rgba(0, 214, 143, 0.0)');
+        } else {
+            gradient.addColorStop(0, 'rgba(255, 77, 77, 0.25)');
+            gradient.addColorStop(1, 'rgba(255, 77, 77, 0.0)');
+        }
+
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: equityData.labels,
+                datasets: [{
+                    label: 'Balance (USDT)',
+                    data: equityData.values,
+                    borderColor: lastVal >= firstVal ? '#00d68f' : '#ff4d4d',
+                    backgroundColor: gradient,
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: equityData.values.length > 30 ? 0 : 3,
+                    pointHoverRadius: 5,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#1a1d23',
+                        borderColor: '#21262d',
+                        borderWidth: 1,
+                        titleColor: '#c9d1d9',
+                        bodyColor: '#c9d1d9',
+                        callbacks: {
+                            label: function(ctx) {
+                                return ctx.parsed.y.toLocaleString('en-US', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2
+                                }) + ' USDT';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: { color: '#8b949e', maxTicksLimit: 10, font: { size: 10 } },
+                        grid: { color: '#21262d' }
+                    },
+                    y: {
+                        ticks: {
+                            color: '#8b949e',
+                            font: { size: 11 },
+                            callback: v => v.toFixed(2)
+                        },
+                        grid: { color: '#21262d' }
+                    }
+                },
+                interaction: { intersect: false, mode: 'index' }
+            }
+        });
+    } else {
+        document.getElementById('equityChart').parentElement.innerHTML +=
+            '<div class="text-center text-muted py-5">거래 데이터가 쌓이면 에쿼티 커브가 표시됩니다.</div>';
+    }
+</script>
+
+</body>
+</html>

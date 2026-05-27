@@ -123,6 +123,8 @@ class TradeSignal:
 ```bash
 pip install -r requirements.txt
 python -m src.bot                    # 봇 실행 (15분 단위 GitHub Actions)
+python -m src.dashboard.app          # 대시보드 (http://127.0.0.1:5000)
+python -m src.dashboard.app --port 8080 --host 0.0.0.0  # 외부 접속 허용
 python -m src.backtest               # 백테스트 CLI
 python -m src.backtest --symbol BTC/USDT:USDT --days 7 --ignore-kz  # 옵션
 pytest tests/ -v                     # 테스트
