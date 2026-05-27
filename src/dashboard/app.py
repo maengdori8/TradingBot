@@ -227,13 +227,13 @@ def _fetch_circuit_breaker_status() -> dict:
     try:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         row = conn.execute(
-            "SELECT SUM(pnl) as total FROM trade_results WHERE date(timestamp) = ?",
+            "SELECT SUM(pnl) as total FROM trade_results WHERE date(recorded_at) = ?",
             (today,),
         ).fetchone()
         daily_pnl = float(row["total"]) if row and row["total"] else 0.0
 
         rows = conn.execute(
-            "SELECT pnl FROM trade_results ORDER BY timestamp DESC LIMIT 10"
+            "SELECT pnl FROM trade_results ORDER BY recorded_at DESC LIMIT 10"
         ).fetchall()
 
         consecutive = 0
