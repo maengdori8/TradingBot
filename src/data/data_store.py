@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +159,30 @@ class DataStore:
 
         ts = pd.to_datetime(row[0], utc=True)
         return ts.to_pydatetime()
+
+    def cleanup_old_data(self, days: int = 30) -> int:
+        """지정 일수보다 오래된 캔들 데이터를 삭제한다.
+
+        Args:
+            days: 보관 기간 (기본: 30일)
+
+        Returns:
+            삭제된 행 수
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_str = cutoff.isoformat()
+
+        cursor = self._conn.execute(
+            "DELETE FROM ohlcv WHERE timestamp < ?",
+            (cutoff_str,),
+        )
+        deleted = cursor.rowcount
+        self._conn.commit()
+        logger.info(
+            "오래된 데이터 정리 완료: %d건 삭제 (기준: %d일, cutoff=%s)",
+            deleted, days, cutoff_str,
+        )
+        return deleted
 
     def close(self) -> None:
         """데이터베이스 연결을 닫는다."""

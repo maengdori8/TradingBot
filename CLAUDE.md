@@ -122,9 +122,11 @@ class TradeSignal:
 ## 빌드 & 실행
 ```bash
 pip install -r requirements.txt
-python -m src.bot                    # 봇 실행
+python -m src.bot                    # 봇 실행 (15분 단위 GitHub Actions)
+python -m src.backtest               # 백테스트 CLI
+python -m src.backtest --symbol BTC/USDT:USDT --days 7 --ignore-kz  # 옵션
 pytest tests/ -v                     # 테스트
-pytest tests/ --cov=src --cov-report=term  # 커버리지
+pytest tests/ --cov=src --cov-report=term --cov-fail-under=80  # 커버리지 (80% 게이트)
 ```
 
 ## 커밋 메시지 형식

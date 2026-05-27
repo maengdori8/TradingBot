@@ -223,6 +223,44 @@ class MarketDataClient:
         error_detail = "; ".join(errors) if errors else "클라이언트 없음"
         raise RuntimeError(f"ticker 조회 실패: {symbol} — {error_detail}")
 
+    def health_check(self) -> dict[str, bool | str]:
+        """각 거래소의 연결 상태를 확인한다.
+
+        이미 초기화된 거래소만 실제 API 호출로 상태를 점검하며,
+        아직 초기화되지 않은 거래소는 'not_initialized'로 반환한다.
+        lazy loading 패턴과 호환 — 이 메서드가 거래소를 초기화하지 않는다.
+
+        Returns:
+            거래소별 연결 상태 dict
+            (예: {"bybit": True, "kraken": False, "coinbase": "not_initialized"})
+        """
+        status: dict[str, bool | str] = {}
+
+        for name, _cls, _cfg, futures_ok in self._exchange_configs:
+            if name not in self._initialized:
+                status[name] = "not_initialized"
+                continue
+
+            client = self._clients.get(name)
+            if client is None:
+                # 초기화 시도했으나 실패한 거래소
+                status[name] = False
+                continue
+
+            try:
+                test_symbol = "BTC/USDT:USDT" if futures_ok else "BTC/USDT"
+                _retry_call(client.fetch_ticker, test_symbol)
+                status[name] = True
+                logger.debug("[health] %s: OK", name)
+            except Exception as exc:
+                status[name] = False
+                logger.warning(
+                    "[health] %s: FAIL — %s: %s",
+                    name, type(exc).__name__, str(exc)[:120],
+                )
+
+        return status
+
     def fetch_current_price(self, symbol: str) -> float:
         """현재가를 조회한다.
 

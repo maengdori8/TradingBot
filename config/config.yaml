@@ -22,3 +22,11 @@ risk:
   daily_loss_limit: 0.03     # 트레이딩 자본 3% 손실 시 당일 중단
   weekly_loss_limit: 0.08    # 트레이딩 자본 8% 손실 시 주간 중단
   max_consecutive_losses: 3  # 3연패 시 1일 강제 휴식
+
+promote:
+  min_trades: 20
+  min_win_rate: 0.55
+  min_profit_factor: 1.5
+  max_mdd: 0.05
+  min_sharpe: 1.0
+  min_return_pct: 0.0

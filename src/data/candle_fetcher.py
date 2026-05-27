@@ -132,6 +132,50 @@ class CandleFetcher:
         )
         return df.copy()
 
+    def fetch_multi_timeframe(
+        self,
+        symbol: str,
+        timeframes: list[str],
+        limits: dict[str, int] | None = None,
+    ) -> dict[str, pd.DataFrame]:
+        """여러 타임프레임의 캔들 데이터를 일괄 조회한다.
+
+        Args:
+            symbol: 거래 심볼 (예: 'BTC/USDT:USDT')
+            timeframes: 타임프레임 목록 (예: ["4h", "1h", "15m"])
+            limits: 타임프레임별 캔들 수 (기본: {"4h": 100, "1h": 100, "15m": 200})
+
+        Returns:
+            타임프레임별 DataFrame dict
+
+        Raises:
+            RuntimeError: 하나라도 조회 실패 시
+        """
+        default_limits: dict[str, int] = {"4h": 100, "1h": 100, "15m": 200}
+        effective_limits = {**default_limits, **(limits or {})}
+
+        result: dict[str, pd.DataFrame] = {}
+        for tf in timeframes:
+            limit = effective_limits.get(tf, 200)
+            try:
+                df = self.get_candles(symbol, tf, limit=limit)
+                result[tf] = df
+                logger.debug("멀티 타임프레임 조회 성공: %s %s (%d건)", symbol, tf, len(df))
+            except Exception as exc:
+                logger.error(
+                    "멀티 타임프레임 조회 실패: %s %s — %s: %s",
+                    symbol, tf, type(exc).__name__, str(exc)[:200],
+                )
+                raise RuntimeError(
+                    f"멀티 타임프레임 조회 실패: {symbol} {tf} — {exc}"
+                ) from exc
+
+        logger.info(
+            "멀티 타임프레임 일괄 조회 완료: %s (%s)",
+            symbol, ", ".join(timeframes),
+        )
+        return result
+
     def invalidate_cache(self, symbol: str | None = None) -> None:
         """캐시를 무효화한다.
 

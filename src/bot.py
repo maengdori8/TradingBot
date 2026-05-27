@@ -120,6 +120,25 @@ def run() -> None:
             perf["total_trades"], perf["win_rate"] * 100,
             perf["total_pnl"], perf["current_balance"],
         )
+
+        # 실전 전환 판별
+        try:
+            from src.risk.promote_checker import PromoteChecker
+            checker = PromoteChecker()
+            result = checker.check(perf)
+            if result.eligible:
+                logger.info("🏆 실전 전환 기준 충족! 점수: %.0f/100", result.score)
+                notifier.notify_promote(result)
+            else:
+                logger.info(
+                    "실전 전환 미충족 (점수: %.0f/100): %s",
+                    result.score, result.summary,
+                )
+        except ImportError:
+            logger.debug("promote_checker 미설치 — 실전 전환 판별 건너뜀")
+        except Exception as e:
+            logger.warning("실전 전환 판별 오류: %s", e)
+
         # 매 6시간(00:00, 06:00, 12:00, 18:00 UTC)에 일일 리포트 발송
         now = datetime.now(timezone.utc)
         if now.hour % 6 == 0 and now.minute < 15:

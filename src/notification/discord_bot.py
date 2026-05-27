@@ -136,6 +136,33 @@ class DiscordNotifier:
         )
         self._send(payload)
 
+    def notify_promote(self, result: object) -> None:
+        """실전 전환 기준 충족 알림.
+
+        Args:
+            result: PromoteResult 객체 (eligible, score, summary 속성)
+        """
+        fields = [
+            {"name": "점수", "value": f"`{result.score:.0f}/100`", "inline": True},
+        ]
+        # 각 기준 결과 표시
+        if hasattr(result, "criteria"):
+            for name, cr in result.criteria.items():
+                emoji = "✅" if cr.passed else "❌"
+                fields.append({
+                    "name": f"{emoji} {cr.name}",
+                    "value": f"`{cr.value:.4f}` / 기준 `{cr.threshold:.4f}`",
+                    "inline": True,
+                })
+        payload = self._embed(
+            title="🏆 실전 전환 기준 충족!",
+            description=result.summary,
+            color=0xFFD700,  # 골드
+            fields=fields,
+        )
+        self._send(payload)
+        logger.info("Discord 실전 전환 알림 전송")
+
     def notify_daily_report(self, stats: dict) -> None:
         """일일 성과 리포트."""
         pnl = stats.get("total_pnl", 0)
