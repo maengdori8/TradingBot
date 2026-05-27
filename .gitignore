@@ -8,3 +8,5 @@ logs/*.log
 *.egg-info/
 dist/
 build/
+.venv/
+.claude/
