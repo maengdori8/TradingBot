@@ -50,6 +50,15 @@ def run() -> None:
     risk     = RiskManager()
     paper    = PaperEngine(initial_balance=risk.trading_capital)
 
+    # 청산 이벤트 → 리스크 기록 + Discord 알림 연동
+    def _on_trade(pnl: float, reason: str, pos: object) -> None:
+        risk.record_result(pnl, reason)
+        notifier.notify_exit(
+            symbol=pos.symbol, direction=pos.direction,
+            exit_price=pos.entry_price, pnl=pnl, reason=reason,
+        )
+    paper.register_on_trade(_on_trade)
+
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     logger.info("══════ 봇 실행 [페이퍼] %s ══════", now_str)
 
@@ -111,6 +120,11 @@ def run() -> None:
             perf["total_trades"], perf["win_rate"] * 100,
             perf["total_pnl"], perf["current_balance"],
         )
+        # 매 6시간(00:00, 06:00, 12:00, 18:00 UTC)에 일일 리포트 발송
+        now = datetime.now(timezone.utc)
+        if now.hour % 6 == 0 and now.minute < 15:
+            notifier.notify_daily_report(perf)
+            logger.info("일일 리포트 Discord 발송 완료")
 
     logger.info("══════ 완료 ══════")
 

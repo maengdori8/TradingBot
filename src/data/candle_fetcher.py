@@ -49,16 +49,31 @@ class CandleFetcher:
     불필요한 API 호출을 줄인다.
     """
 
-    def __init__(self, client: MarketDataClient) -> None:
+    def __init__(self, client: MarketDataClient | None = None) -> None:
         """CandleFetcher를 초기화한다.
 
+        client를 전달하지 않으면 첫 API 호출 시 MarketDataClient를
+        자동 생성한다 (lazy DI).
+
         Args:
-            client: 시세 데이터 클라이언트
+            client: 시세 데이터 클라이언트 (None이면 lazy 생성)
         """
-        self._client = client
+        self._client_instance = client
         self._cache: dict[str, pd.DataFrame] = {}
         self._cache_ts: dict[str, float] = {}  # 캐시 저장 시각 (epoch)
-        logger.info("CandleFetcher 초기화 완료")
+        logger.info("CandleFetcher 초기화 완료 (client=%s)", "주입" if client else "lazy")
+
+    @property
+    def _client(self) -> MarketDataClient:
+        """MarketDataClient를 반환한다. 없으면 lazy 생성한다.
+
+        Returns:
+            MarketDataClient 인스턴스
+        """
+        if self._client_instance is None:
+            logger.info("MarketDataClient lazy 생성")
+            self._client_instance = MarketDataClient()
+        return self._client_instance
 
     def _cache_key(self, symbol: str, timeframe: str) -> str:
         """캐시 키를 생성한다.

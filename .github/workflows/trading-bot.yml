@@ -36,7 +36,7 @@ jobs:
       - name: 봇 실행
         run: python -m src.bot
         env:
-          DISCORD_WEBHOOK_URL: "https://discord.com/api/webhooks/1507198927152091286/ScSwp9hwmOrSWiLLLRdmG6CUkg4mf6qBSPCpm3tvnW4g3lomXglap-NTB6hj1KRWo0F7"
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - name: 페이퍼 트레이딩 상태 저장
         uses: actions/cache/save@v4
@@ -48,6 +48,6 @@ jobs:
       - name: 실패 시 Discord 알림
         if: failure()
         run: |
-          curl -s -X POST "https://discord.com/api/webhooks/1507198927152091286/ScSwp9hwmOrSWiLLLRdmG6CUkg4mf6qBSPCpm3tvnW4g3lomXglap-NTB6hj1KRWo0F7" \
+          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -d '{"content": "⚠️ **봇 실행 실패** — Actions 로그 확인 필요"}'

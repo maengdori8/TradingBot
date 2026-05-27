@@ -87,31 +87,56 @@ class MarketDataClient:
 
     Bybit(swap) -> Kraken -> Coinbase 순으로 fallback하며,
     각 호출에 exponential backoff 재시도 로직을 적용한다.
+
+    거래소 클라이언트는 lazy 초기화된다. 생성자에서 load_markets()를
+    호출하지 않고, 첫 번째 API 요청 시 필요한 거래소만 초기화한다.
     """
 
     def __init__(self) -> None:
+        self._exchange_configs = EXCHANGE_CONFIGS
         self._clients: dict[str, Any] = {}
-        for name, cls, cfg, _ in EXCHANGE_CONFIGS:
-            try:
-                client = cls(cfg)
-                logger.info("[%s] 마켓 로딩 시작...", name)
-                _retry_call(client.load_markets)
-                self._clients[name] = client
-                logger.info("[%s] 초기화 완료 (마켓 %d개)", name, len(client.markets))
-            except ccxt.BaseError as exc:
-                logger.error(
-                    "[%s] 초기화 실패 (ccxt): %s — %s",
-                    name, type(exc).__name__, str(exc)[:200],
-                )
-            except Exception as exc:
-                logger.error(
-                    "[%s] 초기화 실패: %s — %s",
-                    name, type(exc).__name__, str(exc)[:200],
-                )
-        if not self._clients:
-            logger.critical("사용 가능한 거래소가 없습니다!")
-        else:
-            logger.info("거래소 준비 완료: %s", list(self._clients))
+        self._initialized: set[str] = set()
+        logger.info(
+            "MarketDataClient 생성 (lazy 모드, 거래소 %d개 대기)",
+            len(self._exchange_configs),
+        )
+
+    def _ensure_client(self, name: str, cls: type, cfg: dict[str, Any]) -> Any | None:
+        """거래소 클라이언트를 lazy 초기화한다.
+
+        이미 초기화 시도한 거래소는 재시도하지 않으며,
+        성공 시 클라이언트를, 실패 시 None을 반환한다.
+
+        Args:
+            name: 거래소 이름 (예: 'bybit')
+            cls: ccxt 거래소 클래스
+            cfg: 거래소 설정 dict
+
+        Returns:
+            초기화된 ccxt 클라이언트 또는 None
+        """
+        if name in self._initialized:
+            return self._clients.get(name)
+        self._initialized.add(name)
+        try:
+            client = cls(cfg)
+            logger.info("[%s] 마켓 로딩 시작 (lazy)...", name)
+            _retry_call(client.load_markets)
+            self._clients[name] = client
+            logger.info("[%s] 초기화 완료 (마켓 %d개)", name, len(client.markets))
+            return client
+        except ccxt.BaseError as exc:
+            logger.warning(
+                "[%s] 초기화 실패 (ccxt): %s — %s",
+                name, type(exc).__name__, str(exc)[:200],
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[%s] 초기화 실패: %s — %s",
+                name, type(exc).__name__, str(exc)[:200],
+            )
+            return None
 
     def fetch_ohlcv(
         self, symbol: str, timeframe: str = "15m", limit: int = 200
@@ -131,8 +156,8 @@ class MarketDataClient:
         """
         errors: list[str] = []
 
-        for name, _, _, futures_ok in EXCHANGE_CONFIGS:
-            client = self._clients.get(name)
+        for name, cls, cfg, futures_ok in self._exchange_configs:
+            client = self._ensure_client(name, cls, cfg)
             if not client:
                 continue
             candidates = [symbol] if futures_ok else _spot_symbols(symbol)
@@ -177,8 +202,8 @@ class MarketDataClient:
         """
         errors: list[str] = []
 
-        for name, _, _, futures_ok in EXCHANGE_CONFIGS:
-            client = self._clients.get(name)
+        for name, cls, cfg, futures_ok in self._exchange_configs:
+            client = self._ensure_client(name, cls, cfg)
             if not client:
                 continue
             candidates = [symbol] if futures_ok else _spot_symbols(symbol)

@@ -3,6 +3,7 @@
 슬리피지 0.05%, 수수료 0.055% (Bybit Taker 기준)
 잔고 = 담보금 + 미실현손익 기반으로 관리
 TradingEngine 추상 인터페이스 구현
+잔고 영속화: engine_state 테이블에 저장/복원
 """
 from __future__ import annotations
 
@@ -26,10 +27,18 @@ SLIPPAGE = 0.0005  # 0.05%
 TAKER_FEE = 0.00055  # 0.055%
 
 
-def _init_db() -> sqlite3.Connection:
-    """SQLite DB 초기화 및 테이블 생성."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
+    """SQLite DB 초기화 및 테이블 생성.
+
+    Args:
+        db_path: DB 파일 경로. None이면 기본 경로(DB_PATH) 사용.
+
+    Returns:
+        SQLite 연결 객체
+    """
+    path = db_path or DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id TEXT PRIMARY KEY,
@@ -38,6 +47,12 @@ def _init_db() -> sqlite3.Connection:
             qty REAL, pnl REAL, pnl_pct REAL,
             margin REAL,
             entry_time TEXT, exit_time TEXT, status TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS engine_state (
+            key TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
     conn.execute("""
@@ -61,22 +76,34 @@ def _generate_position_id() -> str:
 class PaperEngine(TradingEngine):
     """페이퍼 트레이딩 엔진 — TradingEngine 인터페이스 구현."""
 
-    def __init__(self, initial_balance: float = 1250.0) -> None:
+    def __init__(
+        self,
+        initial_balance: float = 1250.0,
+        db_path: Path | None = None,
+    ) -> None:
         """
         페이퍼 엔진 초기화.
 
         Args:
             initial_balance: 초기 잔고 (USDT)
+            db_path: DB 파일 경로. None이면 기본 경로 사용.
         """
-        self._balance: float = initial_balance
         self.initial_balance: float = initial_balance
         self._positions: list[Position] = []
-        self.conn: sqlite3.Connection = _init_db()
+        self.conn: sqlite3.Connection = _init_db(db_path)
         self._on_trade_callbacks: list[Callable[[float, str, Position], None]] = []
+
+        # DB에서 잔고 복원 시도 → 없으면 initial_balance 사용
+        restored = self._restore_balance()
+        self._balance: float = restored if restored is not None else initial_balance
 
         # 봇 재시작 시 기존 포지션 복원
         self._restore_positions()
-        logger.info("페이퍼 엔진 초기화: 잔고=%.2f USDT", initial_balance)
+        logger.info(
+            "페이퍼 엔진 초기화: 잔고=%.2f USDT (복원=%s)",
+            self._balance,
+            restored is not None,
+        )
 
     # ------------------------------------------------------------------
     # 콜백 등록 (Discord 알림 연동 등)
@@ -103,6 +130,33 @@ class PaperEngine(TradingEngine):
                 cb(pnl, reason, position)
             except Exception as e:
                 logger.error("거래 콜백 실행 오류: %s", e)
+
+    # ------------------------------------------------------------------
+    # 잔고 영속화 (SQLite)
+    # ------------------------------------------------------------------
+
+    def _restore_balance(self) -> float | None:
+        """DB에서 마지막 잔고를 복원한다.
+
+        Returns:
+            복원된 잔고 또는 DB에 없으면 None
+        """
+        row = self.conn.execute(
+            "SELECT value FROM engine_state WHERE key = 'balance'"
+        ).fetchone()
+        if row is not None:
+            balance = float(row[0])
+            logger.info("DB에서 잔고 복원: %.2f USDT", balance)
+            return balance
+        return None
+
+    def _save_balance(self) -> None:
+        """현재 잔고를 DB에 저장한다."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO engine_state(key, value) VALUES('balance', ?)",
+            (str(self._balance),),
+        )
+        self.conn.commit()
 
     # ------------------------------------------------------------------
     # 포지션 영속화 (SQLite)
@@ -250,6 +304,7 @@ class PaperEngine(TradingEngine):
             return None
 
         self._balance = round(self._balance - total_cost, 8)  # 담보금 + 수수료 차감
+        self._save_balance()
         pos = Position(
             id=_generate_position_id(),
             symbol=symbol,
@@ -320,6 +375,7 @@ class PaperEngine(TradingEngine):
 
         # 담보금 반환 + 순이익
         self._balance = round(self._balance + released_margin + pnl, 8)
+        self._save_balance()
 
         now = datetime.now(timezone.utc).isoformat()
         trade_id = f"{position.id}-{now}" if is_partial else position.id
