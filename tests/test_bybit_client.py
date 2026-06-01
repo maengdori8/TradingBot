@@ -329,3 +329,57 @@ class TestMarketDataClient:
             df = client.fetch_ohlcv("BTC/USDT:USDT", "15m")
 
         assert len(df) == 1
+
+
+class TestFetchTopSymbols:
+    """fetch_top_symbols 메서드 테스트 — 거래량 정렬/필터."""
+
+    def _client_with_tickers(self, tickers):
+        client = MarketDataClient()
+        mock_ex = MagicMock()
+        mock_ex.fetch_tickers.return_value = tickers
+        client._initialized.add("bybit")
+        client._clients["bybit"] = mock_ex
+        return client
+
+    def test_sorts_by_volume_desc(self):
+        tickers = {
+            "BTC/USDT:USDT": {"quoteVolume": 100_000_000},
+            "ETH/USDT:USDT": {"quoteVolume": 200_000_000},
+            "SOL/USDT:USDT": {"quoteVolume": 50_000_000},
+        }
+        client = self._client_with_tickers(tickers)
+        result = client.fetch_top_symbols(limit=10, min_volume_usdt=1_000_000)
+        assert result == ["ETH/USDT:USDT", "BTC/USDT:USDT", "SOL/USDT:USDT"]
+
+    def test_filters_low_volume(self):
+        tickers = {
+            "BTC/USDT:USDT": {"quoteVolume": 100_000_000},
+            "DEAD/USDT:USDT": {"quoteVolume": 1000},
+        }
+        client = self._client_with_tickers(tickers)
+        result = client.fetch_top_symbols(min_volume_usdt=5_000_000)
+        assert result == ["BTC/USDT:USDT"]
+
+    def test_excludes_non_perpetual(self):
+        tickers = {
+            "BTC/USDT:USDT": {"quoteVolume": 100_000_000},
+            "BTC/USDT": {"quoteVolume": 999_000_000},   # 현물 제외
+        }
+        client = self._client_with_tickers(tickers)
+        result = client.fetch_top_symbols(min_volume_usdt=1_000_000)
+        assert result == ["BTC/USDT:USDT"]
+
+    def test_limit_applied(self):
+        tickers = {
+            f"C{i}/USDT:USDT": {"quoteVolume": (10 - i) * 10_000_000}
+            for i in range(5)
+        }
+        client = self._client_with_tickers(tickers)
+        result = client.fetch_top_symbols(limit=2, min_volume_usdt=1_000_000)
+        assert len(result) == 2
+
+    def test_no_client_returns_empty(self):
+        client = MarketDataClient()
+        with patch.object(client, "_ensure_client", return_value=None):
+            assert client.fetch_top_symbols() == []

@@ -1,10 +1,10 @@
 """
 bot.py run() 통합 테스트 — 모든 외부 의존성을 mock하여
-run() 함수의 전체 흐름을 검증한다.
+전체 코인 스캔 기반 run() 흐름을 검증한다.
 """
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 
 import numpy as np
 import pandas as pd
@@ -25,10 +25,14 @@ MOCK_CONFIG = {
     "risk": {
         "min_rr_ratio": 2.0,
         "max_positions": 2,
+        "max_per_symbol": 1,
+        "max_same_direction": 3,
+        "max_exposure_pct": 0.80,
         "daily_loss_limit": 0.03,
         "weekly_loss_limit": 0.08,
         "max_consecutive_losses": 3,
     },
+    "scan": {"mode": "static", "min_score": 75, "require_volume": True},
 }
 
 
@@ -61,16 +65,29 @@ def _make_signal():
     )
 
 
+def _make_scan(qualified: bool, signal=None, score: float = 80.0):
+    """테스트용 ScanResult 객체를 반환한다."""
+    from src.strategy.signal_engine import ScanResult
+
+    return ScanResult(
+        symbol="BTC/USDT:USDT",
+        direction="long",
+        score=score,
+        stage=4 if qualified else 2,
+        qualified=qualified,
+        price=50000.0,
+        reason="test scan",
+        signal=signal,
+        checks={},
+    )
+
+
 # ── Fixture: DB 경로를 tmp_path로 교체 + 공통 mock 적용 ──────────────
 
 
 @pytest.fixture()
 def _run_env(tmp_path):
-    """run() 실행에 필요한 공통 mock 환경을 제공한다.
-
-    Returns:
-        dict: mock 객체들을 담은 딕셔너리
-    """
+    """run() 실행에 필요한 공통 mock 환경을 제공한다."""
     pe_db = tmp_path / "paper.db"
     cb_db = tmp_path / "cb.db"
 
@@ -88,9 +105,8 @@ def _run_env(tmp_path):
         patch("src.bot.load_config", return_value=MOCK_CONFIG),
         patch("src.risk.risk_manager.load_config", return_value=MOCK_CONFIG),
         patch("src.exchange.bybit_client.MarketDataClient", mock_client_cls),
-        patch(
-            "src.notification.discord_bot.DiscordNotifier", mock_notifier_cls
-        ),
+        patch("src.notification.discord_bot.DiscordNotifier", mock_notifier_cls),
+        patch("src.scan_store.save_scan_state"),
     ):
         yield {
             "client_cls": mock_client_cls,
@@ -104,34 +120,32 @@ def _run_env(tmp_path):
 
 
 class TestRunNoSignal:
-    """시그널이 없을 때 정상 종료되는지 검증."""
+    """확정 신호가 없을 때 진입하지 않는지 검증."""
 
     def test_run_no_signal(self, _run_env):
-        """generate_signal이 None을 반환하면 포지션 진입 없이 종료한다."""
+        """scan_symbol이 qualified=False면 포지션 진입 없이 종료한다."""
         with patch(
-            "src.strategy.signal_engine.generate_signal", return_value=None
+            "src.strategy.signal_engine.scan_symbol",
+            return_value=_make_scan(qualified=False),
         ):
             from src.bot import run
-
             run()
 
         notifier = _run_env["notifier"]
         notifier.notify_entry.assert_not_called()
-        notifier.notify_error.assert_not_called()
 
 
 class TestRunWithSignalEntry:
-    """시그널 발생 시 포지션 진입 흐름 검증."""
+    """확정 신호 발생 시 포지션 진입 흐름 검증."""
 
     def test_run_with_signal_entry(self, _run_env):
-        """유효한 시그널이 있으면 포지션을 진입하고 Discord 알림을 보낸다."""
-        signal = _make_signal()
+        """qualified 스캔 결과가 있으면 포지션을 진입하고 알림을 보낸다."""
+        scan = _make_scan(qualified=True, signal=_make_signal())
 
         with patch(
-            "src.strategy.signal_engine.generate_signal", return_value=signal
+            "src.strategy.signal_engine.scan_symbol", return_value=scan
         ):
             from src.bot import run
-
             run()
 
         notifier = _run_env["notifier"]
@@ -145,33 +159,29 @@ class TestRunCheckStops:
     """기존 포지션의 SL/TP 체크 흐름 검증."""
 
     def test_run_check_stops(self, _run_env):
-        """기존 포지션이 있을 때 check_stops가 호출되어 SL/TP를 체크한다."""
-        # 첫 번째 run: 포지션 진입
-        signal = _make_signal()
+        """보유 포지션이 있을 때 SL 히트 시 청산 알림이 발생한다."""
+        # 1차 run: 진입
+        scan = _make_scan(qualified=True, signal=_make_signal())
         with patch(
-            "src.strategy.signal_engine.generate_signal", return_value=signal
+            "src.strategy.signal_engine.scan_symbol", return_value=scan
         ):
             from src.bot import run
-
             run()
 
-        # 진입 확인
         notifier = _run_env["notifier"]
         notifier.notify_entry.assert_called_once()
 
-        # 두 번째 run: SL 히트 시뮬레이션 (low를 SL 이하로)
+        # 2차 run: SL 히트 (low를 SL 이하로)
         sl_ohlcv = _mock_ohlcv()
         sl_ohlcv.iloc[-1, sl_ohlcv.columns.get_loc("low")] = 49000.0
         _run_env["client"].fetch_ohlcv.return_value = sl_ohlcv
 
         with patch(
-            "src.strategy.signal_engine.generate_signal", return_value=None
+            "src.strategy.signal_engine.scan_symbol",
+            return_value=_make_scan(qualified=False),
         ):
             run()
 
-        # SL 히트로 청산 시 notify_exit 콜백이 실행됨
-        # (PaperEngine._fire_on_trade -> bot._on_trade -> notifier.notify_exit)
-        # 포지션이 SL에 걸렸으므로 exit 호출이 있어야 함
         assert notifier.notify_exit.called
 
 
@@ -179,16 +189,15 @@ class TestRunRiskBlocked:
     """서킷브레이커 차단 시 진입이 차단되는지 검증."""
 
     def test_run_risk_blocked(self, _run_env):
-        """서킷브레이커가 차단하면 시그널이 있어도 진입하지 않는다."""
-        signal = _make_signal()
+        """서킷브레이커가 차단하면 확정 신호가 있어도 진입하지 않는다."""
+        scan = _make_scan(qualified=True, signal=_make_signal())
 
         with patch(
-            "src.strategy.signal_engine.generate_signal", return_value=signal
+            "src.strategy.signal_engine.scan_symbol", return_value=scan
         ):
             from src.bot import run
             from src.risk.circuit_breaker import CircuitBreaker
 
-            # 연속 손실 3회를 기록하여 서킷브레이커 발동
             with patch.object(
                 CircuitBreaker,
                 "is_trading_allowed",
@@ -201,23 +210,20 @@ class TestRunRiskBlocked:
 
 
 class TestRunExchangeError:
-    """거래소 오류 발생 시 에러 핸들링 + Discord 알림 검증."""
+    """거래소 오류 발생 시 안전하게 처리되는지 검증."""
 
     def test_run_exchange_error(self, _run_env):
-        """fetch_current_price에서 예외 발생 시 notify_error가 호출된다."""
+        """fetch 예외 발생 시 해당 심볼을 건너뛰고 run()이 정상 종료한다."""
         _run_env["client"].fetch_current_price.side_effect = ConnectionError(
             "거래소 연결 실패"
         )
 
         with patch(
-            "src.strategy.signal_engine.generate_signal", return_value=None
+            "src.strategy.signal_engine.scan_symbol",
+            return_value=_make_scan(qualified=False),
         ):
             from src.bot import run
-
-            # run()은 예외를 내부에서 잡으므로 정상 종료되어야 함
-            run()
+            run()  # 예외 없이 종료해야 함
 
         notifier = _run_env["notifier"]
-        notifier.notify_error.assert_called_once()
-        error_msg = notifier.notify_error.call_args[0][0]
-        assert "거래소 연결 실패" in error_msg
+        notifier.notify_entry.assert_not_called()

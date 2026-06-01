@@ -116,6 +116,27 @@
         }
         .mono { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
         #equityChart { max-height: 300px; }
+        .watch-item {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            padding: 0.6rem 0.7rem;
+            color: #c9d1d9;
+            text-align: left;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .watch-item:hover {
+            border-color: var(--blue);
+            background: #1c2330;
+        }
+        .watch-item.active { border-color: var(--blue); background: #1c2330; }
+        .chart-btn {
+            border: 1px solid #21262d;
+            margin-right: 4px;
+        }
+        .chart-btn.active { outline: 2px solid var(--blue); }
+        .tf-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
     </style>
 </head>
 <body>
@@ -261,6 +282,86 @@
                     {% endfor %}
                     </tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 2.5: TradingView Chart + Watchlist -->
+    <div class="row g-3 mb-3">
+        <!-- Chart -->
+        <div class="col-lg-8">
+            <div class="card p-3">
+                <div class="section-title d-flex justify-content-between align-items-center">
+                    <span>차트 <span id="chartLabel" class="text-muted" style="font-weight:400;"></span></span>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button class="btn btn-outline-secondary tf-btn active" data-tf="15" onclick="setInterval15('15', this)">15m</button>
+                        <button class="btn btn-outline-secondary tf-btn" data-tf="60" onclick="setInterval15('60', this)">1H</button>
+                        <button class="btn btn-outline-secondary tf-btn" data-tf="240" onclick="setInterval15('240', this)">4H</button>
+                    </div>
+                </div>
+                <div style="position: relative; padding-top: 56%;">
+                    <iframe id="tvChart" title="TradingView Chart"
+                        style="position:absolute; top:0; left:0; width:100%; height:100%; border:0; border-radius:8px;"
+                        src="" allowfullscreen></iframe>
+                </div>
+                <!-- 포지션 차트 전환 버튼 -->
+                {% if positions %}
+                <div class="mt-2">
+                    <span class="text-muted me-2" style="font-size:0.8rem;">보유:</span>
+                    {% for p in positions %}
+                    <button class="btn btn-sm chart-btn mb-1 {{ 'badge-long' if p.direction == 'long' else 'badge-short' }}"
+                        onclick="loadChart('{{ p.tradingview }}', '{{ p.symbol }}', this)">
+                        {{ p.symbol.split('/')[0] }} {{ p.direction|upper }}
+                    </button>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Watchlist -->
+        <div class="col-lg-4">
+            <div class="card p-3 h-100">
+                <div class="section-title d-flex justify-content-between align-items-center">
+                    <span>관심종목 (진입 임박)</span>
+                    <span class="text-muted" style="font-weight:400; font-size:0.78rem;">
+                        스캔 {{ scan.get('scanned_count', 0) }} · 확정 {{ scan.get('qualified_count', 0) }}
+                    </span>
+                </div>
+                {% if watchlist %}
+                <div style="max-height: 360px; overflow-y: auto;">
+                    {% for w in watchlist %}
+                    <button class="watch-item w-100 mb-2"
+                        onclick="loadChart('{{ w.tradingview }}', '{{ w.symbol }}', this)">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge {{ 'badge-long' if w.direction == 'long' else ('badge-short' if w.direction == 'short' else '') }}">
+                                    {{ w.direction|upper if w.direction != 'none' else '·' }}
+                                </span>
+                                <strong>{{ w.symbol.split('/')[0] }}</strong>
+                                {% if w.qualified %}<span class="badge badge-pass">진입</span>{% endif %}
+                            </div>
+                            <div class="text-end">
+                                <span class="mono fw-bold" style="color: {{ 'var(--green)' if w.score >= 75 else 'var(--gold)' if w.score >= 50 else 'var(--muted)' }};">
+                                    {{ "%.0f"|format(w.score) }}
+                                </span>
+                                <span class="text-muted" style="font-size:0.7rem;">/100</span>
+                            </div>
+                        </div>
+                        <div class="promote-progress mt-1" style="height:4px;">
+                            <div class="promote-fill" style="width: {{ w.score }}%; background: {{ 'var(--green)' if w.score >= 75 else 'var(--gold)' if w.score >= 50 else 'var(--muted)' }};"></div>
+                        </div>
+                        <div class="text-muted mt-1" style="font-size:0.72rem; text-align:left;">{{ w.reason }}</div>
+                    </button>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-5">
+                    <div style="font-size:1.5rem;">&#128064;</div>
+                    조건에 근접한 관심종목이 없습니다.<br>
+                    봇이 스캔하면 여기에 표시됩니다.
+                </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -445,6 +546,56 @@
 </div>
 
 <script>
+    // ── TradingView Chart 제어 ──────────────────────────────────
+    let currentTvSymbol = null;
+    let currentInterval = '15';
+
+    function buildTvUrl(tvSymbol, interval) {
+        const params = new URLSearchParams({
+            symbol: tvSymbol,
+            interval: interval,
+            theme: 'dark',
+            style: '1',
+            timezone: 'Asia/Seoul',
+            hide_side_toolbar: '0',
+            allow_symbol_change: '1',
+            studies: 'STD;EMA',
+            locale: 'kr',
+        });
+        return 'https://s.tradingview.com/widgetembed/?' + params.toString();
+    }
+
+    function loadChart(tvSymbol, label, btn) {
+        currentTvSymbol = tvSymbol;
+        document.getElementById('tvChart').src = buildTvUrl(tvSymbol, currentInterval);
+        document.getElementById('chartLabel').textContent = '— ' + (label || tvSymbol);
+        // active 표시
+        document.querySelectorAll('.watch-item, .chart-btn').forEach(b => b.classList.remove('active'));
+        if (btn) btn.classList.add('active');
+    }
+
+    function setInterval15(interval, btn) {
+        currentInterval = interval;
+        document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+        if (btn) btn.classList.add('active');
+        if (currentTvSymbol) {
+            document.getElementById('tvChart').src = buildTvUrl(currentTvSymbol, interval);
+        }
+    }
+
+    // 초기 차트: 첫 보유 포지션 → 없으면 첫 관심종목 → 없으면 BTC
+    (function initChart() {
+        {% if positions %}
+        loadChart('{{ positions[0].tradingview }}', '{{ positions[0].symbol }}',
+                  document.querySelector('.chart-btn'));
+        {% elif watchlist %}
+        loadChart('{{ watchlist[0].tradingview }}', '{{ watchlist[0].symbol }}',
+                  document.querySelector('.watch-item'));
+        {% else %}
+        loadChart('BYBIT:BTCUSDT.P', 'BTC/USDT', null);
+        {% endif %}
+    })();
+
     // Equity Curve Chart
     const equityData = {{ equity_json | safe }};
 

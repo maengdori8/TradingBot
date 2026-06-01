@@ -272,6 +272,66 @@ class MarketDataClient:
         """
         return float(self.fetch_ticker(symbol)["last"])
 
+    def fetch_top_symbols(
+        self,
+        limit: int = 30,
+        quote: str = "USDT",
+        min_volume_usdt: float = 5_000_000.0,
+    ) -> list[str]:
+        """Bybit USDT 무기한 선물 중 거래량 상위 심볼을 조회한다.
+
+        24시간 명목 거래대금(quoteVolume) 기준으로 정렬하여 유동성이 높은
+        심볼만 반환한다. 슬리피지가 큰 저유동성 코인을 자동 배제한다.
+
+        Args:
+            limit: 반환할 최대 심볼 수
+            quote: 견적 통화 (기본 USDT)
+            min_volume_usdt: 최소 24h 거래대금 필터
+
+        Returns:
+            'BTC/USDT:USDT' 형식 심볼 리스트 (거래량 내림차순).
+            조회 실패 시 빈 리스트.
+        """
+        client = self._ensure_client(
+            "bybit", ccxt.bybit, {"options": {"defaultType": "swap"}}
+        )
+        if client is None:
+            logger.warning("Bybit 클라이언트 없음 — top symbols 조회 불가")
+            return []
+
+        try:
+            tickers = _retry_call(client.fetch_tickers)
+        except Exception as exc:
+            logger.warning(
+                "top symbols 조회 실패: %s — %s",
+                type(exc).__name__, str(exc)[:160],
+            )
+            return []
+
+        scored: list[tuple[str, float]] = []
+        for sym, t in tickers.items():
+            # linear USDT 무기한만: 'BTC/USDT:USDT'
+            if not sym.endswith(f":{quote}"):
+                continue
+            if f"/{quote}:" not in sym:
+                continue
+            vol = t.get("quoteVolume") or 0.0
+            try:
+                vol = float(vol)
+            except (TypeError, ValueError):
+                vol = 0.0
+            if vol < min_volume_usdt:
+                continue
+            scored.append((sym, vol))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        result = [s for s, _ in scored[:limit]]
+        logger.info(
+            "거래량 상위 심볼 %d개 선정 (전체 %d개 중 필터 통과 %d개)",
+            len(result), len(tickers), len(scored),
+        )
+        return result
+
 
 # 하위 호환
 BybitPublicClient = MarketDataClient

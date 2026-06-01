@@ -2,7 +2,7 @@ testnet: true
 
 exchange:
   name: bybit
-  symbols:
+  symbols:                      # scan.mode=static 일 때만 사용하는 고정 목록
     - "BTC/USDT:USDT"
     - "ETH/USDT:USDT"
     - "SOL/USDT:USDT"
@@ -14,6 +14,15 @@ exchange:
     - "15m"
     - "1h"
     - "4h"
+
+scan:
+  mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
+  top_n: 40                     # 스캔할 거래량 상위 코인 수
+  min_volume_usdt: 5000000      # 24h 거래대금 최소 필터 (저유동성 배제)
+  min_score: 75                 # 진입 확정 최소 컨플루언스 점수 (엄격도 ↑)
+  watchlist_min_score: 40       # 관심종목 표시 최소 점수
+  watchlist_size: 12            # 대시보드 관심종목 최대 표시 수
+  require_volume: true          # 거래량 확인 게이트
 
 capital:
   total_capital: 5000        # 전체 자산 USDT

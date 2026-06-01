@@ -35,6 +35,45 @@ class TradeSignal:
     rr_ratio: float
 
 
+@dataclass
+class ScanResult:
+    """심볼 스캔 결과 — 진입 신호 + 관심종목(watchlist) 근접도 점수.
+
+    score(0~100)는 ICT 컨플루언스 충족 정도를 나타낸다.
+    qualified=True 이면 즉시 진입 가능한 확정 신호이며 signal 필드가 채워진다.
+    qualified=False 라도 score가 높으면 '진입 임박' 관심종목으로 분류된다.
+    """
+
+    symbol: str
+    direction: Literal["long", "short", "none"]
+    score: float            # 0~100 컨플루언스 점수
+    stage: int              # 통과한 단계 수 (0~4)
+    qualified: bool         # 즉시 진입 가능 여부
+    price: float
+    reason: str
+    signal: TradeSignal | None = None
+    checks: dict | None = None   # 단계별 통과 여부 상세
+
+    def to_dict(self) -> dict:
+        """대시보드/JSON 직렬화용 딕셔너리 변환."""
+        return {
+            "symbol": self.symbol,
+            "direction": self.direction,
+            "score": round(self.score, 1),
+            "stage": self.stage,
+            "qualified": self.qualified,
+            "price": self.price,
+            "reason": self.reason,
+            "checks": self.checks or {},
+            "signal": {
+                "entry_price": self.signal.entry_price,
+                "stop_loss": self.signal.stop_loss,
+                "take_profit": self.signal.take_profit,
+                "rr_ratio": self.signal.rr_ratio,
+            } if self.signal else None,
+        }
+
+
 def generate_signal(
     df_4h: pd.DataFrame,
     df_1h: pd.DataFrame,
@@ -191,3 +230,167 @@ def generate_signal(
         atr, atr_multiplier,
     )
     return signal
+
+
+# 컨플루언스 점수 가중치 (합계 100)
+_W_TREND_BOS = 30.0      # 4H BOS (강한 추세)
+_W_TREND_CHOCH = 22.0    # 4H CHoCH (전환)
+_W_ZONE_BOTH = 30.0      # 1H FVG + OB 동시
+_W_ZONE_ONE = 20.0       # 1H FVG 또는 OB 하나
+_W_KZ = 15.0             # Kill Zone 내부
+_W_OTE_MAX = 25.0        # OTE (깊이에 따라 가중)
+
+
+def scan_symbol(
+    df_4h: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    symbol: str,
+    current_price: float,
+    min_rr: float = 1.5,
+    min_score: float = 70.0,
+    require_volume: bool = True,
+) -> ScanResult:
+    """심볼을 스캔하여 진입 신호 + 관심종목 근접도 점수를 산출한다.
+
+    모든 코인을 스캔할 때 사용한다. 각 ICT 단계의 충족도를 0~100 점수로 환산하며,
+    모든 단계 통과 + R:R + min_score + 거래량 확인을 만족할 때만 qualified=True
+    (즉시 진입). 그 외에는 score 기반 관심종목으로 분류된다.
+
+    Args:
+        df_4h: 4시간봉 데이터
+        df_1h: 1시간봉 데이터
+        df_15m: 15분봉 데이터
+        symbol: 거래 심볼
+        current_price: 현재 가격
+        min_rr: 최소 R:R 비율
+        min_score: 진입 확정 최소 컨플루언스 점수 (엄격도)
+        require_volume: 거래량 확인 게이트 사용 여부
+
+    Returns:
+        ScanResult
+    """
+    checks: dict = {
+        "trend": False, "zone": False, "kill_zone": False,
+        "ote": False, "volume": False, "rr": False,
+    }
+    score = 0.0
+    stage = 0
+    direction: Literal["long", "short", "none"] = "none"
+
+    # ── 1단계: 4H 추세 ───────────────────────────────────────────────
+    bos_4h = detect_bos(df_4h)
+    choch_4h = detect_choch(df_4h)
+    trend = bos_4h or choch_4h
+    if trend is None:
+        return ScanResult(
+            symbol=symbol, direction="none", score=0.0, stage=0,
+            qualified=False, price=current_price,
+            reason="4H 구조 불명확", checks=checks,
+        )
+    direction = "long" if trend == "bullish" else "short"
+    structure_type = "BOS" if bos_4h else "CHoCH"
+    score += _W_TREND_BOS if bos_4h else _W_TREND_CHOCH
+    checks["trend"] = True
+    stage = 1
+
+    # ── 2단계: 1H OB / FVG 존 ────────────────────────────────────────
+    fvg_1h = detect_fvg(df_1h)
+    ob_1h = detect_order_blocks(df_1h)
+    in_fvg = is_price_in_fvg(current_price, fvg_1h)
+    in_ob = is_price_in_ob(current_price, ob_1h)
+    if direction == "long":
+        in_fvg = [f for f in in_fvg if f.type == "bullish"]
+        in_ob = [o for o in in_ob if o.type == "bullish"]
+    else:
+        in_fvg = [f for f in in_fvg if f.type == "bearish"]
+        in_ob = [o for o in in_ob if o.type == "bearish"]
+
+    if in_fvg and in_ob:
+        score += _W_ZONE_BOTH
+        zone_source = "FVG+OB"
+        checks["zone"] = True
+        stage = 2
+    elif in_fvg or in_ob:
+        score += _W_ZONE_ONE
+        zone_source = "FVG" if in_fvg else "OB"
+        checks["zone"] = True
+        stage = 2
+    else:
+        zone_source = "-"
+        # 존 미진입이면 관심종목 후보 (추세만 잡힘)
+        return ScanResult(
+            symbol=symbol, direction=direction, score=score, stage=1,
+            qualified=False, price=current_price,
+            reason=f"4H {trend}({structure_type}) · 1H 존 대기",
+            checks=checks,
+        )
+
+    # ── 3단계: 15m Kill Zone ─────────────────────────────────────────
+    now = datetime.now(timezone.utc)
+    kz_active = is_in_kill_zone(now)
+    active_session = get_active_session(now)
+    if kz_active:
+        score += _W_KZ
+        checks["kill_zone"] = True
+        stage = 3
+
+    # ── 4단계: OTE 존 (깊이 가중) ────────────────────────────────────
+    recent_high = df_15m["high"].rolling(20).max().iloc[-1]
+    recent_low = df_15m["low"].rolling(20).min().iloc[-1]
+    ote_zone = calculate_ote_zone(recent_high, recent_low, direction)
+    in_ote = is_price_in_ote(current_price, ote_zone)
+    if in_ote:
+        # OTE 중앙(0.705 부근)에 가까울수록 높은 점수
+        lo, hi = ote_zone.ote_low, ote_zone.ote_high
+        if hi > lo:
+            mid = (lo + hi) / 2.0
+            centered = 1.0 - min(1.0, abs(current_price - mid) / ((hi - lo) / 2.0))
+        else:
+            centered = 1.0
+        score += _W_OTE_MAX * (0.6 + 0.4 * centered)
+        checks["ote"] = True
+        if stage == 3:
+            stage = 4
+
+    # ── 거래량 확인 (죽은 코인 배제) ──────────────────────────────────
+    vol = df_15m["volume"]
+    vol_avg = vol.rolling(20).mean().iloc[-1]
+    vol_now = vol.iloc[-1]
+    volume_ok = bool(vol_now >= vol_avg * 0.8) if vol_avg > 0 else True
+    checks["volume"] = volume_ok
+
+    # ── R:R 확인용 신호 생성 시도 ────────────────────────────────────
+    signal: TradeSignal | None = None
+    rr_ok = False
+    if checks["trend"] and checks["zone"] and checks["kill_zone"] and checks["ote"]:
+        signal = generate_signal(
+            df_4h, df_1h, df_15m, symbol, current_price, min_rr=min_rr
+        )
+        if signal:
+            rr_ok = signal.rr_ratio >= min_rr
+            checks["rr"] = rr_ok
+            signal.reason = (
+                f"{signal.reason} · score {score:.0f}"
+            )
+
+    # ── 확정 여부 판정 (엄격) ────────────────────────────────────────
+    qualified = bool(
+        signal is not None
+        and rr_ok
+        and score >= min_score
+        and (volume_ok or not require_volume)
+    )
+
+    reason = (
+        f"4H {trend}({structure_type}) · 1H {zone_source}"
+        f"{' · KZ' + ('✓' if kz_active else '✗')}"
+        f"{' · OTE✓' if in_ote else ' · OTE대기'}"
+        f"{' · 거래량✓' if volume_ok else ' · 거래량부족'}"
+    )
+
+    return ScanResult(
+        symbol=symbol, direction=direction, score=score, stage=stage,
+        qualified=qualified, price=current_price, reason=reason,
+        signal=signal if qualified else None, checks=checks,
+    )

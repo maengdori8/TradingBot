@@ -20,6 +20,8 @@ import numpy as np
 import yaml
 from flask import Flask, jsonify, render_template
 
+from src.scan_store import load_scan_state, to_tradingview
+
 ROOT = Path(__file__).parent.parent.parent
 DB_PATH = ROOT / "logs" / "paper_trades.db"
 CB_DB_PATH = ROOT / "logs" / "circuit_breaker.db"
@@ -350,6 +352,13 @@ def index():
 
     conn.close()
 
+    # 각 포지션에 TradingView 심볼 추가
+    for p in positions:
+        p["tradingview"] = to_tradingview(p["symbol"])
+
+    # 관심종목(watchlist) 스캔 상태 로드
+    scan = load_scan_state()
+
     return render_template(
         "index.html",
         balance=balance,
@@ -361,6 +370,8 @@ def index():
         cb_status=cb_status,
         promote=promote,
         config=cfg,
+        scan=scan,
+        watchlist=scan.get("watchlist", []),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
 
@@ -383,6 +394,10 @@ def api_status():
 
     conn.close()
 
+    scan = load_scan_state()
+    for p in positions:
+        p["tradingview"] = to_tradingview(p["symbol"])
+
     return jsonify({
         "balance": balance,
         "initial_balance": initial_balance,
@@ -391,6 +406,7 @@ def api_status():
         "recent_trades": trades[:20],
         "equity_curve": equity,
         "circuit_breaker": cb_status,
+        "scan": scan,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
