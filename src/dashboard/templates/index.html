@@ -149,10 +149,26 @@
                 <h4 class="mb-0 fw-bold">
                     <span style="color: var(--blue);">ICT</span> Paper Trading
                 </h4>
-                <small class="text-muted">{{ config.get('exchange', {}).get('symbols', []) | join(', ') }} &middot; {{ config.get('exchange', {}).get('leverage', 5) }}x</small>
+                <small class="text-muted">
+                    {% if config.get('scan', {}).get('mode') == 'dynamic' %}
+                        거래량 상위 {{ config.get('scan', {}).get('top_n', 40) }}개 스캔
+                    {% else %}
+                        {{ config.get('exchange', {}).get('symbols', []) | join(', ') }}
+                    {% endif %}
+                    &middot;
+                    {% if config.get('exchange', {}).get('auto_leverage') %}
+                        자동 레버리지 ~{{ config.get('exchange', {}).get('max_leverage', 10) }}x
+                    {% else %}
+                        {{ config.get('exchange', {}).get('leverage', 5) }}x
+                    {% endif %}
+                </small>
             </div>
             <div class="text-end">
-                <span class="refresh-note">{{ now }}</span>
+                <span class="refresh-note">화면: {{ now }}</span>
+                <br>
+                <span class="refresh-note">
+                    마지막 스캔: {{ (scan.get('updated_at') or '없음')[:19] | replace('T', ' ') }}
+                </span>
                 <br>
                 <span class="refresh-note">60초마다 자동 새로고침</span>
             </div>

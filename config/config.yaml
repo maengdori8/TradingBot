@@ -19,6 +19,9 @@ exchange:
     - "1h"
     - "4h"
 
+runner:
+  interval_sec: 300             # 로컬 주기 실행 간격(초). 5분마다 전체 스캔
+
 scan:
   mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
   top_n: 40                     # 스캔할 거래량 상위 코인 수
