@@ -5,6 +5,10 @@ exchange:
   symbols:
     - "BTC/USDT:USDT"
     - "ETH/USDT:USDT"
+    - "SOL/USDT:USDT"
+    - "XRP/USDT:USDT"
+    - "DOGE/USDT:USDT"
+    - "AVAX/USDT:USDT"
   leverage: 5
   timeframes:
     - "15m"
@@ -14,14 +18,17 @@ exchange:
 capital:
   total_capital: 5000        # 전체 자산 USDT
   trading_allocation: 0.25   # 트레이딩 투입 비율 (25% = 1250 USDT)
-  risk_per_trade: 0.01       # 트레이딩 자본의 1% 리스크
+  risk_per_trade: 0.005      # 트레이딩 자본의 0.5% 리스크 (4포지션 × 0.5% = 최대 2%)
 
 risk:
-  min_rr_ratio: 2.0          # 최소 R:R = 1:2
-  max_positions: 2           # 동시 최대 포지션 수
-  daily_loss_limit: 0.03     # 트레이딩 자본 3% 손실 시 당일 중단
-  weekly_loss_limit: 0.08    # 트레이딩 자본 8% 손실 시 주간 중단
-  max_consecutive_losses: 3  # 3연패 시 1일 강제 휴식
+  min_rr_ratio: 1.5          # 최소 R:R = 1:1.5 (더 많은 진입 기회)
+  max_positions: 4           # 동시 최대 포지션 수
+  max_per_symbol: 1          # 심볼당 최대 1포지션 (분산 강제)
+  max_same_direction: 3      # 같은 방향 최대 3포지션 (한쪽 쏠림 방지)
+  max_exposure_pct: 0.80     # 총 담보금 < 트레이딩 자본 80%
+  daily_loss_limit: 0.05     # 트레이딩 자본 5% 손실 시 당일 중단
+  weekly_loss_limit: 0.12    # 트레이딩 자본 12% 손실 시 주간 중단
+  max_consecutive_losses: 5  # 5연패 시 1일 강제 휴식
 
 promote:
   min_trades: 20

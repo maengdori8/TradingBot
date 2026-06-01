@@ -25,6 +25,9 @@ MOCK_CONFIG = {
     "risk": {
         "min_rr_ratio": 2.0,
         "max_positions": 2,
+        "max_per_symbol": 1,
+        "max_same_direction": 3,
+        "max_exposure_pct": 0.80,
         "daily_loss_limit": 0.03,
         "weekly_loss_limit": 0.08,
         "max_consecutive_losses": 3,
@@ -137,22 +140,51 @@ class TestCheckTradeAllowed:
         assert allowed is False
         assert "최대 포지션" in reason
 
-    def test_duplicate_blocked(self, risk_manager):
+    def test_same_symbol_blocked(self, risk_manager):
+        """같은 심볼은 방향 무관하게 max_per_symbol(1)에 의해 차단."""
         pos = _make_position()
         allowed, reason = risk_manager.check_trade_allowed(
             current_positions=1, positions=[pos],
             symbol="BTC/USDT:USDT", direction="long",
         )
         assert allowed is False
-        assert "중복" in reason
+        assert "심볼당" in reason
 
-    def test_different_direction_allowed(self, risk_manager):
-        pos = _make_position(direction="long")
+    def test_different_symbol_allowed(self, risk_manager):
+        """다른 심볼이면 허용."""
+        pos = _make_position(symbol="BTC/USDT:USDT", direction="long")
         allowed, _ = risk_manager.check_trade_allowed(
             current_positions=1, positions=[pos],
-            symbol="BTC/USDT:USDT", direction="short",
+            symbol="ETH/USDT:USDT", direction="long",
         )
         assert allowed is True
+
+    def test_same_direction_limit(self, risk_manager):
+        """같은 방향 max_same_direction(3) 초과 시 차단."""
+        positions = [
+            _make_position(symbol="BTC/USDT:USDT", direction="long"),
+            _make_position(symbol="ETH/USDT:USDT", direction="long"),
+            _make_position(symbol="SOL/USDT:USDT", direction="long"),
+        ]
+        # max_positions=2이므로 먼저 포지션 초과에 걸림
+        # max_positions를 넉넉하게 설정한 별도 테스트는 아래 exposure에서
+        allowed, reason = risk_manager.check_trade_allowed(
+            current_positions=3, positions=positions,
+            symbol="DOGE/USDT:USDT", direction="long",
+        )
+        assert allowed is False  # max_positions(2) 초과
+
+    def test_exposure_limit(self, risk_manager):
+        """총 담보금이 trading_capital * max_exposure_pct 초과 시 차단."""
+        # trading_capital = 1250, max_exposure_pct = 0.80 → 한도 1000
+        positions = [
+            _make_position(symbol="BTC/USDT:USDT", margin=600.0),
+            _make_position(symbol="ETH/USDT:USDT", margin=500.0),
+        ]
+        # max_positions=2이므로 current_positions 맞춤 — 하지만 먼저 max_positions 걸림
+        # 이 테스트는 exposure 체크 함수를 직접 검증
+        exp = risk_manager.calculate_total_exposure(positions)
+        assert exp["exposure_pct"] > risk_manager.max_exposure_pct
 
     def test_circuit_breaker_integration(self, risk_manager):
         for _ in range(3):

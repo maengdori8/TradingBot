@@ -40,6 +40,9 @@ class RiskManager:
         self.leverage: float = cfg["exchange"]["leverage"]
         self.min_rr: float = risk["min_rr_ratio"]
         self.max_positions: int = risk["max_positions"]
+        self.max_per_symbol: int = risk.get("max_per_symbol", 1)
+        self.max_same_direction: int = risk.get("max_same_direction", 3)
+        self.max_exposure_pct: float = risk.get("max_exposure_pct", 0.80)
 
         self.cb: CircuitBreaker = CircuitBreaker(
             trading_capital=self.trading_capital,
@@ -99,11 +102,27 @@ class RiskManager:
         if current_positions >= self.max_positions:
             return False, f"최대 포지션 초과 ({current_positions}/{self.max_positions})"
 
-        # 같은 심볼 같은 방향 중복 포지션 차단
-        if positions and symbol and direction:
-            for pos in positions:
-                if pos.symbol == symbol and pos.direction == direction:
-                    return False, f"중복 포지션 차단: {symbol} {direction} 이미 보유 중"
+        # 심볼당 포지션 수 제한 (분산 강제)
+        if positions and symbol:
+            symbol_count = sum(1 for p in positions if p.symbol == symbol)
+            if symbol_count >= self.max_per_symbol:
+                return False, f"심볼당 최대 포지션 초과: {symbol} ({symbol_count}/{self.max_per_symbol})"
+
+        # 같은 방향 쏠림 방지
+        if positions and direction:
+            same_dir = sum(1 for p in positions if p.direction == direction)
+            if same_dir >= self.max_same_direction:
+                return False, f"동일 방향 최대 초과: {direction} ({same_dir}/{self.max_same_direction})"
+
+        # 총 담보금 노출 한도 체크
+        if positions:
+            total_margin = sum(p.margin for p in positions)
+            if total_margin / self.trading_capital >= self.max_exposure_pct:
+                return False, (
+                    f"총 노출 한도 초과: "
+                    f"{total_margin:.0f}/{self.trading_capital * self.max_exposure_pct:.0f} USDT "
+                    f"({total_margin / self.trading_capital * 100:.0f}%)"
+                )
 
         return True, "OK"
 
