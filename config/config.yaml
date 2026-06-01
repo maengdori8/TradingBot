@@ -23,7 +23,7 @@ scan:
   mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
   top_n: 40                     # 스캔할 거래량 상위 코인 수
   min_volume_usdt: 5000000      # 24h 거래대금 최소 필터 (저유동성 배제)
-  min_score: 75                 # 진입 확정 최소 컨플루언스 점수 (엄격도 ↑)
+  min_score: 70                 # 진입 확정 최소 컨플루언스 점수 (70+ 진입, 차등 리스크)
   watchlist_min_score: 40       # 관심종목 표시 최소 점수
   watchlist_size: 12            # 대시보드 관심종목 최대 표시 수
   require_volume: true          # 거래량 확인 게이트
@@ -31,10 +31,10 @@ scan:
 capital:
   total_capital: 5000        # 전체 자산 USDT
   trading_allocation: 0.25   # 트레이딩 투입 비율 (25% = 1250 USDT)
-  risk_per_trade: 0.005      # 트레이딩 자본의 0.5% 리스크 (4포지션 × 0.5% = 최대 2%)
+  risk_per_trade: 0.005      # 기본 리스크 (risk_tiers 미적용 시 fallback)
 
 risk:
-  min_rr_ratio: 1.5          # 최소 R:R = 1:1.5 (더 많은 진입 기회)
+  min_rr_ratio: 2.0          # 최소 R:R = 1:2 (40개 스캔으로 빈도 확보, 승률 부담↓)
   max_positions: 4           # 동시 최대 포지션 수
   max_per_symbol: 1          # 심볼당 최대 1포지션 (분산 강제)
   max_same_direction: 3      # 같은 방향 최대 3포지션 (한쪽 쏠림 방지)
@@ -42,6 +42,11 @@ risk:
   daily_loss_limit: 0.05     # 트레이딩 자본 5% 손실 시 당일 중단
   weekly_loss_limit: 0.12    # 트레이딩 자본 12% 손실 시 주간 중단
   max_consecutive_losses: 5  # 5연패 시 1일 강제 휴식
+  # 컨플루언스 점수별 차등 리스크 (강한 셋업 크게, 약한 셋업 작게)
+  risk_tiers:
+    - {min_score: 85, risk_pct: 0.007}   # A급: 풀 컨플루언스
+    - {min_score: 75, risk_pct: 0.005}   # B급: 표준
+    - {min_score: 70, risk_pct: 0.003}   # C급: 가볍게
 
 promote:
   min_trades: 20

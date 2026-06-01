@@ -136,7 +136,7 @@ def run() -> None:
             continue
 
         sig = res.signal
-        params = risk.calculate_trade_params(sig.entry_price, sig.stop_loss)
+        params = risk.calculate_trade_params(sig.entry_price, sig.stop_loss, score=res.score)
         pos = paper.open_position(
             symbol=res.symbol, direction=sig.direction,
             entry_price=sig.entry_price, qty=params["qty"],

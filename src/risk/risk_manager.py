@@ -55,6 +55,13 @@ class RiskManager:
         self.min_leverage: float = exch.get("min_leverage", 1.0)
         self.liq_buffer: float = exch.get("liq_buffer", 2.0)
 
+        # 컨플루언스 점수별 차등 리스크 (내림차순 정렬)
+        self.risk_tiers: list[dict] = sorted(
+            risk.get("risk_tiers", []),
+            key=lambda t: t["min_score"],
+            reverse=True,
+        )
+
         self.cb: CircuitBreaker = CircuitBreaker(
             trading_capital=self.trading_capital,
             daily_loss_limit=risk["daily_loss_limit"],
@@ -141,7 +148,29 @@ class RiskManager:
     # 트레이드 파라미터 계산
     # ------------------------------------------------------------------
 
-    def calculate_trade_params(self, entry: float, stop_loss: float) -> dict:
+    def risk_pct_for_score(self, score: float | None) -> float:
+        """컨플루언스 점수에 해당하는 리스크 비율을 반환한다.
+
+        risk_tiers가 설정돼 있으면 점수가 속한 티어의 risk_pct를 사용하고,
+        없거나 점수 미제공 시 기본 risk_per_trade를 반환한다.
+
+        Args:
+            score: 컨플루언스 점수 (0~100), None이면 기본값
+
+        Returns:
+            적용할 리스크 비율 (예: 0.005)
+        """
+        if score is None or not self.risk_tiers:
+            return self.risk_per_trade
+        for tier in self.risk_tiers:   # 내림차순 정렬됨
+            if score >= tier["min_score"]:
+                return float(tier["risk_pct"])
+        # 어떤 티어에도 못 미치면 가장 낮은 티어 값
+        return float(self.risk_tiers[-1]["risk_pct"])
+
+    def calculate_trade_params(
+        self, entry: float, stop_loss: float, score: float | None = None
+    ) -> dict:
         """
         리스크 기반 트레이드 파라미터 계산.
 
@@ -149,13 +178,19 @@ class RiskManager:
         자동 산출한다 (타이트한 손절 → 높은 레버리지, 청산가는 항상 손절가
         바깥). 꺼져 있으면 config의 고정 레버리지를 사용한다.
 
+        score가 주어지면 risk_tiers에 따라 리스크 비율을 차등 적용한다
+        (강한 셋업은 크게, 약한 셋업은 작게).
+
         Args:
             entry: 진입 가격
             stop_loss: 손절 가격
+            score: 컨플루언스 점수 (차등 리스크용, None이면 기본 리스크)
 
         Returns:
-            qty, entry, stop_loss, take_profit, leverage 포함 딕셔너리
+            qty, entry, stop_loss, take_profit, leverage, risk_pct 포함 딕셔너리
         """
+        risk_pct = self.risk_pct_for_score(score)
+
         if self.auto_leverage:
             leverage = float(calculate_auto_leverage(
                 entry, stop_loss,
@@ -168,15 +203,16 @@ class RiskManager:
 
         qty = calculate_position_size(
             self.trading_capital,
-            self.risk_per_trade,
+            risk_pct,
             entry,
             stop_loss,
             leverage,
         )
         tp = calculate_take_profit(entry, stop_loss, self.min_rr)
         logger.info(
-            "트레이드 파라미터: entry=%.4f SL=%.4f qty=%.6f leverage=%gx (auto=%s)",
-            entry, stop_loss, qty, leverage, self.auto_leverage,
+            "트레이드 파라미터: entry=%.4f SL=%.4f qty=%.6f leverage=%gx "
+            "risk=%.2f%% (score=%s, auto_lev=%s)",
+            entry, stop_loss, qty, leverage, risk_pct * 100, score, self.auto_leverage,
         )
         return {
             "qty": qty,
@@ -184,6 +220,7 @@ class RiskManager:
             "stop_loss": stop_loss,
             "take_profit": tp,
             "leverage": leverage,
+            "risk_pct": risk_pct,
         }
 
     # ------------------------------------------------------------------

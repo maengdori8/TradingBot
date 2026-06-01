@@ -208,6 +208,60 @@ class TestCalculateTradeParams:
         params = risk_manager.calculate_trade_params(entry=50000, stop_loss=49000)
         assert params["leverage"] == 5  # MOCK_CONFIG 고정 레버리지
 
+    def test_default_risk_when_no_tiers(self, risk_manager):
+        """risk_tiers 미설정 시 기본 risk_per_trade 사용."""
+        params = risk_manager.calculate_trade_params(entry=50000, stop_loss=49000, score=90)
+        assert params["risk_pct"] == risk_manager.risk_per_trade
+
+
+class TestTieredRisk:
+    @pytest.fixture
+    def tiered_rm(self, tmp_path):
+        db = tmp_path / "tier_cb.db"
+        cfg = {**MOCK_CONFIG}
+        cfg["risk"] = {
+            **MOCK_CONFIG["risk"],
+            "risk_tiers": [
+                {"min_score": 85, "risk_pct": 0.007},
+                {"min_score": 75, "risk_pct": 0.005},
+                {"min_score": 70, "risk_pct": 0.003},
+            ],
+        }
+        with patch("src.risk.risk_manager.load_config", return_value=cfg), \
+             patch.object(cb_module, "DB_PATH", db):
+            from src.risk.risk_manager import RiskManager
+            yield RiskManager()
+
+    def test_tiers_sorted_desc(self, tiered_rm):
+        scores = [t["min_score"] for t in tiered_rm.risk_tiers]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_a_grade_high_risk(self, tiered_rm):
+        assert tiered_rm.risk_pct_for_score(90) == 0.007
+        assert tiered_rm.risk_pct_for_score(85) == 0.007
+
+    def test_b_grade_mid_risk(self, tiered_rm):
+        assert tiered_rm.risk_pct_for_score(80) == 0.005
+        assert tiered_rm.risk_pct_for_score(75) == 0.005
+
+    def test_c_grade_low_risk(self, tiered_rm):
+        assert tiered_rm.risk_pct_for_score(72) == 0.003
+        assert tiered_rm.risk_pct_for_score(70) == 0.003
+
+    def test_below_lowest_tier_uses_min(self, tiered_rm):
+        """최저 티어 미만 점수도 가장 낮은 티어 값 적용."""
+        assert tiered_rm.risk_pct_for_score(50) == 0.003
+
+    def test_none_score_uses_default(self, tiered_rm):
+        assert tiered_rm.risk_pct_for_score(None) == tiered_rm.risk_per_trade
+
+    def test_higher_score_larger_qty(self, tiered_rm):
+        """점수 높을수록 더 큰 포지션 수량."""
+        p_a = tiered_rm.calculate_trade_params(50000, 49000, score=90)
+        p_c = tiered_rm.calculate_trade_params(50000, 49000, score=70)
+        assert p_a["qty"] > p_c["qty"]
+        assert p_a["risk_pct"] > p_c["risk_pct"]
+
 
 class TestAutoLeverage:
     @pytest.fixture
