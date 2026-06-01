@@ -53,6 +53,51 @@ def calculate_position_size(
     return round(qty, 6)
 
 
+def calculate_auto_leverage(
+    entry_price: float,
+    stop_loss_price: float,
+    max_leverage: float = 10.0,
+    min_leverage: float = 1.0,
+    liq_buffer: float = 2.0,
+) -> int:
+    """손절 거리 기반 자동 레버리지 산출.
+
+    청산가가 항상 손절가보다 멀리 있도록 보장한다. 청산은 손실이 증거금에
+    근접할 때(≈ 1/leverage 거리) 발생하므로, 청산 거리가 손절 거리의
+    liq_buffer 배가 되도록 레버리지를 정한다.
+
+        leverage = 1 / (liq_buffer * sl_distance_pct)
+
+    예) 손절 2% + liq_buffer 2.0 → 청산 4% 거리 목표 → 레버리지 25x
+        (단, max_leverage로 상한 제한)
+
+    손절이 타이트할수록 레버리지가 높아(증거금 절약), 넓을수록 낮아진다.
+
+    Args:
+        entry_price: 진입 가격
+        stop_loss_price: 손절 가격
+        max_leverage: 레버리지 상한
+        min_leverage: 레버리지 하한
+        liq_buffer: 청산 거리 / 손절 거리 배수 (클수록 보수적)
+
+    Returns:
+        정수 레버리지 (min~max 범위)
+    """
+    if entry_price <= 0 or stop_loss_price <= 0:
+        raise ValueError("가격은 양수여야 합니다.")
+    if liq_buffer <= 0:
+        raise ValueError("liq_buffer는 양수여야 합니다.")
+
+    sl_distance_pct = abs(entry_price - stop_loss_price) / entry_price
+    if sl_distance_pct == 0:
+        return int(max_leverage)
+
+    raw = 1.0 / (liq_buffer * sl_distance_pct)
+    leverage = max(min_leverage, min(max_leverage, raw))
+    result = int(leverage)  # 정수 내림 (보수적)
+    return max(int(min_leverage), result)
+
+
 def calculate_stop_loss_atr(
     df: pd.DataFrame,
     direction: str,

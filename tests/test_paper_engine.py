@@ -77,6 +77,43 @@ def test_balance_unchanged_after_roundtrip(engine):
     assert engine.balance > initial * 0.99  # 1% 이상 감소 없어야 함
 
 
+def test_leverage_reduces_margin(engine):
+    """레버리지 적용 시 묶이는 증거금 = 명목가 / 레버리지."""
+    # 명목가 = 50000 * 0.01 * (1+슬리피지) ≈ 500.25
+    pos = engine.open_position(
+        "BTC/USDT", "long", entry_price=50000, qty=0.01,
+        stop_loss=49000, take_profit=52000, leverage=10,
+    )
+    assert pos is not None
+    notional = pos.entry_price * pos.qty
+    assert pos.margin == pytest.approx(notional / 10, rel=1e-6)
+
+
+def test_leverage_allows_larger_position(engine):
+    """레버리지로 잔고보다 큰 명목 포지션 진입 가능."""
+    # 잔고 1000, 명목가 5000 (qty 0.1 * 50000) → lev 10이면 증거금 500
+    pos = engine.open_position(
+        "BTC/USDT", "long", entry_price=50000, qty=0.1,
+        stop_loss=49000, take_profit=52000, leverage=10,
+    )
+    assert pos is not None
+    assert pos.margin == pytest.approx(50000 * 0.1 * (1 + SLIPPAGE) / 10, rel=1e-6)
+
+
+def test_leveraged_margin_returned_on_close(engine):
+    """청산 시 증거금이 반환되고 잔고가 회복된다."""
+    initial = engine.balance
+    pos = engine.open_position(
+        "BTC/USDT", "long", 50000, 0.01, 49000, 52000, leverage=5,
+    )
+    after_open = engine.balance
+    assert after_open < initial  # 증거금 차감
+    engine.close_position(pos, 50000, "manual")  # 본전 청산 (슬리피지/수수료만 손실)
+    # 증거금 반환 후 잔고는 초기 근처 (수수료/슬리피지만큼만 감소)
+    assert engine.balance > after_open
+    assert engine.balance < initial
+
+
 def test_performance_metrics(engine):
     """성과 지표 계산 확인"""
     for _ in range(3):

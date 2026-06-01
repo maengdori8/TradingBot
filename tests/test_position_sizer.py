@@ -5,7 +5,12 @@ sys.path.insert(0, "/home/claude/trading-bot")
 import pandas as pd
 import numpy as np
 import pytest
-from src.risk.position_sizer import calculate_position_size, calculate_stop_loss_atr, calculate_take_profit
+from src.risk.position_sizer import (
+    calculate_position_size,
+    calculate_stop_loss_atr,
+    calculate_take_profit,
+    calculate_auto_leverage,
+)
 
 
 def test_basic_position_size():
@@ -55,6 +60,51 @@ def test_take_profit_rr3():
     """R:R 1:3 목표가 계산"""
     tp = calculate_take_profit(50000, 49000, rr_ratio=3.0)
     assert tp == pytest.approx(53000.0)
+
+
+class TestAutoLeverage:
+    """손절 거리 기반 자동 레버리지 테스트."""
+
+    def test_tight_stop_higher_leverage(self):
+        """타이트한 손절(1%)은 넓은 손절(5%)보다 높은 레버리지."""
+        lev_tight = calculate_auto_leverage(100, 99, max_leverage=50)   # 1%
+        lev_wide = calculate_auto_leverage(100, 95, max_leverage=50)    # 5%
+        assert lev_tight > lev_wide
+
+    def test_formula(self):
+        """레버리지 = 1 / (liq_buffer * sl_pct), 내림."""
+        # SL 2%, buffer 2.0 → 1/(2*0.02)=25
+        lev = calculate_auto_leverage(100, 98, max_leverage=50, liq_buffer=2.0)
+        assert lev == 25
+
+    def test_max_cap(self):
+        """상한 초과 시 max_leverage로 제한."""
+        # SL 0.5%, buffer 2.0 → raw=100 → max 10으로 제한
+        lev = calculate_auto_leverage(100, 99.5, max_leverage=10, liq_buffer=2.0)
+        assert lev == 10
+
+    def test_min_floor(self):
+        """매우 넓은 손절은 min_leverage로 제한."""
+        # SL 50%, buffer 2.0 → raw=1.0
+        lev = calculate_auto_leverage(100, 50, max_leverage=10, min_leverage=1)
+        assert lev == 1
+
+    def test_liq_always_beyond_sl(self):
+        """청산 거리(1/lev)가 항상 손절 거리보다 멀다 (buffer>=1)."""
+        entry, sl = 100.0, 97.0   # 3%
+        lev = calculate_auto_leverage(entry, sl, max_leverage=50, liq_buffer=2.0)
+        sl_pct = abs(entry - sl) / entry
+        liq_pct = 1.0 / lev       # 대략적 청산 거리
+        assert liq_pct > sl_pct
+
+    def test_short_direction(self):
+        """숏(SL이 진입가 위)도 동일하게 동작."""
+        lev = calculate_auto_leverage(100, 102, max_leverage=50, liq_buffer=2.0)
+        assert lev == 25   # 2% 손절
+
+    def test_invalid_price_raises(self):
+        with pytest.raises(ValueError):
+            calculate_auto_leverage(0, 100)
 
 
 def test_atr_stop_loss():

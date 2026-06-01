@@ -12,7 +12,11 @@ import yaml
 
 from src.paper_trading import Position
 from src.risk.circuit_breaker import CircuitBreaker
-from src.risk.position_sizer import calculate_position_size, calculate_take_profit
+from src.risk.position_sizer import (
+    calculate_auto_leverage,
+    calculate_position_size,
+    calculate_take_profit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +38,22 @@ class RiskManager:
         cap = cfg["capital"]
         risk = cfg["risk"]
 
+        exch = cfg["exchange"]
         self.total_capital: float = cap["total_capital"]
         self.trading_capital: float = self.total_capital * cap["trading_allocation"]
         self.risk_per_trade: float = cap["risk_per_trade"]
-        self.leverage: float = cfg["exchange"]["leverage"]
+        self.leverage: float = exch["leverage"]
         self.min_rr: float = risk["min_rr_ratio"]
         self.max_positions: int = risk["max_positions"]
         self.max_per_symbol: int = risk.get("max_per_symbol", 1)
         self.max_same_direction: int = risk.get("max_same_direction", 3)
         self.max_exposure_pct: float = risk.get("max_exposure_pct", 0.80)
+
+        # 자동 레버리지 설정 (포지션별 손절 거리 기반)
+        self.auto_leverage: bool = exch.get("auto_leverage", False)
+        self.max_leverage: float = exch.get("max_leverage", self.leverage)
+        self.min_leverage: float = exch.get("min_leverage", 1.0)
+        self.liq_buffer: float = exch.get("liq_buffer", 2.0)
 
         self.cb: CircuitBreaker = CircuitBreaker(
             trading_capital=self.trading_capital,
@@ -134,26 +145,45 @@ class RiskManager:
         """
         리스크 기반 트레이드 파라미터 계산.
 
+        auto_leverage가 켜져 있으면 손절 거리에 따라 포지션별 레버리지를
+        자동 산출한다 (타이트한 손절 → 높은 레버리지, 청산가는 항상 손절가
+        바깥). 꺼져 있으면 config의 고정 레버리지를 사용한다.
+
         Args:
             entry: 진입 가격
             stop_loss: 손절 가격
 
         Returns:
-            qty, entry, stop_loss, take_profit 포함 딕셔너리
+            qty, entry, stop_loss, take_profit, leverage 포함 딕셔너리
         """
+        if self.auto_leverage:
+            leverage = float(calculate_auto_leverage(
+                entry, stop_loss,
+                max_leverage=self.max_leverage,
+                min_leverage=self.min_leverage,
+                liq_buffer=self.liq_buffer,
+            ))
+        else:
+            leverage = self.leverage
+
         qty = calculate_position_size(
             self.trading_capital,
             self.risk_per_trade,
             entry,
             stop_loss,
-            self.leverage,
+            leverage,
         )
         tp = calculate_take_profit(entry, stop_loss, self.min_rr)
+        logger.info(
+            "트레이드 파라미터: entry=%.4f SL=%.4f qty=%.6f leverage=%gx (auto=%s)",
+            entry, stop_loss, qty, leverage, self.auto_leverage,
+        )
         return {
             "qty": qty,
             "entry": entry,
             "stop_loss": stop_loss,
             "take_profit": tp,
+            "leverage": leverage,
         }
 
     # ------------------------------------------------------------------

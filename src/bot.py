@@ -141,6 +141,7 @@ def run() -> None:
             symbol=res.symbol, direction=sig.direction,
             entry_price=sig.entry_price, qty=params["qty"],
             stop_loss=sig.stop_loss, take_profit=sig.take_profit,
+            leverage=params["leverage"],
         )
         if pos:
             entered += 1

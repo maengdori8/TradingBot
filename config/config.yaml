@@ -9,7 +9,11 @@ exchange:
     - "XRP/USDT:USDT"
     - "DOGE/USDT:USDT"
     - "AVAX/USDT:USDT"
-  leverage: 5
+  leverage: 5                   # auto_leverage=false 일 때 사용하는 고정 레버리지
+  auto_leverage: true           # 포지션별 손절 거리 기반 레버리지 자동 설정
+  max_leverage: 10              # 자동 레버리지 상한
+  min_leverage: 1               # 자동 레버리지 하한
+  liq_buffer: 2.0               # 청산거리 / 손절거리 배수 (클수록 보수적, 청산 여유↑)
   timeframes:
     - "15m"
     - "1h"

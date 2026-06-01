@@ -383,6 +383,7 @@
                             <th>손절가</th>
                             <th>목표가</th>
                             <th>담보금</th>
+                            <th>레버리지</th>
                             <th>R:R</th>
                             <th>진입 시각</th>
                         </tr>
@@ -401,6 +402,13 @@
                             <td class="mono negative">{{ "%.2f"|format(p.stop_loss) }}</td>
                             <td class="mono positive">{{ "%.2f"|format(p.take_profit) }}</td>
                             <td class="mono">{{ "%.2f"|format(p.margin) }}</td>
+                            <td class="mono">
+                                {% if p.margin > 0 %}
+                                    {{ "%.0f"|format(p.entry_price * p.qty / p.margin) }}x
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
                             <td class="mono">
                                 {% set risk = (p.entry_price - p.stop_loss) | abs %}
                                 {% set reward = (p.take_profit - p.entry_price) | abs %}

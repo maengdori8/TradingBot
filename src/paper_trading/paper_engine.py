@@ -277,9 +277,13 @@ class PaperEngine(TradingEngine):
         qty: float,
         stop_loss: float,
         take_profit: float,
+        leverage: float = 1.0,
     ) -> Position | None:
         """
         포지션 진입 — 담보금 및 수수료 차감.
+
+        레버리지가 적용되면 실제 묶이는 증거금은 명목가/레버리지이며,
+        수수료는 명목가 기준으로 부과된다 (실거래와 동일).
 
         Args:
             symbol: 거래 심볼 (예: "BTC/USDT:USDT")
@@ -288,14 +292,17 @@ class PaperEngine(TradingEngine):
             qty: 수량 (코인 단위)
             stop_loss: 손절 가격
             take_profit: 목표가
+            leverage: 레버리지 배수 (기본 1.0)
 
         Returns:
             생성된 Position 또는 잔고 부족 시 None
         """
         actual_entry = self._apply_slippage(entry_price, direction, is_entry=True)
         notional = round(actual_entry * qty, 8)
-        entry_fee = self._fee(notional)
-        total_cost = round(notional + entry_fee, 8)  # 담보금 + 수수료
+        lev = leverage if leverage and leverage > 0 else 1.0
+        margin = round(notional / lev, 8)        # 실제 묶이는 증거금
+        entry_fee = self._fee(notional)          # 수수료는 명목가 기준
+        total_cost = round(margin + entry_fee, 8)  # 증거금 + 수수료
 
         if total_cost > self._balance:
             logger.warning(
@@ -303,7 +310,7 @@ class PaperEngine(TradingEngine):
             )
             return None
 
-        self._balance = round(self._balance - total_cost, 8)  # 담보금 + 수수료 차감
+        self._balance = round(self._balance - total_cost, 8)  # 증거금 + 수수료 차감
         self._save_balance()
         pos = Position(
             id=_generate_position_id(),
@@ -313,17 +320,19 @@ class PaperEngine(TradingEngine):
             qty=qty,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            margin=notional,
+            margin=margin,
         )
         self._positions.append(pos)
         self._save_position(pos)
         logger.info(
-            "[PAPER] %s %s 진입: id=%s price=%.4f qty=%.4f margin=%.2f",
+            "[PAPER] %s %s 진입: id=%s price=%.4f qty=%.4f margin=%.2f lev=%gx notional=%.2f",
             symbol,
             direction.upper(),
             pos.id,
             actual_entry,
             qty,
+            margin,
+            lev,
             notional,
         )
         return pos

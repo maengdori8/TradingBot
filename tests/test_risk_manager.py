@@ -200,6 +200,47 @@ class TestCalculateTradeParams:
         assert params["take_profit"] > 50000
         assert params["entry"] == 50000
         assert params["stop_loss"] == 49000
+        assert "leverage" in params
+
+    def test_fixed_leverage_when_auto_off(self, risk_manager):
+        """auto_leverage 미설정(기본 off)이면 config 고정 레버리지 사용."""
+        assert risk_manager.auto_leverage is False
+        params = risk_manager.calculate_trade_params(entry=50000, stop_loss=49000)
+        assert params["leverage"] == 5  # MOCK_CONFIG 고정 레버리지
+
+
+class TestAutoLeverage:
+    @pytest.fixture
+    def auto_rm(self, tmp_path):
+        db = tmp_path / "auto_cb.db"
+        cfg = {**MOCK_CONFIG}
+        cfg["exchange"] = {
+            **MOCK_CONFIG["exchange"],
+            "auto_leverage": True,
+            "max_leverage": 10,
+            "min_leverage": 1,
+            "liq_buffer": 2.0,
+        }
+        with patch("src.risk.risk_manager.load_config", return_value=cfg), \
+             patch.object(cb_module, "DB_PATH", db):
+            from src.risk.risk_manager import RiskManager
+            yield RiskManager()
+
+    def test_auto_leverage_enabled(self, auto_rm):
+        assert auto_rm.auto_leverage is True
+        assert auto_rm.max_leverage == 10
+
+    def test_tight_stop_gets_higher_leverage(self, auto_rm):
+        """타이트한 손절(6%)이 넓은 손절(10%)보다 높은 레버리지 (둘 다 cap 미만)."""
+        # max 10x: 6% → 1/(2*0.06)=8, 10% → 1/(2*0.10)=5
+        p_tight = auto_rm.calculate_trade_params(entry=50000, stop_loss=47000)  # 6%
+        p_wide = auto_rm.calculate_trade_params(entry=50000, stop_loss=45000)   # 10%
+        assert p_tight["leverage"] > p_wide["leverage"]
+
+    def test_leverage_capped(self, auto_rm):
+        """매우 타이트한 손절도 max_leverage(10) 초과 안 함."""
+        p = auto_rm.calculate_trade_params(entry=50000, stop_loss=49900)  # 0.2%
+        assert p["leverage"] <= 10
 
 
 class TestExposure:
