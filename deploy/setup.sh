@@ -41,6 +41,18 @@ else
     echo "  ⚠ apt/dnf 둘 다 없음 — 수동으로 python3/pip/venv 설치 필요"
 fi
 
+# ── 1.5) 저사양 VM 스왑 메모리 (RAM < 1.5GB 시 자동 생성) ────────────
+MEM_KB="$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+if [ "$MEM_KB" -lt 1572864 ] && [ ! -f /swapfile ]; then
+    echo "[1.5] RAM 부족 감지 ($((MEM_KB/1024))MB) — 2GB 스왑 생성..."
+    sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+    echo "  스왑 2GB 활성화 완료"
+fi
+
 # ── 2) 가상환경 + 의존성 ─────────────────────────────────────────────
 echo "[2/4] 가상환경 생성 및 의존성 설치..."
 if [ ! -d "$VENV_DIR" ]; then
