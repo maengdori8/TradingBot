@@ -163,6 +163,24 @@ class DiscordNotifier:
         self._send(payload)
         logger.info("Discord 실전 전환 알림 전송")
 
+    def notify_tuning(self, decision: dict) -> None:
+        """자동 파라미터 학습 조정 알림.
+
+        Args:
+            decision: learner의 조정 결과 (param, old, new, reason)
+        """
+        payload = self._embed(
+            title="🧠 자동 학습 — 진입 기준 조정",
+            description=decision.get("reason", ""),
+            color=self.COLOR["info"],
+            fields=[
+                {"name": "파라미터", "value": f"`{decision.get('param', '?')}`", "inline": True},
+                {"name": "변경", "value": f"`{decision.get('old')}` → `{decision.get('new')}`", "inline": True},
+            ],
+        )
+        self._send(payload)
+        logger.info("Discord 자동학습 알림 전송")
+
     def notify_daily_report(self, stats: dict) -> None:
         """일일 성과 리포트."""
         pnl = stats.get("total_pnl", 0)

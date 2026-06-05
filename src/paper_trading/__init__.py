@@ -23,6 +23,12 @@ class Position:
     margin: float
     entry_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     unrealized_pnl: float = 0.0
+    # 진입 시점 ICT 맥락 (자동 학습용, 모두 옵셔널 = 하위호환)
+    entry_score: float | None = None       # 컨플루언스 점수 0~100
+    entry_session: str | None = None       # "london" | "newyork" | None
+    entry_checks: dict | None = None        # ICT 단계별 통과여부
+    entry_rr: float | None = None           # 진입 시 목표 R:R
+    risk_amount: float | None = None        # |entry-stop|*qty (R-multiple 산출용)
 
 
 class TradingEngine(ABC):

@@ -13,7 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,8 +32,9 @@ logger = logging.getLogger("bot")
 
 
 def load_config() -> dict:
-    with open(ROOT / "config" / "config.yaml") as f:
-        return yaml.safe_load(f)
+    # config.yaml + 학습 오버레이(logs/learned_params.yaml) 병합 로더 일원화
+    from src.config_loader import load_config as _load
+    return _load()
 
 
 def _resolve_symbols(cfg: dict, client) -> list[str]:
@@ -55,6 +55,7 @@ def _resolve_symbols(cfg: dict, client) -> list[str]:
 def run() -> None:
     from src.exchange.bybit_client import MarketDataClient
     from src.strategy.signal_engine import scan_symbol
+    from src.strategy.kill_zone import get_active_session
     from src.risk.risk_manager import RiskManager
     from src.paper_trading.paper_engine import PaperEngine
     from src.notification.discord_bot import DiscordNotifier
@@ -137,11 +138,14 @@ def run() -> None:
 
         sig = res.signal
         params = risk.calculate_trade_params(sig.entry_price, sig.stop_loss, score=res.score)
+        entry_session = get_active_session(datetime.now(timezone.utc))
         pos = paper.open_position(
             symbol=res.symbol, direction=sig.direction,
             entry_price=sig.entry_price, qty=params["qty"],
             stop_loss=sig.stop_loss, take_profit=sig.take_profit,
             leverage=params["leverage"],
+            score=res.score, checks=res.checks,
+            entry_rr=sig.rr_ratio, entry_session=entry_session,
         )
         if pos:
             entered += 1
@@ -204,6 +208,13 @@ def run() -> None:
         if now.hour % 6 == 0 and now.minute < 15:
             notifier.notify_daily_report(perf)
             logger.info("일일 리포트 Discord 발송 완료")
+
+    # 자동 파라미터 학습 (청산거래 분석 → 진입기준 자동 조정, 오버레이 기록)
+    try:
+        from src.risk.learner import maybe_update
+        maybe_update(paper, notifier)
+    except Exception as e:
+        logger.warning("자동 학습 오류(무시): %s", e)
 
     logger.info("══════ 완료 ══════")
 

@@ -5,10 +5,7 @@ config.yaml에서 모든 파라미터를 읽어오며, 거래 결과 콜백 패�
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Callable, Literal
-
-import yaml
 
 from src.paper_trading import Position
 from src.risk.circuit_breaker import CircuitBreaker
@@ -20,13 +17,11 @@ from src.risk.position_sizer import (
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).parent.parent.parent
-
 
 def load_config() -> dict:
-    """config/config.yaml 파일에서 설정을 로드한다."""
-    with open(ROOT / "config" / "config.yaml") as f:
-        return yaml.safe_load(f)
+    """config.yaml + 학습 오버레이를 병합해 로드한다 (config_loader 일원화)."""
+    from src.config_loader import load_config as _load
+    return _load()
 
 
 class RiskManager:

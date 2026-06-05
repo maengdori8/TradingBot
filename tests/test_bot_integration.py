@@ -107,6 +107,7 @@ def _run_env(tmp_path):
         patch("src.exchange.bybit_client.MarketDataClient", mock_client_cls),
         patch("src.notification.discord_bot.DiscordNotifier", mock_notifier_cls),
         patch("src.scan_store.save_scan_state"),
+        patch("src.risk.learner.maybe_update"),   # 자동학습 격리 (실제 파일 미접근)
     ):
         yield {
             "client_cls": mock_client_cls,

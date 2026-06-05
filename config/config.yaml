@@ -58,3 +58,18 @@ promote:
   max_mdd: 0.05
   min_sharpe: 1.0
   min_return_pct: 0.0
+
+# 자동 학습 (청산거래 분석 → 진입기준 자동 조정)
+# 이 파일은 자동으로 수정되지 않음. 학습 결과는 logs/learned_params.yaml 오버레이에 기록되어
+# 로드 시 병합된다. 학습을 끄려면 enabled: false.
+learning:
+  enabled: true                 # 자동 학습 on/off
+  dry_run: false                # true면 제안만(오버레이 미적용)
+  min_trades_to_learn: 20       # 전역 최소 청산 거래 수 (미달 시 학습 보류)
+  every_n_trades: 5             # 직전 평가 이후 신규 청산 N건 쌓여야 재평가
+  cooldown_trades: 10           # 같은 파라미터 재조정 전 최소 신규 청산 수
+  lookback_trades: 0            # 분석 윈도우 (0=전체)
+  deadband_R: 0.05              # 기대값 노이즈 무시 폭 (R)
+  bucket_min_n: 12              # 점수버킷 조정 최소 표본
+  session_min_n: 10             # 세션 세그먼트 최소 표본
+  global_min_n_for_min_score: 20  # min_score 조정 전역 최소 표본

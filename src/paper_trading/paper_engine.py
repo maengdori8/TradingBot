@@ -7,6 +7,7 @@ TradingEngine 추상 인터페이스 구현
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -64,8 +65,35 @@ def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
             margin REAL, entry_time TEXT
         )
     """)
+    # 자동 학습용 진입조건 컬럼 멱등 추가 (기존 DB 하위호환)
+    _migrate_columns(conn, "trades", {
+        "entry_score": "REAL", "entry_session": "TEXT",
+        "c_trend": "INT", "c_zone": "INT", "c_kill_zone": "INT",
+        "c_ote": "INT", "c_volume": "INT", "c_rr": "INT",
+        "entry_rr": "REAL", "risk_amount": "REAL", "r_multiple": "REAL",
+    })
+    _migrate_columns(conn, "open_positions", {
+        "entry_score": "REAL", "entry_session": "TEXT",
+        "entry_checks_json": "TEXT", "entry_rr": "REAL", "risk_amount": "REAL",
+    })
     conn.commit()
     return conn
+
+
+def _migrate_columns(
+    conn: sqlite3.Connection, table: str, cols: dict[str, str]
+) -> None:
+    """테이블에 없는 컬럼만 ALTER TABLE로 추가한다 (멱등).
+
+    Args:
+        conn: SQLite 연결
+        table: 대상 테이블명
+        cols: {컬럼명: 타입} 매핑
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, ctype in cols.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ctype}")
 
 
 def _generate_position_id() -> str:
@@ -163,11 +191,13 @@ class PaperEngine(TradingEngine):
     # ------------------------------------------------------------------
 
     def _save_position(self, pos: Position) -> None:
-        """열린 포지션을 DB에 저장."""
+        """열린 포지션을 DB에 저장 (진입조건 포함)."""
+        checks_json = json.dumps(pos.entry_checks) if pos.entry_checks else None
         self.conn.execute(
             """INSERT OR REPLACE INTO open_positions
-               (id, symbol, direction, entry_price, qty, stop_loss, take_profit, margin, entry_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, symbol, direction, entry_price, qty, stop_loss, take_profit, margin, entry_time,
+                entry_score, entry_session, entry_checks_json, entry_rr, risk_amount)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pos.id,
                 pos.symbol,
@@ -178,6 +208,11 @@ class PaperEngine(TradingEngine):
                 pos.take_profit,
                 pos.margin,
                 pos.entry_time.isoformat(),
+                pos.entry_score,
+                pos.entry_session,
+                checks_json,
+                pos.entry_rr,
+                pos.risk_amount,
             ),
         )
         self.conn.commit()
@@ -190,12 +225,14 @@ class PaperEngine(TradingEngine):
         self.conn.commit()
 
     def _restore_positions(self) -> None:
-        """봇 재시작 시 열린 포지션 복원."""
+        """봇 재시작 시 열린 포지션 복원 (진입조건 포함)."""
         rows = self.conn.execute(
-            "SELECT id, symbol, direction, entry_price, qty, stop_loss, take_profit, margin, entry_time "
+            "SELECT id, symbol, direction, entry_price, qty, stop_loss, take_profit, margin, entry_time, "
+            "entry_score, entry_session, entry_checks_json, entry_rr, risk_amount "
             "FROM open_positions"
         ).fetchall()
         for row in rows:
+            checks = json.loads(row[11]) if row[11] else None
             pos = Position(
                 id=row[0],
                 symbol=row[1],
@@ -206,6 +243,11 @@ class PaperEngine(TradingEngine):
                 take_profit=row[6],
                 margin=row[7],
                 entry_time=datetime.fromisoformat(row[8]),
+                entry_score=row[9],
+                entry_session=row[10],
+                entry_checks=checks,
+                entry_rr=row[12],
+                risk_amount=row[13],
             )
             self._positions.append(pos)
         if rows:
@@ -278,6 +320,10 @@ class PaperEngine(TradingEngine):
         stop_loss: float,
         take_profit: float,
         leverage: float = 1.0,
+        score: float | None = None,
+        checks: dict | None = None,
+        entry_rr: float | None = None,
+        entry_session: str | None = None,
     ) -> Position | None:
         """
         포지션 진입 — 담보금 및 수수료 차감.
@@ -293,6 +339,10 @@ class PaperEngine(TradingEngine):
             stop_loss: 손절 가격
             take_profit: 목표가
             leverage: 레버리지 배수 (기본 1.0)
+            score: 진입 컨플루언스 점수 (학습용, 옵셔널)
+            checks: 진입 ICT 조건 dict (학습용, 옵셔널)
+            entry_rr: 진입 목표 R:R (학습용, 옵셔널)
+            entry_session: 진입 세션 london/newyork/None (학습용, 옵셔널)
 
         Returns:
             생성된 Position 또는 잔고 부족 시 None
@@ -312,6 +362,8 @@ class PaperEngine(TradingEngine):
 
         self._balance = round(self._balance - total_cost, 8)  # 증거금 + 수수료 차감
         self._save_balance()
+        # R-multiple 산출용 리스크 금액 (슬리피지 적용 진입가 기준)
+        risk_amount = round(abs(actual_entry - stop_loss) * qty, 8)
         pos = Position(
             id=_generate_position_id(),
             symbol=symbol,
@@ -321,6 +373,11 @@ class PaperEngine(TradingEngine):
             stop_loss=stop_loss,
             take_profit=take_profit,
             margin=margin,
+            entry_score=score,
+            entry_session=entry_session,
+            entry_checks=checks,
+            entry_rr=entry_rr,
+            risk_amount=risk_amount,
         )
         self._positions.append(pos)
         self._save_position(pos)
@@ -386,13 +443,28 @@ class PaperEngine(TradingEngine):
         self._balance = round(self._balance + released_margin + pnl, 8)
         self._save_balance()
 
+        # R-multiple = 순손익 / 리스크금액 (이번 청산분 비례). risk_amount 없으면 None.
+        if position.risk_amount and position.risk_amount > 0:
+            risk_portion = round(position.risk_amount * close_ratio, 8)
+            r_multiple = round(pnl / risk_portion, 6)
+        else:
+            risk_portion = None
+            r_multiple = None
+
+        ck = position.entry_checks or {}
+        def _b(key: str) -> int | None:
+            return int(bool(ck[key])) if key in ck else None
+
         now = datetime.now(timezone.utc).isoformat()
         trade_id = f"{position.id}-{now}" if is_partial else position.id
         self.conn.execute(
             """INSERT INTO trades
                (id, symbol, direction, entry_price, exit_price,
-                qty, pnl, pnl_pct, margin, entry_time, exit_time, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                qty, pnl, pnl_pct, margin, entry_time, exit_time, status,
+                entry_score, entry_session, c_trend, c_zone, c_kill_zone,
+                c_ote, c_volume, c_rr, entry_rr, risk_amount, r_multiple)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 trade_id,
                 position.symbol,
@@ -406,14 +478,23 @@ class PaperEngine(TradingEngine):
                 position.entry_time.isoformat(),
                 now,
                 reason,
+                position.entry_score,
+                position.entry_session,
+                _b("trend"), _b("zone"), _b("kill_zone"),
+                _b("ote"), _b("volume"), _b("rr"),
+                position.entry_rr,
+                risk_portion,
+                r_multiple,
             ),
         )
         self.conn.commit()
 
         if is_partial:
-            # 부분 청산: 잔여 수량과 마진 갱신
+            # 부분 청산: 잔여 수량/마진/리스크금액 비례 감소
             position.qty = round(position.qty - close_qty, 8)
             position.margin = round(position.margin - released_margin, 8)
+            if position.risk_amount is not None and risk_portion is not None:
+                position.risk_amount = round(position.risk_amount - risk_portion, 8)
             self._save_position(position)
             logger.info(
                 "[PAPER] %s 부분청산(%s): qty=%.6f PnL=%.4f (%.2f%%) 잔여=%.6f",
