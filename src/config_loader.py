@@ -31,7 +31,7 @@ def _in_range(v: float, lo: float, hi: float) -> bool:
 
 def _load_yaml(path: Path) -> dict:
     """YAML 파일을 dict로 로드한다 (빈 파일이면 {})."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 

@@ -13,6 +13,13 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Windows cp949 콘솔에서 이모지/박스문자 출력 시 UnicodeEncodeError 방지
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from dotenv import load_dotenv
 
 load_dotenv()

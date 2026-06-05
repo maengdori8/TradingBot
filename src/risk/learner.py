@@ -433,7 +433,7 @@ def _current_overlay() -> dict:
     """기존 오버레이를 읽는다 (없으면 빈 구조)."""
     if OVERLAY_PATH.exists():
         try:
-            with open(OVERLAY_PATH) as f:
+            with open(OVERLAY_PATH, encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except (OSError, yaml.YAMLError):
             pass
@@ -513,7 +513,7 @@ def write_overlay(adj: dict, raw_cfg: dict, total_n: int) -> bool:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml.safe_dump(overlay, f, allow_unicode=True, sort_keys=False)
         # 검증: 재파싱 + 가드레일 범위
-        with open(tmp) as f:
+        with open(tmp, encoding="utf-8") as f:
             reloaded = yaml.safe_load(f)
         if not _validate_overlay(reloaded):
             raise ValueError("오버레이 가드레일 검증 실패")

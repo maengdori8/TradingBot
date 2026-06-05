@@ -31,7 +31,7 @@ logger = logging.getLogger("runner")
 def _load_interval(default: int = 900) -> int:
     """config.yaml의 runner.interval_sec 값을 읽는다 (없으면 기본값)."""
     try:
-        with open(ROOT / "config" / "config.yaml") as f:
+        with open(ROOT / "config" / "config.yaml", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         return int(cfg.get("runner", {}).get("interval_sec", default))
     except (FileNotFoundError, ValueError, TypeError):

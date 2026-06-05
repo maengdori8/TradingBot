@@ -27,6 +27,13 @@ ROOT = Path(__file__).parent.parent.parent
 DB_PATH = ROOT / "logs" / "paper_trades.db"
 CB_DB_PATH = ROOT / "logs" / "circuit_breaker.db"
 
+# Windows cp949 콘솔 출력 인코딩 방어
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -43,7 +50,7 @@ app = Flask(__name__, template_folder=str(Path(__file__).parent / "templates"))
 def _load_config() -> dict:
     """config.yaml 로드."""
     try:
-        with open(ROOT / "config" / "config.yaml") as f:
+        with open(ROOT / "config" / "config.yaml", encoding="utf-8") as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
         return {}

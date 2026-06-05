@@ -106,7 +106,7 @@ class PromoteChecker:
         """
         config_path = ROOT / "config" / "config.yaml"
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 full = yaml.safe_load(f) or {}
             return full.get("promote", {})
         except FileNotFoundError:

@@ -21,7 +21,7 @@ def load_strategy_params() -> dict:
     """
     global _PARAMS
     if _PARAMS is None:
-        with open(_ROOT / "config" / "strategy_params.yaml") as f:
+        with open(_ROOT / "config" / "strategy_params.yaml", encoding="utf-8") as f:
             _PARAMS = yaml.safe_load(f)
     return _PARAMS
 

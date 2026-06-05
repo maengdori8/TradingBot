@@ -12,6 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 import yaml
 
 from src.exchange.bybit_client import MarketDataClient
@@ -27,7 +33,7 @@ logger = logging.getLogger("backtest")
 
 def load_config() -> dict:
     """config.yaml 로드."""
-    with open(ROOT / "config" / "config.yaml") as f:
+    with open(ROOT / "config" / "config.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
