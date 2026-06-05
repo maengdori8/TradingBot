@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="60">
     <title>ICT Paper Trading Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -164,13 +163,17 @@
                 </small>
             </div>
             <div class="text-end">
-                <span class="refresh-note">화면: {{ now }}</span>
+                <div>
+                    <span class="text-muted" style="font-size:0.75rem;">실시간 평가액</span>
+                    <span id="liveEquity" class="mono fw-bold" style="font-size:1.15rem;">{{ "%.2f"|format(balance) }}</span>
+                    <span id="liveUpnl" class="mono" style="font-size:0.85rem;"></span>
+                </div>
+                <span class="refresh-note" id="liveClock">연결 중…</span>
+                <span class="refresh-note" id="liveDot" style="color:var(--green);">●</span>
                 <br>
                 <span class="refresh-note">
                     마지막 스캔: {{ (scan.get('updated_at') or '없음')[:19] | replace('T', ' ') }}
                 </span>
-                <br>
-                <span class="refresh-note">60초마다 자동 새로고침</span>
             </div>
         </div>
     </div>
@@ -382,68 +385,31 @@
         </div>
     </div>
 
-    <!-- Row 3: Open Positions -->
-    {% if positions %}
+    <!-- Row 3: Open Positions (실시간 갱신) -->
     <div class="row g-3 mb-3">
         <div class="col-12">
             <div class="card p-3">
-                <div class="section-title">오픈 포지션 ({{ positions | length }})</div>
+                <div class="section-title">
+                    오픈 포지션 <span id="posCount" class="text-muted">({{ positions | length }})</span>
+                    <span class="text-muted float-end" style="font-weight:400; font-size:0.75rem;">매초 실시간</span>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-sm mb-0">
                         <thead>
                         <tr>
-                            <th>심볼</th>
-                            <th>방향</th>
-                            <th>진입가</th>
-                            <th>수량</th>
-                            <th>손절가</th>
-                            <th>목표가</th>
-                            <th>담보금</th>
-                            <th>레버리지</th>
-                            <th>R:R</th>
-                            <th>진입 시각</th>
+                            <th>심볼</th><th>방향</th><th>진입가</th><th>현재가</th>
+                            <th>평가손익</th><th>수익률</th><th>수량</th>
+                            <th>손절가</th><th>목표가</th>
                         </tr>
                         </thead>
-                        <tbody>
-                        {% for p in positions %}
-                        <tr>
-                            <td class="fw-bold">{{ p.symbol }}</td>
-                            <td>
-                                <span class="badge {{ 'badge-long' if p.direction == 'long' else 'badge-short' }}">
-                                    {{ p.direction | upper }}
-                                </span>
-                            </td>
-                            <td class="mono">{{ "%.2f"|format(p.entry_price) }}</td>
-                            <td class="mono">{{ "%.4f"|format(p.qty) }}</td>
-                            <td class="mono negative">{{ "%.2f"|format(p.stop_loss) }}</td>
-                            <td class="mono positive">{{ "%.2f"|format(p.take_profit) }}</td>
-                            <td class="mono">{{ "%.2f"|format(p.margin) }}</td>
-                            <td class="mono">
-                                {% if p.margin > 0 %}
-                                    {{ "%.0f"|format(p.entry_price * p.qty / p.margin) }}x
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td class="mono">
-                                {% set risk = (p.entry_price - p.stop_loss) | abs %}
-                                {% set reward = (p.take_profit - p.entry_price) | abs %}
-                                {% if risk > 0 %}
-                                    1:{{ "%.1f"|format(reward / risk) }}
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td style="font-size: 0.8rem;">{{ p.entry_time[:19] | replace('T', ' ') }}</td>
-                        </tr>
-                        {% endfor %}
+                        <tbody id="livePositions">
+                        <tr><td colspan="9" class="text-center text-muted py-3">불러오는 중…</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
     </div>
-    {% endif %}
 
     <!-- Row 4: Trade Stats + History -->
     <div class="row g-3 mb-3">
@@ -570,6 +536,59 @@
 </div>
 
 <script>
+    // ── 매초 실시간 갱신 (/api/live 폴링) ──────────────────────────
+    const KRW = (n) => Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const signed = (n, d=2) => (n >= 0 ? '+' : '') + Number(n).toFixed(d);
+
+    async function pollLive() {
+        const dot = document.getElementById('liveDot');
+        try {
+            const r = await fetch('/api/live', {cache: 'no-store'});
+            const d = await r.json();
+
+            // 평가액 + 미실현
+            document.getElementById('liveEquity').textContent = KRW(d.equity);
+            const up = document.getElementById('liveUpnl');
+            up.textContent = `(미실현 ${signed(d.total_unrealized)} · ${signed(d.return_pct)}%)`;
+            up.className = 'mono ' + (d.total_unrealized >= 0 ? 'positive' : 'negative');
+
+            // 시계 + 카운트
+            const t = new Date(d.timestamp);
+            document.getElementById('liveClock').textContent =
+                '갱신: ' + t.toLocaleTimeString('ko-KR');
+            document.getElementById('posCount').textContent = `(${d.position_count})`;
+
+            // 포지션 테이블
+            const tb = document.getElementById('livePositions');
+            if (!d.open_positions.length) {
+                tb.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">보유 포지션 없음</td></tr>';
+            } else {
+                tb.innerHTML = d.open_positions.map(p => {
+                    const cls = p.unrealized_pnl >= 0 ? 'positive' : 'negative';
+                    const badge = p.direction === 'long' ? 'badge-long' : 'badge-short';
+                    return `<tr>
+                        <td class="fw-bold">${p.symbol.split('/')[0]}</td>
+                        <td><span class="badge ${badge}">${p.direction.toUpperCase()}</span></td>
+                        <td class="mono">${Number(p.entry_price).toFixed(2)}</td>
+                        <td class="mono">${Number(p.current_price).toFixed(2)}</td>
+                        <td class="mono ${cls}">${signed(p.unrealized_pnl, 4)}</td>
+                        <td class="mono ${cls}">${signed(p.unrealized_pct)}%</td>
+                        <td class="mono">${Number(p.qty).toFixed(4)}</td>
+                        <td class="mono negative">${Number(p.stop_loss).toFixed(2)}</td>
+                        <td class="mono positive">${Number(p.take_profit).toFixed(2)}</td>
+                    </tr>`;
+                }).join('');
+            }
+            if (dot) dot.style.color = 'var(--green)';
+        } catch (e) {
+            if (dot) dot.style.color = 'var(--red)';   // 연결 끊김 표시
+        }
+    }
+    pollLive();
+    setInterval(pollLive, 1000);                        // 매초
+    // 느린 전체 갱신(스캔/관심종목/거래내역/차트)은 2분마다 페이지 리로드
+    setInterval(() => location.reload(), 120000);
+
     // ── TradingView Chart 제어 ──────────────────────────────────
     let currentTvSymbol = null;
     let currentInterval = '15';

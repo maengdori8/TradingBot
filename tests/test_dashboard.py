@@ -46,6 +46,16 @@ class TestRoutes:
         assert data["performance"]["total_trades"] == 0
         assert "scan" in data
 
+    def test_api_live_empty(self, client):
+        """실시간 엔드포인트가 포지션 없을 때도 정상 (거래소 호출 안 함)."""
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["position_count"] == 0
+        assert data["open_positions"] == []
+        assert data["equity"] == data["balance"]
+        assert "timestamp" in data
+
 
 class TestPerformanceCalc:
     def test_empty_trades(self):

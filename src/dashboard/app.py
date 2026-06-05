@@ -13,6 +13,7 @@ import logging
 import math
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -412,23 +413,123 @@ def api_status():
 
 
 # ------------------------------------------------------------------
+# 실시간 가격 (보유 포지션 평가손익용, 1초 캐시)
+# ------------------------------------------------------------------
+
+_price_cache: dict[str, tuple[float, float]] = {}   # symbol -> (price, fetched_at)
+_PRICE_TTL = 1.0
+_market_client = None
+
+
+def _get_market_client():
+    """MarketDataClient 싱글톤 (lazy)."""
+    global _market_client
+    if _market_client is None:
+        from src.exchange.bybit_client import MarketDataClient
+        _market_client = MarketDataClient()
+    return _market_client
+
+
+def _live_price(symbol: str) -> float | None:
+    """현재가 조회 (1초 캐시). 실패 시 None."""
+    now = time.time()
+    cached = _price_cache.get(symbol)
+    if cached and (now - cached[1]) < _PRICE_TTL:
+        return cached[0]
+    try:
+        price = _get_market_client().fetch_current_price(symbol)
+        _price_cache[symbol] = (price, now)
+        return price
+    except Exception as e:
+        logger.debug("실시간 가격 조회 실패 %s: %s", symbol, e)
+        return cached[0] if cached else None
+
+
+@app.route("/api/live")
+def api_live():
+    """초단위 폴링용 — 잔고 + 보유 포지션 실시간 평가손익."""
+    conn = _get_conn()
+    cfg = _load_config()
+    cap = cfg.get("capital", {})
+    initial_balance = cap.get("total_capital", 5000) * cap.get("trading_allocation", 0.25)
+    balance = _fetch_balance(conn)
+    positions = _fetch_open_positions(conn)
+    conn.close()
+
+    total_upnl = 0.0
+    live_positions = []
+    for p in positions:
+        price = _live_price(p["symbol"])
+        entry = p["entry_price"]
+        qty = p["qty"]
+        if price is not None:
+            upnl = (price - entry) * qty if p["direction"] == "long" else (entry - price) * qty
+        else:
+            price, upnl = entry, 0.0
+        total_upnl += upnl
+        live_positions.append({
+            "symbol": p["symbol"],
+            "direction": p["direction"],
+            "entry_price": entry,
+            "current_price": round(price, 6),
+            "qty": qty,
+            "stop_loss": p["stop_loss"],
+            "take_profit": p["take_profit"],
+            "margin": p.get("margin", 0),
+            "unrealized_pnl": round(upnl, 4),
+            "unrealized_pct": round(upnl / p["margin"] * 100, 2) if p.get("margin") else 0.0,
+            "tradingview": to_tradingview(p["symbol"]),
+        })
+
+    return jsonify({
+        "balance": round(balance, 2),
+        "total_unrealized": round(total_upnl, 4),
+        "equity": round(balance + total_upnl, 2),
+        "initial_balance": initial_balance,
+        "return_pct": round((balance + total_upnl - initial_balance) / initial_balance * 100, 2) if initial_balance else 0.0,
+        "open_positions": live_positions,
+        "position_count": len(live_positions),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+# ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
+
+def _lan_ip() -> str:
+    """현재 머신의 LAN IP 추정 (외부 접속 안내용)."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 
 def main() -> None:
     """대시보드 서버 실행."""
     parser = argparse.ArgumentParser(description="ICT Paper Trading Dashboard")
-    parser.add_argument("--host", default="127.0.0.1", help="바인딩 호스트 (기본: 127.0.0.1)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="바인딩 호스트 (외부 접속은 0.0.0.0, 기본: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=5000, help="포트 번호 (기본: 5000)")
     parser.add_argument("--debug", action="store_true", help="디버그 모드")
     args = parser.parse_args()
 
-    logger.info("=" * 50)
+    logger.info("=" * 56)
     logger.info("ICT Paper Trading Dashboard")
-    logger.info("=" * 50)
-    logger.info("URL: http://%s:%d", args.host, args.port)
+    logger.info("=" * 56)
+    logger.info("로컬:   http://127.0.0.1:%d", args.port)
+    if args.host == "0.0.0.0":
+        logger.info("외부(같은 WiFi): http://%s:%d", _lan_ip(), args.port)
+        logger.info("⚠ 외부 노출 — 인증 없는 읽기전용 화면. 신뢰된 네트워크에서만 사용")
+    else:
+        logger.info("외부 접속하려면: --host 0.0.0.0 옵션으로 재실행")
     logger.info("DB: %s", DB_PATH)
-    logger.info("=" * 50)
+    logger.info("=" * 56)
 
     app.run(host=args.host, port=args.port, debug=args.debug)
 
