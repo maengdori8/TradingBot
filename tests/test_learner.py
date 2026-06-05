@@ -80,6 +80,34 @@ class TestStats:
         assert L.expectancy_r([{"r_multiple": None}]) is None
         assert L.expectancy_r([{"r_multiple": 1.0}, {"r_multiple": -0.5}]) == 0.25
 
+    def test_expectancy_bounds(self):
+        # 동일값이면 SE=0 → 하한=상한=평균
+        lb, ub = L.expectancy_bounds([{"r_multiple": 2.0}] * 5, 1.645)
+        assert lb == ub == 2.0
+        # 표본<2면 (None, None)
+        assert L.expectancy_bounds([{"r_multiple": 1.0}], 1.645) == (None, None)
+        # 변동 있으면 하한<평균<상한
+        lb, ub = L.expectancy_bounds(
+            [{"r_multiple": 2.0}, {"r_multiple": -1.0}, {"r_multiple": 0.5}], 1.645)
+        assert lb < ub
+
+    def test_seg_stats_has_bounds(self):
+        s = L._seg_stats([_mk(72, 2), _mk(72, -1), _mk(72, 0.5)])
+        assert "expectancy_lb" in s and "expectancy_ub" in s
+
+
+class TestSubBoundaryBucket:
+    def test_below_lowest_collected(self):
+        """최저 경계 미만 점수도 '<lowest' 버킷으로 수집 (리뷰 #17)."""
+        agg = L.aggregate([_mk(67, -1) for _ in range(5)], BOUNDS)
+        assert "<lowest" in agg["by_score_bucket"]
+        assert agg["by_score_bucket"]["<lowest"]["n"] == 5
+
+    def test_score_bucket_mapping(self):
+        assert L._score_bucket(67, BOUNDS) == "<lowest"
+        assert L._score_bucket(72, BOUNDS) == ">=70"
+        assert L._score_bucket(90, BOUNDS) == ">=85"
+
 
 # ── 의사결정: 위험 축소 ──────────────────────────────────────────────
 
@@ -165,6 +193,40 @@ class TestExpandAndGates:
         dec = L.decide_adjustment(agg, _cfg(), _baseline(), state)
         assert dec is None
 
+    def test_cooldown_per_segment(self):
+        """쿨다운이 세그먼트 신규 증거 기준 (리뷰 #8)."""
+        trades = [_mk(72, -1) for _ in range(15)]   # C버킷 n=15
+        agg = L.aggregate(trades, BOUNDS)
+        # 직전 변경이 세그먼트 n=8 시점 → 15-8=7 < 10 → 차단
+        blocked = L.decide_adjustment(agg, _cfg(), _baseline(),
+                                      {"last_change_at": {"risk_tiers[70].risk_pct": 8},
+                                       "kill_switch": False})
+        assert blocked is None
+        # 직전 변경이 세그먼트 n=4 시점 → 15-4=11 >= 10 → 허용
+        allowed = L.decide_adjustment(agg, _cfg(), _baseline(),
+                                      {"last_change_at": {"risk_tiers[70].risk_pct": 4},
+                                       "kill_switch": False})
+        assert allowed is not None and allowed["new"] < allowed["old"]
+
+    def test_decision_carries_segment_n(self):
+        """결정에 쿨다운 기록용 segment_n 포함."""
+        trades = [_mk(72, -1) for _ in range(15)]
+        agg = L.aggregate(trades, BOUNDS)
+        dec = L.decide_adjustment(agg, _cfg(), _baseline(),
+                                  {"last_change_at": {}, "kill_switch": False})
+        assert dec["segment_n"] == 15
+
+    def test_min_score_not_raised_when_risk_reducible(self):
+        """risk 축소 여력 있으면 min_score 안 올림 (리뷰 #13). 축소가 쿨다운돼도 마찬가지."""
+        cfg = _cfg()   # C tier 0.003 (축소 가능)
+        trades = [_mk(72, -1) for _ in range(20)]
+        agg = L.aggregate(trades, BOUNDS)
+        # risk_pct 축소를 쿨다운으로 막아도, risk_exhausted=False라 min_score 상향 안 됨
+        dec = L.decide_adjustment(agg, cfg, _baseline(),
+                                  {"last_change_at": {"risk_tiers[70].risk_pct": 20},
+                                   "kill_switch": False})
+        assert dec is None
+
     def test_kill_switch_freezes_expansion(self):
         trades = [_mk(90, 2) for _ in range(15)] + [_mk(80, -1) for _ in range(8)]
         agg = L.aggregate(trades, BOUNDS)
@@ -197,6 +259,37 @@ class TestExpandAndGates:
         # 70 확대는 단조성 위반으로 거부됨 (다른 후보 없으면 None)
         if dec is not None:
             assert not (dec["kind"] == "risk_pct" and dec["tier_min_score"] == 70 and dec["new"] > dec["old"])
+
+
+class TestMinScoreLowering:
+    """min_score 완화는 문턱 인근 버킷 증거가 있어야 함 (리뷰 #12)."""
+
+    def _maxed_cfg(self):
+        cfg = _cfg()
+        cfg["scan"]["min_score"] = 74           # baseline 70보다 올라가 있음
+        for t in cfg["risk"]["risk_tiers"]:     # 확대(block4) 봉쇄 위해 전부 상한
+            t["risk_pct"] = 0.010
+        return cfg
+
+    def test_no_lower_without_boundary_evidence(self):
+        """상위 버킷만 이기고 문턱 인근(최저) 버킷 표본 없으면 완화 안 함."""
+        cfg = self._maxed_cfg()
+        trades = [_mk(90, 2) for _ in range(20)]   # A버킷만, C버킷 0건 (전역게이트는 통과)
+        agg = L.aggregate(trades, BOUNDS)
+        dec = L.decide_adjustment(agg, cfg, _baseline(),
+                                  {"last_change_at": {}, "kill_switch": False})
+        assert dec is None
+
+    def test_lower_with_boundary_evidence(self):
+        """문턱 인근(최저) 버킷이 충분 표본 + 흑자확신이면 완화."""
+        cfg = self._maxed_cfg()
+        trades = [_mk(72, 2) for _ in range(20)]   # C버킷(>=70) 흑자확신
+        agg = L.aggregate(trades, BOUNDS)
+        dec = L.decide_adjustment(agg, cfg, _baseline(),
+                                  {"last_change_at": {}, "kill_switch": False})
+        assert dec is not None
+        assert dec["kind"] == "min_score"
+        assert dec["new"] == 72   # 74 - 2
 
 
 # ── 오버레이 검증 ────────────────────────────────────────────────────

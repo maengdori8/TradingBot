@@ -97,24 +97,24 @@ def _n_with_r(trades: list[dict]) -> int:
     return sum(1 for t in trades if t.get("r_multiple") is not None)
 
 
-def expectancy_lower_bound(trades: list[dict], z: float) -> float | None:
-    """평균 R-multiple의 단측 신뢰 하한 = mean - z*SE. 표본<2면 None."""
+def expectancy_bounds(trades: list[dict], z: float) -> tuple[float | None, float | None]:
+    """평균 R-multiple의 단측 신뢰 (하한, 상한) = mean ∓ z*SE. 표본<2면 (None,None)."""
     rs = [t["r_multiple"] for t in trades if t.get("r_multiple") is not None]
     if len(rs) < 2:
-        return None
+        return (None, None)
     mean = sum(rs) / len(rs)
     var = sum((x - mean) ** 2 for x in rs) / (len(rs) - 1)  # 표본분산
     se = math.sqrt(var) / math.sqrt(len(rs))
-    return mean - z * se
+    return (mean - z * se, mean + z * se)
 
 
 def _seg_stats(trades: list[dict]) -> dict:
-    """세그먼트 통계 묶음 (승률 + R-multiple 기대값/신뢰하한)."""
+    """세그먼트 통계 묶음 (승률 + R-multiple 기대값/신뢰구간)."""
     n = _n_with_r(trades)
     w = _wins(trades)
     lb, ub = wilson_interval(w, n) if n else (0.0, 1.0)
     e = expectancy_r(trades)
-    e_lb = expectancy_lower_bound(trades, Z_EXPAND)
+    e_lb, e_ub = expectancy_bounds(trades, Z_EXPAND)
     return {
         "n": n,
         "wins": w,
@@ -122,8 +122,10 @@ def _seg_stats(trades: list[dict]) -> dict:
         "wilson_lb": round(lb, 4),
         "wilson_ub": round(ub, 4),
         "expectancy_r": round(e, 4) if e is not None else None,
-        # 확대 판정용: 평균 R의 95% 단측 하한 (이게 0보다 크면 통계적으로 흑자 확신)
+        # 확대 판정용: 평균 R의 95% 단측 하한 (>0이면 흑자 확신)
         "expectancy_lb": round(e_lb, 4) if e_lb is not None else None,
+        # 손익비 판정용: 평균 R의 95% 단측 상한 (<0이면 적자 확신)
+        "expectancy_ub": round(e_ub, 4) if e_ub is not None else None,
     }
 
 
@@ -206,13 +208,16 @@ def compute_mdd(conn: sqlite3.Connection, initial_balance: float) -> float:
 
 
 def _score_bucket(score: float | None, boundaries: list[float]) -> str | None:
-    """점수를 risk_tiers 경계 기준 버킷명으로 변환. boundaries 내림차순(예: [85,75,70])."""
+    """점수를 risk_tiers 경계 기준 버킷명으로 변환. boundaries 내림차순(예: [85,75,70]).
+
+    최저 경계 미만 점수는 "<lowest" 버킷으로 수집(누락 방지 — 의사결정 모집단 일관성).
+    """
     if score is None:
         return None
     for b in boundaries:
         if score >= b:
             return f">={b:g}"
-    return None
+    return "<lowest"   # 최저 티어 경계 미만 (min_score가 최저 티어보다 낮을 때 발생)
 
 
 def aggregate(trades: list[dict], tier_boundaries: list[float]) -> dict:
@@ -236,6 +241,10 @@ def aggregate(trades: list[dict], tier_boundaries: list[float]) -> dict:
     for b in tier_boundaries:
         seg = [t for t in trades if _score_bucket(t.get("entry_score"), tier_boundaries) == f">={b:g}"]
         by_bucket[f">={b:g}"] = _seg_stats(seg)
+    # 최저 경계 미만 점수 버킷 (있을 때만)
+    sub = [t for t in trades if _score_bucket(t.get("entry_score"), tier_boundaries) == "<lowest"]
+    if sub:
+        by_bucket["<lowest"] = _seg_stats(sub)
 
     return {
         "overall": overall,
@@ -270,16 +279,19 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
 
     min_rr = risk.get("min_rr_ratio", 2.0)
     total_n = agg["overall"]["n"]
-    cool_n = state.get("cool_n", total_n)   # 쿨다운 기준(전체 누계)
     tiers = risk.get("risk_tiers", [])
     boundaries = sorted([t["min_score"] for t in tiers], reverse=True)
     last_change = state.get("last_change_at", {})
     risk_expansion_frozen = state.get("kill_switch", False)
     base_tiers = {t.get("min_score"): t.get("risk_pct") for t in baseline.get("risk.risk_tiers", [])}
 
-    def cooled(param: str) -> bool:
-        """쿨다운 통과 (직전 변경 이후 cooldown건 이상 신규 청산)."""
-        return (cool_n - last_change.get(param, -10**9)) >= cooldown
+    def cooled(param: str, evidence_n: int) -> bool:
+        """쿨다운 통과 — 직전 변경 이후 '해당 세그먼트'에 신규 증거 cooldown건 이상.
+
+        전역 거래수가 아니라 그 파라미터가 참조하는 세그먼트의 신규 청산수로 측정한다
+        (다른 코인 거래로 무관한 파라미터가 재조정되는 것 방지).
+        """
+        return (evidence_n - last_change.get(param, -10**9)) >= cooldown
 
     def losing(seg: dict) -> bool:
         """명백한 손실 세그먼트 (기대값 점추정 < -deadband). 안전 판정 — 쉽게."""
@@ -295,13 +307,14 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
     # ── 1) 위험 축소: 지는 점수버킷 risk_pct 하향 (약한 버킷부터) ──
     for b in sorted(boundaries):
         seg = agg["by_score_bucket"].get(f">={b:g}", {})
-        if seg.get("n", 0) < bucket_min_n or not losing(seg):
+        seg_n = seg.get("n", 0)
+        if seg_n < bucket_min_n or not losing(seg):
             continue
         tier = next((t for t in tiers if t["min_score"] == b), None)
         if not tier:
             continue
         param = f"risk_tiers[{b:g}].risk_pct"
-        if not cooled(param):
+        if not cooled(param, seg_n):
             continue
         cur = tier["risk_pct"]
         new = max(RISK_PCT_MIN, round(cur * RISK_STEP_DOWN, 6))
@@ -309,38 +322,45 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
             continue
         return {
             "kind": "risk_pct", "tier_min_score": b, "param": param,
-            "old": cur, "new": new, "segment": seg,
-            "reason": f"점수 >={b:g} 버킷 {seg['n']}건 기대값 {seg['expectancy_r']:+.2f}R 적자 → 리스크 축소",
+            "old": cur, "new": new, "segment": seg, "segment_n": seg_n,
+            "reason": f"점수 >={b:g} 버킷 {seg_n}건 기대값 {seg['expectancy_r']:+.2f}R 적자 → 리스크 축소",
         }
 
-    # ── 2) 위험 축소: 최저 버킷이 지면 min_score 상향 ──
+    # ── 2) 위험 축소: 최저 버킷이 지고 + risk 축소 여력 소진 시 min_score 상향 ──
     if boundaries:
         lowest = min(boundaries)
         seg = agg["by_score_bucket"].get(f">={lowest:g}", {})
         cur_ms = scan.get("min_score", 70)
         base_ms = baseline.get("scan.min_score", cur_ms)
+        lowest_tier = next((t for t in tiers if t["min_score"] == lowest), None)
+        # risk 축소 우선: 최저 버킷 risk_pct가 이미 바닥 근처여야 문턱을 올린다
+        risk_exhausted = (
+            lowest_tier is None
+            or round(lowest_tier["risk_pct"] * RISK_STEP_DOWN, 6) <= RISK_PCT_MIN
+        )
         if (seg.get("n", 0) >= bucket_min_n and total_n >= global_min_score_n
-                and cooled("scan.min_score") and losing(seg)
+                and cooled("scan.min_score", total_n) and losing(seg) and risk_exhausted
                 and cur_ms < MIN_SCORE_MAX and (cur_ms - base_ms) < MIN_SCORE_DRIFT):
             new = min(MIN_SCORE_MAX, cur_ms + MINSCORE_STEP)
             if new > cur_ms:
                 return {
                     "kind": "min_score", "param": "scan.min_score",
-                    "old": cur_ms, "new": new, "segment": seg,
-                    "reason": f"최저 점수버킷 {seg['n']}건 기대값 {seg['expectancy_r']:+.2f}R 적자 → 진입 문턱 상향",
+                    "old": cur_ms, "new": new, "segment": seg, "segment_n": total_n,
+                    "reason": f"최저 점수버킷 {seg['n']}건 기대값 {seg['expectancy_r']:+.2f}R 적자 + 리스크 바닥 → 진입 문턱 상향",
                 }
 
-    # ── 3) 위험 축소: min_rr 상향 (승률 양호한데 기대값 음수 = 손익비 나쁨) ──
+    # ── 3) 위험 축소: min_rr 상향 (승률 양호한데 기대값 적자 확신 = 손익비 나쁨) ──
     ov = agg["overall"]
-    if (total_n >= 30 and cooled("min_rr_ratio") and min_rr < MIN_RR_MAX
+    if (total_n >= 30 and cooled("min_rr_ratio", total_n) and min_rr < MIN_RR_MAX
             and losing(ov)
+            and ov.get("expectancy_ub") is not None and ov["expectancy_ub"] < 0
             and ov["laplace_winrate"] is not None and ov["laplace_winrate"] > 0.5):
         new = min(MIN_RR_MAX, round(min_rr + MINRR_STEP, 2))
         if new > min_rr:
             return {
                 "kind": "min_rr", "param": "min_rr_ratio",
-                "old": min_rr, "new": new, "segment": ov,
-                "reason": f"전체 {total_n}건 승률 {ov['laplace_winrate']:.0%} 양호하나 기대값 {ov['expectancy_r']:+.2f}R 음수 → 목표 R:R 상향",
+                "old": min_rr, "new": new, "segment": ov, "segment_n": total_n,
+                "reason": f"전체 {total_n}건 승률 {ov['laplace_winrate']:.0%} 양호하나 기대값 {ov['expectancy_r']:+.2f}R 적자확신 → 목표 R:R 상향",
             }
 
     if risk_expansion_frozen:
@@ -349,13 +369,14 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
     # ── 4) 위험 확대: 흑자 확신 버킷 risk_pct 상향 (높은 점수부터, 엄격) ──
     for b in sorted(boundaries, reverse=True):
         seg = agg["by_score_bucket"].get(f">={b:g}", {})
-        if seg.get("n", 0) < bucket_min_n or not winning(seg):
+        seg_n = seg.get("n", 0)
+        if seg_n < bucket_min_n or not winning(seg):
             continue
         tier = next((t for t in tiers if t["min_score"] == b), None)
         if not tier:
             continue
         param = f"risk_tiers[{b:g}].risk_pct"
-        if not cooled(param):
+        if not cooled(param, seg_n):
             continue
         cur = tier["risk_pct"]
         new = min(RISK_PCT_MAX, round(cur * RISK_STEP_UP, 6))
@@ -369,22 +390,27 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
             continue
         return {
             "kind": "risk_pct", "tier_min_score": b, "param": param,
-            "old": cur, "new": new, "segment": seg,
-            "reason": f"점수 >={b:g} 버킷 {seg['n']}건 기대값 {seg['expectancy_r']:+.2f}R 흑자확신(하한 {seg['expectancy_lb']:+.2f}R) → 리스크 확대",
+            "old": cur, "new": new, "segment": seg, "segment_n": seg_n,
+            "reason": f"점수 >={b:g} 버킷 {seg_n}건 기대값 {seg['expectancy_r']:+.2f}R 흑자확신(하한 {seg['expectancy_lb']:+.2f}R) → 리스크 확대",
         }
 
-    # ── 5) 위험 확대: 전 버킷 흑자확신이면 min_score 하향 (baseline 복귀 방향만) ──
+    # ── 5) 위험 확대: 경계 버킷 증거 기반으로 min_score 하향 (baseline 복귀 방향만) ──
     cur_ms = scan.get("min_score", 70)
     base_ms = baseline.get("scan.min_score", cur_ms)
-    if cur_ms > base_ms and total_n >= global_min_score_n and cooled("scan.min_score"):
+    if (cur_ms > base_ms and total_n >= global_min_score_n
+            and cooled("scan.min_score", total_n) and not losing(ov)):
+        lowest = min(boundaries) if boundaries else 70
+        low_seg = agg["by_score_bucket"].get(f">={lowest:g}", {})
         qualified = [s for s in agg["by_score_bucket"].values() if s.get("n", 0) >= bucket_min_n]
-        if qualified and all(winning(s) for s in qualified):
+        # 문턱 인근(최저 버킷)에 충분 표본 + 흑자확신이 있어야 완화 (미측정 구간 재유입 방지)
+        if (low_seg.get("n", 0) >= bucket_min_n and winning(low_seg)
+                and qualified and all(winning(s) for s in qualified)):
             new = max(base_ms, cur_ms - MINSCORE_STEP)
             if new < cur_ms:
                 return {
                     "kind": "min_score", "param": "scan.min_score",
-                    "old": cur_ms, "new": new, "segment": agg["overall"],
-                    "reason": f"전 점수버킷 흑자확신 → 진입 문턱 완화(원값 {base_ms}로 복귀)",
+                    "old": cur_ms, "new": new, "segment": ov, "segment_n": total_n,
+                    "reason": f"문턱 인근 버킷 흑자확신 → 진입 문턱 완화(원값 {base_ms}로 복귀)",
                 }
 
     return None
@@ -458,7 +484,8 @@ def write_overlay(adj: dict, raw_cfg: dict, total_n: int) -> bool:
 
     meta = existing.get("meta", {})
     last_change = meta.get("last_change_at", {})
-    last_change[adj["param"]] = total_n
+    # 쿨다운 기준: 해당 파라미터 세그먼트의 변경 시점 누계 (전역 아님 — 세그먼트별 증거)
+    last_change[adj["param"]] = adj.get("segment_n", total_n)
     changes_hist = meta.get("changes", [])[-9:]  # 최근 10개 유지
     changes_hist.append({
         "param": adj["param"], "old": adj["old"], "new": adj["new"],
@@ -609,7 +636,6 @@ def maybe_update(paper=None, notifier=None, dry_run: bool | None = None,
     # 킬스위치: MDD 초과 시 위험 확대 동결 (paper 유무 무관 — conn으로 계산)
     state = {
         "last_change_at": existing.get("meta", {}).get("last_change_at", {}),
-        "cool_n": cum_n,
         "kill_switch": False,
     }
     try:

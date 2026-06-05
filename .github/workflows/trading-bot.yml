@@ -23,7 +23,11 @@ jobs:
       - name: 패키지 설치
         run: pip install -r requirements.txt
 
-      - name: 페이퍼 트레이딩 상태 복원
+      # logs/ 에는 페이퍼 거래 DB + 자동학습 상태(learned_params.yaml, tuning_history.jsonl)가
+      # 함께 저장된다. GitHub Actions 캐시는 best-effort(7일 미사용 시 축출 가능)이며,
+      # 축출되면 학습 오버레이가 사라져 config.yaml 기본값으로 복귀한다(코드가 안전 처리).
+      # 장기 영속이 중요하면 로컬 runner 또는 외부 스토리지 사용 권장(deploy/ 가이드 참조).
+      - name: 페이퍼 트레이딩 + 학습 상태 복원
         uses: actions/cache@v4
         with:
           path: logs/
