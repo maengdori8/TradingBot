@@ -4,7 +4,12 @@ sys.path.insert(0, "/home/claude/trading-bot")
 import pandas as pd
 import numpy as np
 import pytest
-from src.strategy.market_structure import detect_swing_points, detect_bos, detect_choch
+from src.strategy.market_structure import (
+    detect_swing_points,
+    detect_bos,
+    detect_choch,
+    detect_htf_trend,
+)
 
 
 def wave_df(n=60, trend_dir=1):
@@ -73,3 +78,27 @@ def test_choch_returns_valid_or_none():
     df = wave_df(60)
     result = detect_choch(df, lookback=4)
     assert result in ("bullish", "bearish", None)
+
+
+class TestDetectHtfTrend:
+    """BTC 상위TF 추세 레짐 판정 (연구 정의: EMA50 + 기울기)."""
+
+    def test_uptrend_is_bull(self):
+        import numpy as np
+        df = pd.DataFrame({"close": np.linspace(100, 200, 120)})
+        assert detect_htf_trend(df) == "bull"
+
+    def test_downtrend_is_bear(self):
+        import numpy as np
+        df = pd.DataFrame({"close": np.linspace(200, 100, 120)})
+        assert detect_htf_trend(df) == "bear"
+
+    def test_flat_is_flat(self):
+        import numpy as np
+        df = pd.DataFrame({"close": np.full(120, 100.0)})
+        assert detect_htf_trend(df) == "flat"
+
+    def test_insufficient_data_is_flat(self):
+        import numpy as np
+        df = pd.DataFrame({"close": np.linspace(100, 200, 30)})
+        assert detect_htf_trend(df) == "flat"

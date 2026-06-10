@@ -61,8 +61,10 @@ def _resolve_symbols(cfg: dict, client) -> list[str]:
 
 def run() -> None:
     from src.exchange.bybit_client import MarketDataClient
+    from src.strategy import load_strategy_params
     from src.strategy.signal_engine import scan_symbol
     from src.strategy.kill_zone import get_active_session
+    from src.strategy.market_structure import detect_htf_trend
     from src.risk.risk_manager import RiskManager
     from src.paper_trading.paper_engine import PaperEngine
     from src.notification.discord_bot import DiscordNotifier
@@ -95,6 +97,22 @@ def run() -> None:
 
     min_score = scan_cfg.get("min_score", 75)
     require_volume = scan_cfg.get("require_volume", True)
+
+    # BTC 상위TF 추세 레짐 (역추세 신호 사이징 강등용) — 실패 시 fail-open(강등 없음)
+    # 근거: 신호연구에서 BTC 역행 신호는 조건부 부분집합에서 -0.258R. 단 전체표본 +0.145R라
+    # 하드 차단 대신 리스크 최하단(0.3%) 강등. counter 100건 누적 후 EV로 격상/해제 재평가.
+    btc_trend = None
+    try:
+        bt_params = load_strategy_params().get("btc_trend", {})
+        df_btc = client.fetch_ohlcv("BTC/USDT:USDT", "4h", limit=200)
+        btc_trend = detect_htf_trend(
+            df_btc,
+            ema_period=bt_params.get("ema_period", 50),
+            slope_lookback=bt_params.get("slope_lookback", 10),
+        )
+        logger.info("BTC 4H 추세 레짐: %s", btc_trend)
+    except Exception as e:
+        logger.warning("BTC 추세 판정 실패(fail-open, 강등 없음): %s", e)
 
     results = []   # 모든 ScanResult
     scanned = 0
@@ -144,14 +162,36 @@ def run() -> None:
             continue
 
         sig = res.signal
-        params = risk.calculate_trade_params(sig.entry_price, sig.stop_loss, score=res.score)
+
+        # BTC 역추세 신호 → 리스크 최하단 강등 (차단 아님, fail-open: btc_trend=None이면 미적용)
+        alignment = "unknown"
+        override = None
+        if btc_trend is not None:
+            if btc_trend == "flat":
+                alignment = "flat"
+            elif (res.direction == "long") == (btc_trend == "bull"):
+                alignment = "aligned"
+            else:
+                alignment = "counter"
+                override = load_strategy_params().get("btc_trend", {}).get(
+                    "counter_risk_pct", 0.003
+                )
+                logger.info("[%s] BTC 역추세(%s vs %s) — 리스크 %.1f%%로 강등",
+                            res.symbol, res.direction, btc_trend, override * 100)
+
+        params = risk.calculate_trade_params(
+            sig.entry_price, sig.stop_loss, score=res.score,
+            risk_pct_override=override,
+        )
         entry_session = get_active_session(datetime.now(timezone.utc))
+        checks = dict(res.checks or {})
+        checks["btc_aligned"] = alignment       # 학습/사후분석 태깅 (JSON 보존)
         pos = paper.open_position(
             symbol=res.symbol, direction=sig.direction,
             entry_price=sig.entry_price, qty=params["qty"],
             stop_loss=sig.stop_loss, take_profit=sig.take_profit,
             leverage=params["leverage"],
-            score=res.score, checks=res.checks,
+            score=res.score, checks=checks,
             entry_rr=sig.rr_ratio, entry_session=entry_session,
         )
         if pos:

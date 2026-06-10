@@ -372,3 +372,31 @@ def test_check_stops_ignores_other_symbol(engine):
     engine.check_stops("ETH/USDT", current_high=53000, current_low=48000)
 
     assert pos in engine.positions  # 심볼이 달라서 그대로
+
+
+# ─── 펀딩비 ──────────────────────────────────────────────────────────
+
+
+def test_funding_cost_deducted(engine):
+    """보유 중 펀딩 시각(00/08/16 UTC) 통과 시 펀딩비가 pnl에서 차감된다."""
+    from datetime import datetime, timedelta, timezone
+    pos = engine.open_position("BTC/USDT", "long", 50000, 0.01, 49000, 52000)
+    # 진입 시각을 25시간 전으로 → 펀딩 3회 통과
+    pos.entry_time = datetime.now(timezone.utc) - timedelta(hours=25)
+    pnl = engine.close_position(pos, 50000, "manual")   # 본전 청산
+    row = engine.conn.execute(
+        "SELECT funding_cost FROM trades WHERE id=?", (pos.id,)
+    ).fetchone()
+    assert row[0] is not None and row[0] > 0
+    # 3회 × 0.01% × 명목가(~500) ≈ 0.15
+    assert row[0] == pytest.approx(3 * 0.0001 * pos.entry_price * 0.01, rel=0.01)
+
+
+def test_no_funding_for_quick_close(engine):
+    """즉시 청산(펀딩 시각 미통과)은 펀딩비 0."""
+    pos = engine.open_position("BTC/USDT", "long", 50000, 0.01, 49000, 52000)
+    engine.close_position(pos, 52000, "TP")
+    row = engine.conn.execute(
+        "SELECT funding_cost FROM trades WHERE id=?", (pos.id,)
+    ).fetchone()
+    assert row[0] in (0, 0.0)

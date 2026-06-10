@@ -9,16 +9,26 @@ order_block:
 market_structure:
   swing_lookback: 5           # 스윙 포인트 탐지 범위
 
+# 킬존: 더 이상 진입 게이트가 아님(24h 진입) — 점수 가점/태깅/학습 세그먼트용.
+# 종전 값(02-05/07-10)은 ICT 원전의 ET 시각을 UTC에 오기입한 것이라 정정 (겨울 기준).
 kill_zone:
-  london_start_utc: "02:00"
-  london_end_utc: "05:00"
-  newyork_start_utc: "07:00"
-  newyork_end_utc: "10:00"
+  london_start_utc: "07:00"
+  london_end_utc: "10:00"
+  newyork_start_utc: "12:00"
+  newyork_end_utc: "15:00"
 
 ote:
   fib_low: 0.618              # OTE 피보나치 하단
   fib_high: 0.786             # OTE 피보나치 상단
 
+# 손절 = ATR × multiplier. 신호연구(6개월/36심볼/순R) 결과 1.0은 전 RR 음수(노이즈 스탑아웃),
+# 1.5/RR2.0 = -0.01R, 2.0/RR2.5 = +0.07R. 롤백 트리거: 60일 롤링 순R<0 또는 풀TP 도달률<25% → 1.5 복귀.
 atr:
   period: 14
-  multiplier: 1.5
+  multiplier: 2.0
+
+# BTC 상위TF 추세 레짐 판정 (역추세 신호 사이징 강등용) — 연구 사용값 명시
+btc_trend:
+  ema_period: 50          # BTC 4h EMA 기간
+  slope_lookback: 10      # 기울기 판정 봉 수
+  counter_risk_pct: 0.003 # 역추세(counter) 신호의 risk_pct 강등값 (하드 차단 아님)

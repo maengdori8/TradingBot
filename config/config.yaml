@@ -29,7 +29,7 @@ scan:
   min_score: 70                 # 진입 확정 최소 컨플루언스 점수 (70+ 진입, 차등 리스크)
   watchlist_min_score: 40       # 관심종목 표시 최소 점수
   watchlist_size: 12            # 대시보드 관심종목 최대 표시 수
-  require_volume: true          # 거래량 확인 게이트
+  require_volume: false         # 거래량 게이트 해제 (연구: 검출력 내 차이 없음, 0.047R < 클러스터 SE)
 
 capital:
   total_capital: 5000        # 전체 자산 USDT
@@ -37,7 +37,7 @@ capital:
   risk_per_trade: 0.005      # 기본 리스크 (risk_tiers 미적용 시 fallback)
 
 risk:
-  min_rr_ratio: 2.0          # 최소 R:R = 1:2 (40개 스캔으로 빈도 확보, 승률 부담↓)
+  min_rr_ratio: 2.5          # 신호연구: 2.0ATR손절 기준 RR2.5가 순R 최적 (RR2.0 = -0.01R → 2.5 = +0.07R)
   max_positions: 4           # 동시 최대 포지션 수
   max_per_symbol: 1          # 심볼당 최대 1포지션 (분산 강제)
   max_same_direction: 3      # 같은 방향 최대 3포지션 (한쪽 쏠림 방지)
@@ -65,6 +65,8 @@ promote:
 learning:
   enabled: true                 # 자동 학습 on/off
   dry_run: false                # true면 제안만(오버레이 미적용)
+  epoch_start: "2026-06-10T00:00:00+00:00"  # 전략 체제 전환 시각 — 이전 청산거래는 학습 제외
+                                            # (출구기하/킬존 변경으로 구체제 R과 단위가 다름)
   min_trades_to_learn: 20       # 전역 최소 청산 거래 수 (미달 시 학습 보류)
   every_n_trades: 5             # 직전 평가 이후 신규 청산 N건 쌓여야 재평가
   cooldown_trades: 10           # 같은 파라미터 재조정 전 최소 신규 청산 수

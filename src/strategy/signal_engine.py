@@ -159,20 +159,16 @@ def generate_signal(
         symbol, zone_source, len(in_fvg), len(in_ob),
     )
 
-    # ── 3단계: 15m Kill Zone + OTE ───────────────────────────────────
+    # ── 3단계: 15m 세션 태깅 + OTE ───────────────────────────────────
+    # 킬존은 더 이상 하드 게이트가 아님 (24h 진입 허용).
+    # 근거: 6개월 36심볼 신호연구에서 어떤 시간 게이트도 양(+)의 가치를 보이지 않음
+    # (정정된 ICT 창 기준 in +0.079R vs out +0.068R). 세션은 태깅/가점으로만 사용.
     now = datetime.now(timezone.utc)
-    if not is_in_kill_zone(now):
-        active = get_active_session(now)
-        logger.debug(
-            "[%s] 3단계 실패: Kill Zone 외부 (현재 UTC=%s, 활성 세션=%s) — 신호 없음",
-            symbol, now.strftime("%H:%M"), active,
-        )
-        return None
-
+    kz_active = is_in_kill_zone(now)
     active_session = get_active_session(now)
     logger.debug(
-        "[%s] 3단계: Kill Zone 내부 확인 (세션=%s, UTC=%s)",
-        symbol, active_session, now.strftime("%H:%M"),
+        "[%s] 3단계: 세션=%s KZ=%s (UTC=%s)",
+        symbol, active_session, kz_active, now.strftime("%H:%M"),
     )
 
     # OTE: 최근 스윙 기준
@@ -221,7 +217,8 @@ def generate_signal(
         stop_loss=stop_loss,
         take_profit=take_profit,
         symbol=symbol,
-        reason=f"4H {trend}({structure_type}) + 1H {zone_source} + KZ({active_session}) + OTE",
+        reason=f"4H {trend}({structure_type}) + 1H {zone_source} + "
+               f"{'KZ(' + str(active_session) + ')' if kz_active else 'KZ밖'} + OTE",
         rr_ratio=rr,
     )
     logger.info(
@@ -237,7 +234,9 @@ _W_TREND_BOS = 30.0      # 4H BOS (강한 추세)
 _W_TREND_CHOCH = 22.0    # 4H CHoCH (전환)
 _W_ZONE_BOTH = 30.0      # 1H FVG + OB 동시
 _W_ZONE_ONE = 20.0       # 1H FVG 또는 OB 하나
-_W_KZ = 15.0             # Kill Zone 내부
+# 신호연구(6개월/36심볼) 결과 시간 게이트의 양(+)가치 미확인 + 종전 창 정의 오류로
+# 15→5 축소. 정정된 창(런던 07-10/뉴욕 12-15 UTC) 재측정 후 0/5/15 최종 결정 예정.
+_W_KZ = 5.0              # Kill Zone 내부 (가점만, 게이트 아님)
 _W_OTE_MAX = 25.0        # OTE (깊이에 따라 가중)
 
 
@@ -363,7 +362,8 @@ def scan_symbol(
     # ── R:R 확인용 신호 생성 시도 ────────────────────────────────────
     signal: TradeSignal | None = None
     rr_ok = False
-    if checks["trend"] and checks["zone"] and checks["kill_zone"] and checks["ote"]:
+    # 킬존은 게이트에서 제외 (24h 진입) — checks["kill_zone"]은 태깅/학습용으로만 기록
+    if checks["trend"] and checks["zone"] and checks["ote"]:
         signal = generate_signal(
             df_4h, df_1h, df_15m, symbol, current_price, min_rr=min_rr
         )

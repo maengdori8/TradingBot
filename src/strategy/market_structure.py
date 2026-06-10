@@ -137,3 +137,35 @@ def detect_choch(df: pd.DataFrame, lookback: int | None = None) -> Literal["bull
 
     logger.debug("CHoCH 미감지: 추세 전환 조건 미충족")
     return None
+
+
+def detect_htf_trend(
+    df: pd.DataFrame,
+    ema_period: int = 50,
+    slope_lookback: int = 10,
+) -> str:
+    """상위 타임프레임(예: BTC 4H) 추세 레짐을 판정한다.
+
+    신호연구(2025-12~2026-06, 36심볼)에서 사용한 정의와 동일:
+    종가가 EMA 위 + EMA 기울기 상승 → "bull",
+    종가가 EMA 아래 + EMA 기울기 하락 → "bear", 그 외 → "flat".
+
+    Args:
+        df: OHLCV DataFrame (close 컬럼 필요)
+        ema_period: EMA 기간 (연구 사용값 50)
+        slope_lookback: 기울기 판정 봉 수 (연구 사용값 10)
+
+    Returns:
+        "bull" | "bear" | "flat"
+    """
+    if len(df) < ema_period + slope_lookback:
+        return "flat"
+    ema = df["close"].ewm(span=ema_period, adjust=False).mean()
+    close = float(df["close"].iloc[-1])
+    ema_now = float(ema.iloc[-1])
+    slope = float(ema.iloc[-1] - ema.iloc[-1 - slope_lookback])
+    if close > ema_now and slope > 0:
+        return "bull"
+    if close < ema_now and slope < 0:
+        return "bear"
+    return "flat"

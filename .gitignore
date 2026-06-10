@@ -10,3 +10,7 @@ dist/
 build/
 .venv/
 .claude/
+
+# 연구 데이터/산출물
+research/data/
+research/out/

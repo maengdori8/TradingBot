@@ -12,7 +12,7 @@ import logging
 import math
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -26,6 +26,23 @@ DB_PATH = Path(__file__).parent.parent.parent / "logs" / "paper_trades.db"
 
 SLIPPAGE = 0.0005  # 0.05%
 TAKER_FEE = 0.00055  # 0.055%
+# 펀딩비 보수 가정 (Bybit 00/08/16 UTC, 통상 0.01%/8h — 방향 무관 비용으로 처리)
+FUNDING_RATE = 0.0001
+FUNDING_HOURS = (0, 8, 16)
+
+
+def _funding_events(entry_time: datetime, exit_time: datetime) -> int:
+    """보유 구간에 통과한 펀딩 정산 시각(00/08/16 UTC) 횟수."""
+    if exit_time <= entry_time:
+        return 0
+    count = 0
+    # 진입 직후 첫 펀딩 시각부터 청산 전까지 8시간 간격 스캔
+    t = entry_time.replace(minute=0, second=0, microsecond=0)
+    while t <= exit_time:
+        if t.hour in FUNDING_HOURS and t > entry_time:
+            count += 1
+        t += timedelta(hours=1)
+    return count
 
 
 def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
@@ -71,6 +88,7 @@ def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
         "c_trend": "INT", "c_zone": "INT", "c_kill_zone": "INT",
         "c_ote": "INT", "c_volume": "INT", "c_rr": "INT",
         "entry_rr": "REAL", "risk_amount": "REAL", "r_multiple": "REAL",
+        "funding_cost": "REAL",
     })
     _migrate_columns(conn, "open_positions", {
         "entry_score": "REAL", "entry_session": "TEXT",
@@ -435,7 +453,15 @@ class PaperEngine(TradingEngine):
         else:
             gross_pnl = round((position.entry_price - actual_exit) * close_qty, 8)
 
-        pnl = round(gross_pnl - exit_fee, 8)
+        # 펀딩비: 보유 중 통과한 정산 시각(00/08/16 UTC) × 0.01% × 명목가 (보수 가정, 비용 처리)
+        funding_n = _funding_events(
+            position.entry_time, datetime.now(timezone.utc)
+        )
+        funding_cost = round(
+            funding_n * FUNDING_RATE * position.entry_price * close_qty, 8
+        )
+
+        pnl = round(gross_pnl - exit_fee - funding_cost, 8)
         released_margin = round(position.margin * close_ratio, 8)
         pnl_pct = pnl / released_margin if released_margin > 0 else 0.0
 
@@ -462,9 +488,10 @@ class PaperEngine(TradingEngine):
                (id, symbol, direction, entry_price, exit_price,
                 qty, pnl, pnl_pct, margin, entry_time, exit_time, status,
                 entry_score, entry_session, c_trend, c_zone, c_kill_zone,
-                c_ote, c_volume, c_rr, entry_rr, risk_amount, r_multiple)
+                c_ote, c_volume, c_rr, entry_rr, risk_amount, r_multiple,
+                funding_cost)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 trade_id,
                 position.symbol,
@@ -485,6 +512,7 @@ class PaperEngine(TradingEngine):
                 position.entry_rr,
                 risk_portion,
                 r_multiple,
+                funding_cost,
             ),
         )
         self.conn.commit()

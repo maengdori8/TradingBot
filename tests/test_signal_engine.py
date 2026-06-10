@@ -55,11 +55,15 @@ class TestNoSignal:
     @patch("src.strategy.signal_engine.detect_bos", return_value="bullish")
     @patch("src.strategy.signal_engine.is_price_in_fvg", return_value=[MagicMock(type="bullish")])
     @patch("src.strategy.signal_engine.is_price_in_ob", return_value=[])
-    def test_outside_kill_zone_returns_none(self, mock_ob, mock_fvg, mock_bos, mock_kz):
-        """Kill Zone = False => None."""
+    @patch("src.strategy.signal_engine.is_price_in_ote", return_value=True)
+    def test_outside_kill_zone_still_generates(
+        self, mock_ote, mock_ob, mock_fvg, mock_bos, mock_kz
+    ):
+        """킬존 게이트 해제: KZ=False여도 다른 조건 충족 시 신호 생성 (24h 진입)."""
         df = _make_trending_df(60, 1)
         result = generate_signal(df, df, df, "BTC/USDT", 120.0)
-        assert result is None
+        assert result is not None
+        assert "KZ밖" in result.reason
 
     @patch("src.strategy.signal_engine.is_in_kill_zone", return_value=True)
     @patch("src.strategy.signal_engine.detect_bos", return_value="bullish")

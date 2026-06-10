@@ -164,7 +164,11 @@ class RiskManager:
         return float(self.risk_tiers[-1]["risk_pct"])
 
     def calculate_trade_params(
-        self, entry: float, stop_loss: float, score: float | None = None
+        self,
+        entry: float,
+        stop_loss: float,
+        score: float | None = None,
+        risk_pct_override: float | None = None,
     ) -> dict:
         """
         리스크 기반 트레이드 파라미터 계산.
@@ -180,11 +184,15 @@ class RiskManager:
             entry: 진입 가격
             stop_loss: 손절 가격
             score: 컨플루언스 점수 (차등 리스크용, None이면 기본 리스크)
+            risk_pct_override: 리스크 비율 강제 지정 (예: BTC 역추세 강등 0.003).
+                지정 시 점수 티어보다 우선하되, 더 작은 값으로만 적용(안전 방향).
 
         Returns:
             qty, entry, stop_loss, take_profit, leverage, risk_pct 포함 딕셔너리
         """
         risk_pct = self.risk_pct_for_score(score)
+        if risk_pct_override is not None:
+            risk_pct = min(risk_pct, risk_pct_override)   # 강등만 허용 (확대 불가)
 
         if self.auto_leverage:
             leverage = float(calculate_auto_leverage(

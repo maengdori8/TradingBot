@@ -457,3 +457,65 @@ def _baseline_cfg():
             {"min_score": 75, "risk_pct": 0.005},
             {"min_score": 70, "risk_pct": 0.003}]},
     }
+
+
+class TestOverlayRevivalBugFix:
+    """config 변경(baseline 드리프트) 후 write_overlay가 구체제 학습값을 부활시키지 않아야 함."""
+
+    def test_baseline_drift_resets_values(self, tmp_path, monkeypatch):
+        import yaml
+        ov = tmp_path / "learned_params.yaml"
+        monkeypatch.setattr(L, "OVERLAY_PATH", ov)
+        # 구체제 오버레이: 옛 baseline(min_rr 2.0) + 학습값 min_rr 2.25
+        old = {
+            "meta": {"trades_analyzed": 30},
+            "baseline": {"scan.min_score": 70, "risk.min_rr_ratio": 2.0,
+                         "risk.risk_tiers": [{"min_score": 70, "risk_pct": 0.003}]},
+            "values": {"risk": {"min_rr_ratio": 2.25}},
+        }
+        ov.write_text(yaml.safe_dump(old), encoding="utf-8")
+
+        # 새 config (min_rr 2.5로 변경됨) 에서 min_score 조정 발생
+        new_raw = {"scan": {"min_score": 70}, "risk": {"min_rr_ratio": 2.5,
+                   "risk_tiers": [{"min_score": 70, "risk_pct": 0.003}]}}
+        adj = {"kind": "min_score", "param": "scan.min_score", "old": 70, "new": 72,
+               "reason": "t", "segment": {}, "segment_n": 25}
+        assert L.write_overlay(adj, new_raw, total_n=25)
+
+        data = yaml.safe_load(ov.read_text())
+        # 구체제 min_rr 2.25가 부활하면 안 됨
+        assert "min_rr_ratio" not in data.get("values", {}).get("risk", {})
+        assert data["values"]["scan"]["min_score"] == 72
+        assert data["baseline"]["risk.min_rr_ratio"] == 2.5
+
+    def test_same_baseline_keeps_values(self, tmp_path, monkeypatch):
+        import yaml
+        ov = tmp_path / "learned_params.yaml"
+        monkeypatch.setattr(L, "OVERLAY_PATH", ov)
+        raw = {"scan": {"min_score": 70}, "risk": {"min_rr_ratio": 2.5,
+               "risk_tiers": [{"min_score": 70, "risk_pct": 0.003}]}}
+        base = L._build_baseline(raw)
+        old = {"meta": {"trades_analyzed": 30}, "baseline": base,
+               "values": {"scan": {"min_score": 72}}}
+        ov.write_text(yaml.safe_dump(old), encoding="utf-8")
+
+        adj = {"kind": "risk_pct", "tier_min_score": 70,
+               "param": "risk_tiers[70].risk_pct", "old": 0.003, "new": 0.00255,
+               "reason": "t", "segment": {}, "segment_n": 20}
+        assert L.write_overlay(adj, raw, total_n=40)
+        data = yaml.safe_load(ov.read_text())
+        # baseline 동일하면 기존 학습값 유지 + 새 조정 병합
+        assert data["values"]["scan"]["min_score"] == 72
+        assert data["values"]["risk"]["risk_tiers"][0]["risk_pct"] == 0.00255
+
+
+class TestEpochFilter:
+    """epoch_start 이전 청산거래는 학습 입력/카운트에서 제외."""
+
+    def test_fetch_respects_since(self, tmp_path):
+        conn = _seed_db(tmp_path / "e.db", [_mk(72, -1) for _ in range(10)])
+        # 시드 거래는 모두 exit_time=2024-01-01
+        assert len(L.fetch_closed_trades(conn)) == 10
+        assert len(L.fetch_closed_trades(conn, since="2025-01-01T00:00:00")) == 0
+        assert L.count_closed_with_r(conn) == 10
+        assert L.count_closed_with_r(conn, since="2025-01-01T00:00:00") == 0
