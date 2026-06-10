@@ -200,10 +200,12 @@
         </div>
         <div class="col-6 col-md-3 col-lg-2">
             <div class="card stat-card">
-                <div class="stat-value mono {{ 'positive' if perf.win_rate >= 0.5 else 'negative' }}">
+                {# 승률 색상: 고정 50%가 아닌 손익분기 승률(1/(1+RR)) 기준 — RR2.5면 28.6% #}
+                {% set breakeven = 1 / (1 + config.get('risk', {}).get('min_rr_ratio', 2.5)) %}
+                <div class="stat-value mono {{ 'positive' if perf.win_rate >= breakeven else 'negative' }}">
                     {{ "%.1f"|format(perf.win_rate * 100) }}%
                 </div>
-                <div class="stat-label">승률 ({{ perf.total_trades }}건)</div>
+                <div class="stat-label">승률 ({{ perf.total_trades }}건 · 분기 {{ "%.0f"|format(breakeven*100) }}%)</div>
             </div>
         </div>
         <div class="col-6 col-md-3 col-lg-2">
@@ -361,14 +363,14 @@
                                 {% if w.qualified %}<span class="badge badge-pass">진입</span>{% endif %}
                             </div>
                             <div class="text-end">
-                                <span class="mono fw-bold" style="color: {{ 'var(--green)' if w.score >= 75 else 'var(--gold)' if w.score >= 50 else 'var(--muted)' }};">
+                                <span class="mono fw-bold" style="color: {{ 'var(--green)' if w.score >= 70 else 'var(--gold)' if w.score >= 50 else 'var(--muted)' }};">
                                     {{ "%.0f"|format(w.score) }}
                                 </span>
                                 <span class="text-muted" style="font-size:0.7rem;">/100</span>
                             </div>
                         </div>
                         <div class="promote-progress mt-1" style="height:4px;">
-                            <div class="promote-fill" style="width: {{ w.score }}%; background: {{ 'var(--green)' if w.score >= 75 else 'var(--gold)' if w.score >= 50 else 'var(--muted)' }};"></div>
+                            <div class="promote-fill" style="width: {{ w.score }}%; background: {{ 'var(--green)' if w.score >= 70 else 'var(--gold)' if w.score >= 50 else 'var(--muted)' }};"></div>
                         </div>
                         <div class="text-muted mt-1" style="font-size:0.72rem; text-align:left;">{{ w.reason }}</div>
                     </button>
@@ -529,7 +531,8 @@
 
     <!-- Footer -->
     <div class="text-center text-muted py-3" style="font-size: 0.75rem;">
-        ICT Paper Trading Bot &middot; Leverage {{ config.get('exchange', {}).get('leverage', 5) }}x
+        ICT Paper Trading Bot &middot;
+        {% if config.get('exchange', {}).get('auto_leverage') %}자동 레버리지 ~{{ config.get('exchange', {}).get('max_leverage', 10) }}x{% else %}Leverage {{ config.get('exchange', {}).get('leverage', 5) }}x{% endif %}
         &middot; Risk {{ (config.get('capital', {}).get('risk_per_trade', 0.01) * 100) }}%/trade
         &middot; Max {{ config.get('risk', {}).get('max_positions', 2) }} positions
     </div>

@@ -400,3 +400,40 @@ def test_no_funding_for_quick_close(engine):
         "SELECT funding_cost FROM trades WHERE id=?", (pos.id,)
     ).fetchone()
     assert row[0] in (0, 0.0)
+
+
+# ─── epoch 필터 / 시뮬레이션 시각 ────────────────────────────────────
+
+
+def test_get_performance_since_filter(engine):
+    """get_performance(since=)가 epoch 이전 청산거래를 제외한다."""
+    from datetime import datetime, timezone
+    # 과거 거래 (exit_time을 직접 과거로 기록)
+    pos = engine.open_position("BTC/USDT", "long", 50000, 0.01, 49000, 52000)
+    engine.close_position(pos, 52000, "TP",
+                          exit_time=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    # 현재 거래
+    pos2 = engine.open_position("BTC/USDT", "long", 50000, 0.01, 49000, 52000)
+    engine.close_position(pos2, 49000, "SL")
+
+    all_perf = engine.get_performance()
+    assert all_perf["total_trades"] == 2
+    new_perf = engine.get_performance(since="2026-01-01T00:00:00+00:00")
+    assert new_perf["total_trades"] == 1          # 구체제 거래 제외
+    assert new_perf["win_rate"] == 0.0            # 신체제엔 SL 1건뿐
+
+
+def test_simulated_times_drive_funding(engine):
+    """entry_time/exit_time 주입(백테스트) 시 펀딩이 시뮬레이션 시각 기준으로 계산된다."""
+    from datetime import datetime, timezone
+    entry_t = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
+    exit_t = datetime(2026, 1, 2, 1, 0, tzinfo=timezone.utc)   # 24h 보유 → 펀딩 3회
+    pos = engine.open_position(
+        "BTC/USDT", "long", 50000, 0.01, 49000, 52000, entry_time=entry_t,
+    )
+    engine.close_position(pos, 50000, "manual", exit_time=exit_t)
+    row = engine.conn.execute(
+        "SELECT funding_cost, exit_time FROM trades WHERE id=?", (pos.id,)
+    ).fetchone()
+    assert row[0] == pytest.approx(3 * 0.0001 * pos.entry_price * 0.01, rel=0.01)
+    assert row[1] == exit_t.isoformat()           # 기록도 시뮬레이션 시각

@@ -47,7 +47,7 @@
               └───────────────────────┼─────────────────┘
                                       ▼
                                signal_engine
-                               (Kill Zone 체크 + OTE)
+                               (OTE 체크 · 킬존은 가점/태깅)
                                       │
                               TradeSignal 발생
                                       │
@@ -69,7 +69,7 @@
 | `market_structure.py` | 스윙 포인트, BOS, CHoCH 탐지 |
 | `fvg_detector.py` | Fair Value Gap 탐지 및 추적 |
 | `order_block.py` | Order Block 탐지 |
-| `kill_zone.py` | London/NY 세션 시간 필터 |
+| `kill_zone.py` | London/NY 세션 판정 — 점수 가점·세션 태깅용 (게이트 아님) |
 | `ote.py` | 피보나치 OTE 존 계산 |
 | `signal_engine.py` | 멀티 타임프레임 신호 통합 |
 | `position_sizer.py` | 리스크 기반 수량 계산 |

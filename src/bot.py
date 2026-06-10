@@ -95,8 +95,8 @@ def run() -> None:
     all_symbols = list(dict.fromkeys(scan_symbols + list(open_symbols)))
     logger.info("스캔 대상 %d개 심볼 (보유 %d개 포함)", len(all_symbols), len(open_symbols))
 
-    min_score = scan_cfg.get("min_score", 75)
-    require_volume = scan_cfg.get("require_volume", True)
+    min_score = scan_cfg.get("min_score", 70)
+    require_volume = scan_cfg.get("require_volume", False)
 
     # BTC 상위TF 추세 레짐 (역추세 신호 사이징 강등용) — 실패 시 fail-open(강등 없음)
     # 근거: 신호연구에서 BTC 역행 신호는 조건부 부분집합에서 -0.258R. 단 전체표본 +0.145R라
@@ -224,7 +224,9 @@ def run() -> None:
     save_scan_state(watchlist, scanned, qualified_count)
 
     # 성과 요약
-    perf = paper.get_performance()
+    # 성과/실전전환 판정은 신체제(epoch) 거래만 — 구체제(다른 출구기하) 거래 혼입 방지
+    epoch = cfg.get("learning", {}).get("epoch_start")
+    perf = paper.get_performance(since=epoch)
     if "total_trades" in perf:
         logger.info(
             "성과 | 거래:%d 승률:%.1f%% PnL:%.2f USDT 잔고:%.2f USDT",

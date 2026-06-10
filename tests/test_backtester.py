@@ -58,9 +58,9 @@ class TestBacktesterInit:
     def test_default_params(self):
         bt = Backtester()
         assert bt.initial_balance == 1250.0
-        assert bt.risk_per_trade == 0.01
+        assert bt.risk_per_trade == 0.005   # 2026-06 신체제 동기화
         assert bt.leverage == 5.0
-        assert bt.min_rr == 2.0
+        assert bt.min_rr == 2.5             # 2026-06 신체제 동기화
         assert bt.ignore_kill_zone is False
 
     def test_custom_params(self):

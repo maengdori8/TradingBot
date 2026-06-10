@@ -80,14 +80,14 @@ def generate_signal(
     df_15m: pd.DataFrame,
     symbol: str,
     current_price: float,
-    min_rr: float = 2.0,
+    min_rr: float = 2.5,
 ) -> TradeSignal | None:
     """멀티 타임프레임 신호를 생성한다.
 
     조건:
     1. 4H: BOS 또는 CHoCH 로 추세 방향 확인
     2. 1H: OB 또는 FVG 존 탐지
-    3. 15m: Kill Zone 내 + OTE 레벨 확인
+    3. 15m: OTE 레벨 확인 (킬존은 게이트 아님 — 세션 태깅/가점만, 24h 진입)
 
     Args:
         df_4h: 4시간봉 데이터
@@ -229,15 +229,18 @@ def generate_signal(
     return signal
 
 
-# 컨플루언스 점수 가중치 (합계 100)
+# 컨플루언스 점수 가중치 — 만점 100 (BOS 30 + 존동시 35 + KZ 5 + OTE 30)
+# 2026-06 재배분: _W_KZ 15→5 축소분(10)을 데이터가 지지하는 항목으로 이전 —
+# FVG+OB 동시존은 신호연구에서 +0.093R(단일존 -0.035R)로 실측 우위 → +5,
+# OTE 깊이 → +5. KZ 밖 만점 95라 risk_tiers A급(85) 도달이 24h 어디서나 가능.
 _W_TREND_BOS = 30.0      # 4H BOS (강한 추세)
 _W_TREND_CHOCH = 22.0    # 4H CHoCH (전환)
-_W_ZONE_BOTH = 30.0      # 1H FVG + OB 동시
+_W_ZONE_BOTH = 35.0      # 1H FVG + OB 동시 (연구 실측 우위 반영)
 _W_ZONE_ONE = 20.0       # 1H FVG 또는 OB 하나
-# 신호연구(6개월/36심볼) 결과 시간 게이트의 양(+)가치 미확인 + 종전 창 정의 오류로
-# 15→5 축소. 정정된 창(런던 07-10/뉴욕 12-15 UTC) 재측정 후 0/5/15 최종 결정 예정.
+# 시간 게이트의 양(+)가치 미확인 + 종전 창 정의 오류로 15→5 축소.
+# 정정된 창(런던 07-10/뉴욕 12-15 UTC) 재측정 후 0/5/15 최종 결정 예정.
 _W_KZ = 5.0              # Kill Zone 내부 (가점만, 게이트 아님)
-_W_OTE_MAX = 25.0        # OTE (깊이에 따라 가중)
+_W_OTE_MAX = 30.0        # OTE (깊이에 따라 가중)
 
 
 def scan_symbol(
@@ -246,15 +249,16 @@ def scan_symbol(
     df_15m: pd.DataFrame,
     symbol: str,
     current_price: float,
-    min_rr: float = 1.5,
+    min_rr: float = 2.5,
     min_score: float = 70.0,
-    require_volume: bool = True,
+    require_volume: bool = False,
 ) -> ScanResult:
     """심볼을 스캔하여 진입 신호 + 관심종목 근접도 점수를 산출한다.
 
     모든 코인을 스캔할 때 사용한다. 각 ICT 단계의 충족도를 0~100 점수로 환산하며,
-    모든 단계 통과 + R:R + min_score + 거래량 확인을 만족할 때만 qualified=True
-    (즉시 진입). 그 외에는 score 기반 관심종목으로 분류된다.
+    추세+존+OTE 통과 + R:R + min_score(+옵션 거래량)를 만족할 때 qualified=True
+    (즉시 진입). 킬존은 게이트가 아니라 가점/태깅(24h 진입, 2026-06 개정).
+    그 외에는 score 기반 관심종목으로 분류된다.
 
     Args:
         df_4h: 4시간봉 데이터
@@ -325,16 +329,15 @@ def scan_symbol(
             checks=checks,
         )
 
-    # ── 3단계: 15m Kill Zone ─────────────────────────────────────────
+    # ── 킬존 태깅/가점 (게이트 아님 — stage와 무관) ───────────────────
     now = datetime.now(timezone.utc)
     kz_active = is_in_kill_zone(now)
     active_session = get_active_session(now)
     if kz_active:
         score += _W_KZ
         checks["kill_zone"] = True
-        stage = 3
 
-    # ── 4단계: OTE 존 (깊이 가중) ────────────────────────────────────
+    # ── 3단계: OTE 존 (깊이 가중) ────────────────────────────────────
     recent_high = df_15m["high"].rolling(20).max().iloc[-1]
     recent_low = df_15m["low"].rolling(20).min().iloc[-1]
     ote_zone = calculate_ote_zone(recent_high, recent_low, direction)
@@ -349,8 +352,7 @@ def scan_symbol(
             centered = 1.0
         score += _W_OTE_MAX * (0.6 + 0.4 * centered)
         checks["ote"] = True
-        if stage == 3:
-            stage = 4
+        stage = 3
 
     # ── 거래량 확인 (죽은 코인 배제) ──────────────────────────────────
     vol = df_15m["volume"]
@@ -370,6 +372,8 @@ def scan_symbol(
         if signal:
             rr_ok = signal.rr_ratio >= min_rr
             checks["rr"] = rr_ok
+            if rr_ok:
+                stage = 4          # 4단계 = 신호+R:R 확보 (KZ와 무관)
             signal.reason = (
                 f"{signal.reason} · score {score:.0f}"
             )

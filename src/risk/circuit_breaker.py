@@ -62,9 +62,9 @@ class CircuitBreaker:
     def __init__(
         self,
         trading_capital: float,
-        daily_loss_limit: float = 0.03,
-        weekly_loss_limit: float = 0.08,
-        max_consecutive_losses: int = 3,
+        daily_loss_limit: float = 0.05,
+        weekly_loss_limit: float = 0.12,
+        max_consecutive_losses: int = 7,
     ) -> None:
         """
         서킷브레이커 초기화.

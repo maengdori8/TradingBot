@@ -44,18 +44,22 @@ risk:
   max_exposure_pct: 0.80     # 총 담보금 < 트레이딩 자본 80%
   daily_loss_limit: 0.05     # 트레이딩 자본 5% 손실 시 당일 중단
   weekly_loss_limit: 0.12    # 트레이딩 자본 12% 손실 시 주간 중단
-  max_consecutive_losses: 5  # 5연패 시 1일 강제 휴식
+  max_consecutive_losses: 7  # 7연패 시 1일 강제 휴식 — 신체제(승률~40%)에서 5연패는
+                             # 확률 7.8%의 일상 변동이라 오발동. 7연패(2.8%)가 구설계의
+                             # 희귀도(~2%)와 동급. 7연패×0.7% = -4.9% < 일일한도 5%로 정합
   # 컨플루언스 점수별 차등 리스크 (강한 셋업 크게, 약한 셋업 작게)
   risk_tiers:
     - {min_score: 85, risk_pct: 0.007}   # A급: 풀 컨플루언스
     - {min_score: 75, risk_pct: 0.005}   # B급: 표준
     - {min_score: 70, risk_pct: 0.003}   # C급: 가볍게
 
+# 실전 전환 기준 — 2026-06 전략 개정(RR 2.5, 설계 승률 37~42%)에 맞춰 재보정.
+# 구기준(승률 55%/MDD 5%)은 RR 2.0×고승률 체제용이라 신체제에선 구조적으로 도달 불가였음.
 promote:
-  min_trades: 20
-  min_win_rate: 0.55
-  min_profit_factor: 1.5
-  max_mdd: 0.05
+  min_trades: 30             # 저승률·고RR 체제는 엣지 확인에 더 많은 표본 필요 (20→30)
+  min_win_rate: 0.38         # RR2.5 손익분기 28.6% + 약 10%p 마진 (0.55는 신체제 도달불가)
+  min_profit_factor: 1.5     # 유지 — 40%승률×순2.4R이면 PF≈1.6으로 달성 가능한 기준
+  max_mdd: 0.10              # 5%→10%: 40% 승률에서 연패발 5% MDD는 정상 변동 범위
   min_sharpe: 1.0
   min_return_pct: 0.0
 

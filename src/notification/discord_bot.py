@@ -186,13 +186,13 @@ class DiscordNotifier:
         pnl = stats.get("total_pnl", 0)
         sign = "+" if pnl >= 0 else ""
         payload = self._embed(
-            title="📊 일일 트레이딩 리포트",
-            description=f"**{datetime.now(timezone.utc).strftime('%Y-%m-%d')} UTC 기준**",
+            title="📊 트레이딩 리포트 (전체 기간 누적)",
+            description=f"**{datetime.now(timezone.utc).strftime('%Y-%m-%d')} UTC 기준** — 누적 통계",
             color=self.COLOR["report"],
             fields=[
                 {"name": "총 거래",    "value": f"`{stats.get('total_trades', 0)}건`",           "inline": True},
                 {"name": "승률",       "value": f"`{stats.get('win_rate', 0)*100:.1f}%`",          "inline": True},
-                {"name": "일일 PnL",   "value": f"`{sign}{pnl:.2f} USDT`",                        "inline": True},
+                {"name": "누적 PnL",   "value": f"`{sign}{pnl:.2f} USDT`",                        "inline": True},
                 {"name": "Profit Factor","value": f"`{stats.get('profit_factor', 0):.2f}`",        "inline": True},
                 {"name": "MDD",        "value": f"`{stats.get('mdd', 0)*100:.2f}%`",               "inline": True},
                 {"name": "잔고",       "value": f"`{stats.get('current_balance', 0):,.2f} USDT`",  "inline": True},

@@ -41,9 +41,9 @@ class Backtester:
     def __init__(
         self,
         initial_balance: float = 1250.0,
-        risk_per_trade: float = 0.01,
+        risk_per_trade: float = 0.005,
         leverage: float = 5.0,
-        min_rr: float = 2.0,
+        min_rr: float = 2.5,
         ignore_kill_zone: bool = False,
     ) -> None:
         """
@@ -54,7 +54,8 @@ class Backtester:
             risk_per_trade: 트레이드당 리스크 비율 (예: 0.01 = 1%)
             leverage: 레버리지 배수
             min_rr: 최소 R:R 비율
-            ignore_kill_zone: True이면 Kill Zone 시간 필터 무시
+            ignore_kill_zone: (구버전 호환) 킬존 게이트는 2026-06 개정으로
+                폐지되어 신호 생성이 이미 24h — 이 옵션은 사실상 no-op
         """
         self.initial_balance: float = initial_balance
         self.risk_per_trade: float = risk_per_trade
@@ -64,12 +65,12 @@ class Backtester:
         self._result: BacktestResult | None = None
 
         logger.info(
-            "백테스터 초기화: balance=%.2f risk=%.2f%% leverage=%.1fx min_rr=%.1f kill_zone=%s",
+            "백테스터 초기화: balance=%.2f risk=%.2f%% leverage=%.1fx min_rr=%.1f "
+            "진입=24h(킬존 게이트 없음)",
             initial_balance,
             risk_per_trade * 100,
             leverage,
             min_rr,
-            "무시" if ignore_kill_zone else "적용",
         )
 
     def run(
@@ -132,24 +133,22 @@ class Backtester:
         equity_curve: list[float] = []
         trade_log: list[dict] = []
 
-        # Kill Zone 패치: 백테스트 모드에서 Kill Zone 무시
-        _original_is_in_kill_zone = None
+        # 킬존 몽키패치 제거(2026-06): 킬존은 더 이상 게이트가 아니므로 패치하면
+        # 오히려 모든 시점에 +5 가점이 부여돼 결과가 오염됨. ignore_kill_zone은 no-op.
         if self.ignore_kill_zone:
-            import src.strategy.signal_engine as se_module
-
-            _original_is_in_kill_zone = se_module.is_in_kill_zone
-            se_module.is_in_kill_zone = lambda _dt: True  # type: ignore[assignment]
-            logger.info("Kill Zone 필터 비활성화 (백테스트 모드)")
+            logger.warning("ignore_kill_zone은 폐기됨(no-op) — 신호 생성은 이미 24h")
 
         try:
             for i in range(start_idx, total_candles):
                 current_time = df_15m.index[i]
+                sim_time = current_time.to_pydatetime()   # 펀딩/기록용 시뮬레이션 시각
                 current_price = float(df_15m.iloc[i]["close"])
                 current_high = float(df_15m.iloc[i]["high"])
                 current_low = float(df_15m.iloc[i]["low"])
 
-                # SL/TP 체크 (매 캔들)
-                engine.check_stops(symbol, current_high, current_low)
+                # SL/TP 체크 (매 캔들) — 캔들 시각 전달 (펀딩비 정확 산정)
+                engine.check_stops(symbol, current_high, current_low,
+                                   current_time=sim_time)
 
                 # 미실현손익 갱신
                 engine.update_unrealized_pnl(symbol, current_price)
@@ -215,6 +214,7 @@ class Backtester:
                     qty,
                     signal.stop_loss,
                     signal.take_profit,
+                    entry_time=sim_time,   # 시뮬레이션 시각 (펀딩비 산정 기준)
                 )
 
                 if pos is not None:
@@ -237,21 +237,19 @@ class Backtester:
                         signal.take_profit,
                     )
 
-            # 미청산 포지션 강제 청산
+            # 미청산 포지션 강제 청산 (마지막 캔들 시각 기준)
             last_price = float(df_15m.iloc[-1]["close"])
+            last_time = df_15m.index[-1].to_pydatetime()
             for pos in list(engine.positions):
-                pnl = engine.close_position(pos, last_price, "backtest_end")
+                pnl = engine.close_position(
+                    pos, last_price, "backtest_end", exit_time=last_time
+                )
                 logger.info(
                     "[BT] 미청산 포지션 강제 청산: PnL=%.4f", pnl
                 )
 
         finally:
-            # Kill Zone 패치 복원
-            if _original_is_in_kill_zone is not None:
-                import src.strategy.signal_engine as se_module
-
-                se_module.is_in_kill_zone = _original_is_in_kill_zone
-                logger.info("Kill Zone 필터 복원")
+            pass   # (킬존 패치 복원 로직 제거 — 패치 자체가 폐기됨)
 
         self._result = self._build_result(engine, trade_log, equity_curve)
         self._log_summary(self._result)

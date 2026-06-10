@@ -71,7 +71,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--ignore-kz", action="store_true",
-        help="Kill Zone 필터 비활성화",
+        help="(구버전 호환) 킬존 게이트는 2026-06 개정으로 폐지됨 — 이 옵션은 무시됨",
     )
     args = parser.parse_args()
 
@@ -89,7 +89,7 @@ def main() -> None:
     logger.info("리스크/트레이드: %.1f%%", args.risk * 100)
     logger.info("레버리지: %.0fx", args.leverage)
     logger.info("최소 R:R: %.1f", args.min_rr)
-    logger.info("Kill Zone: %s", "OFF" if args.ignore_kz else "ON")
+    logger.info("진입 시간: 24시간 (킬존 게이트 폐지, 2026-06 개정)")
     logger.info("=" * 60)
 
     # 시세 데이터 수집

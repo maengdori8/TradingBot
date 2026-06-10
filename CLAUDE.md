@@ -22,7 +22,7 @@ src/
     market_structure.py     #   BOS / CHoCH 탐지
     fvg_detector.py         #   Fair Value Gap
     order_block.py          #   Order Block
-    kill_zone.py            #   Kill Zone 시간 필터
+    kill_zone.py            #   세션 판정 (가점/태깅용 — 진입은 24h)
     ote.py                  #   Optimal Trade Entry
     signal_engine.py        #   멀티 타임프레임 신호 통합
   exchange/                 # 거래소 연결 (Infra Agent 전용)

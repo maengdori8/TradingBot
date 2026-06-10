@@ -38,7 +38,7 @@ python src/bot.py --mode paper
 
 ## 실거래 실행
 
-페이퍼 트레이딩 30일 이상, 리스크 규칙 충족 후:
+페이퍼 트레이딩 성과가 실전 전환 기준(config promote 섹션 — 30건+/승률38%+/PF1.5+/MDD10%- 등) 충족 후:
 
 ```bash
 python src/bot.py --mode live

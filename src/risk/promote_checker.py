@@ -45,11 +45,12 @@ class PromoteResult:
 # 기본값
 # ------------------------------------------------------------------
 
+# 2026-06 전략 개정(RR 2.5, 설계 승률 37~42%)에 맞춘 기본값 — config promote 섹션과 동기화
 _DEFAULTS: dict[str, float] = {
-    "min_trades": 20,
-    "min_win_rate": 0.55,
+    "min_trades": 30,
+    "min_win_rate": 0.38,      # RR2.5 손익분기 28.6% + 마진
     "min_profit_factor": 1.5,
-    "max_mdd": 0.05,
+    "max_mdd": 0.10,
     "min_sharpe": 1.0,
     "min_return_pct": 0.0,
 }

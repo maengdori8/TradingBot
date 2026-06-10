@@ -342,6 +342,7 @@ class PaperEngine(TradingEngine):
         checks: dict | None = None,
         entry_rr: float | None = None,
         entry_session: str | None = None,
+        entry_time: datetime | None = None,
     ) -> Position | None:
         """
         포지션 진입 — 담보금 및 수수료 차감.
@@ -361,6 +362,8 @@ class PaperEngine(TradingEngine):
             checks: 진입 ICT 조건 dict (학습용, 옵셔널)
             entry_rr: 진입 목표 R:R (학습용, 옵셔널)
             entry_session: 진입 세션 london/newyork/None (학습용, 옵셔널)
+            entry_time: 진입 시각 강제 지정 (백테스트의 시뮬레이션 시각 —
+                미지정 시 현재 시각. 펀딩비 계산이 이 시각 기준)
 
         Returns:
             생성된 Position 또는 잔고 부족 시 None
@@ -391,6 +394,7 @@ class PaperEngine(TradingEngine):
             stop_loss=stop_loss,
             take_profit=take_profit,
             margin=margin,
+            entry_time=entry_time or datetime.now(timezone.utc),
             entry_score=score,
             entry_session=entry_session,
             entry_checks=checks,
@@ -418,6 +422,7 @@ class PaperEngine(TradingEngine):
         exit_price: float,
         reason: str = "",
         qty: float | None = None,
+        exit_time: datetime | None = None,
     ) -> float:
         """
         포지션 청산 — 담보금 반환 + PnL. 부분 청산 지원.
@@ -427,6 +432,8 @@ class PaperEngine(TradingEngine):
             exit_price: 청산 가격
             reason: 청산 사유 (예: "SL", "TP", "manual")
             qty: 부분 청산 수량 (None이면 전량 청산)
+            exit_time: 청산 시각 강제 지정 (백테스트의 시뮬레이션 시각 —
+                미지정 시 현재 시각. 펀딩비/기록이 이 시각 기준)
 
         Returns:
             실현 손익 (USDT)
@@ -454,9 +461,9 @@ class PaperEngine(TradingEngine):
             gross_pnl = round((position.entry_price - actual_exit) * close_qty, 8)
 
         # 펀딩비: 보유 중 통과한 정산 시각(00/08/16 UTC) × 0.01% × 명목가 (보수 가정, 비용 처리)
-        funding_n = _funding_events(
-            position.entry_time, datetime.now(timezone.utc)
-        )
+        # 백테스트는 exit_time(시뮬레이션 시각)을 넘겨야 펀딩이 올바르게 계산됨
+        closed_at = exit_time or datetime.now(timezone.utc)
+        funding_n = _funding_events(position.entry_time, closed_at)
         funding_cost = round(
             funding_n * FUNDING_RATE * position.entry_price * close_qty, 8
         )
@@ -481,7 +488,7 @@ class PaperEngine(TradingEngine):
         def _b(key: str) -> int | None:
             return int(bool(ck[key])) if key in ck else None
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = closed_at.isoformat()
         trade_id = f"{position.id}-{now}" if is_partial else position.id
         self.conn.execute(
             """INSERT INTO trades
@@ -551,7 +558,11 @@ class PaperEngine(TradingEngine):
         return pnl
 
     def check_stops(
-        self, symbol: str, current_high: float, current_low: float
+        self,
+        symbol: str,
+        current_high: float,
+        current_low: float,
+        current_time: datetime | None = None,
     ) -> None:
         """
         SL/TP 자동 체크 — 해당 심볼의 모든 포지션 검사.
@@ -560,20 +571,21 @@ class PaperEngine(TradingEngine):
             symbol: 거래 심볼
             current_high: 현재 캔들 고가
             current_low: 현재 캔들 저가
+            current_time: 캔들 시각 (백테스트용 — 펀딩/기록 시각으로 전달)
         """
         for pos in list(self._positions):
             if pos.symbol != symbol:
                 continue
             if pos.direction == "long":
                 if current_low <= pos.stop_loss:
-                    self.close_position(pos, pos.stop_loss, "SL")
+                    self.close_position(pos, pos.stop_loss, "SL", exit_time=current_time)
                 elif current_high >= pos.take_profit:
-                    self.close_position(pos, pos.take_profit, "TP")
+                    self.close_position(pos, pos.take_profit, "TP", exit_time=current_time)
             else:
                 if current_high >= pos.stop_loss:
-                    self.close_position(pos, pos.stop_loss, "SL")
+                    self.close_position(pos, pos.stop_loss, "SL", exit_time=current_time)
                 elif current_low <= pos.take_profit:
-                    self.close_position(pos, pos.take_profit, "TP")
+                    self.close_position(pos, pos.take_profit, "TP", exit_time=current_time)
 
     # ------------------------------------------------------------------
     # 미실현 손익 / 트레일링 스톱
@@ -648,16 +660,26 @@ class PaperEngine(TradingEngine):
     # 성과 지표
     # ------------------------------------------------------------------
 
-    def get_performance(self) -> dict:
+    def get_performance(self, since: str | None = None) -> dict:
         """
         성과 지표 계산.
+
+        Args:
+            since: epoch 시작(ISO) — 지정 시 이 시각 이후 청산거래만 집계.
+                전략 체제 변경 시 구체제 거래가 신체제 판정(실전 전환 등)을
+                오염시키지 않도록 learning.epoch_start를 전달한다.
 
         Returns:
             성과 통계 딕셔너리
         """
-        rows = self.conn.execute(
-            "SELECT pnl, pnl_pct FROM trades"
-        ).fetchall()
+        if since:
+            rows = self.conn.execute(
+                "SELECT pnl, pnl_pct FROM trades WHERE exit_time >= ?", (since,)
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT pnl, pnl_pct FROM trades"
+            ).fetchall()
 
         if not rows:
             return {"message": "거래 내역 없음"}

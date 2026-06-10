@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 """
-Kill Zone 시간 필터 — London / New York 세션
+Kill Zone 세션 판정 — London / New York (UTC)
+
+2026-06 개정: 킬존은 진입 게이트가 아니라 컨플루언스 가점(+5)과
+세션 태깅(학습 세그먼트)에만 사용된다. 진입은 24시간 허용.
 """
 
 import logging

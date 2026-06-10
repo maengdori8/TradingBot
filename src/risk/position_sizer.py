@@ -103,7 +103,7 @@ def calculate_stop_loss_atr(
     direction: str,
     entry_price: float,
     atr_period: int = 14,
-    atr_multiplier: float = 1.5,
+    atr_multiplier: float = 2.0,
 ) -> float:
     """
     ATR 기반 손절 가격 계산.
@@ -139,7 +139,7 @@ def calculate_stop_loss_atr(
 def calculate_take_profit(
     entry: float,
     stop_loss: float,
-    rr_ratio: float = 2.0,
+    rr_ratio: float = 2.5,
 ) -> float:
     """
     R:R 기반 목표가 계산.

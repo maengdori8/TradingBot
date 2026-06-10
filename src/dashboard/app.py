@@ -257,8 +257,8 @@ def _fetch_circuit_breaker_status() -> dict:
         risk = cfg.get("risk", {})
         cap = cfg.get("capital", {})
         trading_cap = cap.get("total_capital", 5000) * cap.get("trading_allocation", 0.25)
-        daily_limit = risk.get("daily_loss_limit", 0.03)
-        max_consec = risk.get("max_consecutive_losses", 3)
+        daily_limit = risk.get("daily_loss_limit", 0.05)
+        max_consec = risk.get("max_consecutive_losses", 7)
 
         is_blocked = (
             daily_pnl < -(trading_cap * daily_limit)
@@ -278,22 +278,27 @@ def _fetch_circuit_breaker_status() -> dict:
         return {"daily_pnl": 0.0, "consecutive_losses": 0, "is_blocked": False}
 
 
-def _promote_status(perf: dict) -> dict:
-    """실전 전환 기준 충족 상태."""
+def _promote_status(perf: dict, initial_balance: float = 1250.0) -> dict:
+    """실전 전환 기준 충족 상태.
+
+    Args:
+        perf: 성과 지표 dict
+        initial_balance: 수익률 계산 기준 초기 자본
+    """
     cfg = _load_config()
     promote = cfg.get("promote", {})
 
     criteria = {
         "거래 수": {
             "value": perf.get("total_trades", 0),
-            "threshold": promote.get("min_trades", 20),
-            "passed": perf.get("total_trades", 0) >= promote.get("min_trades", 20),
+            "threshold": promote.get("min_trades", 30),
+            "passed": perf.get("total_trades", 0) >= promote.get("min_trades", 30),
             "format": "d",
         },
         "승률": {
             "value": perf.get("win_rate", 0) * 100,
-            "threshold": promote.get("min_win_rate", 0.55) * 100,
-            "passed": perf.get("win_rate", 0) >= promote.get("min_win_rate", 0.55),
+            "threshold": promote.get("min_win_rate", 0.38) * 100,
+            "passed": perf.get("win_rate", 0) >= promote.get("min_win_rate", 0.38),
             "format": ".1f",
             "suffix": "%",
         },
@@ -305,8 +310,8 @@ def _promote_status(perf: dict) -> dict:
         },
         "MDD": {
             "value": perf.get("mdd", 1) * 100,
-            "threshold": promote.get("max_mdd", 0.05) * 100,
-            "passed": perf.get("mdd", 1) <= promote.get("max_mdd", 0.05),
+            "threshold": promote.get("max_mdd", 0.10) * 100,
+            "passed": perf.get("mdd", 1) <= promote.get("max_mdd", 0.10),
             "format": ".2f",
             "suffix": "%",
             "lower_better": True,
@@ -318,7 +323,8 @@ def _promote_status(perf: dict) -> dict:
             "format": ".2f",
         },
         "수익률": {
-            "value": (perf.get("total_pnl", 0) / 1250) * 100 if perf.get("total_trades", 0) > 0 else 0,
+            "value": (perf.get("total_pnl", 0) / initial_balance) * 100
+                     if perf.get("total_trades", 0) > 0 and initial_balance > 0 else 0,
             "threshold": promote.get("min_return_pct", 0) * 100,
             "passed": True if perf.get("total_pnl", 0) >= 0 else False,
             "format": ".2f",
@@ -356,7 +362,7 @@ def index():
     perf = _calc_performance(trades, initial_balance)
     equity = _build_equity_curve(trades, initial_balance)
     cb_status = _fetch_circuit_breaker_status()
-    promote = _promote_status(perf)
+    promote = _promote_status(perf, initial_balance)
 
     conn.close()
 

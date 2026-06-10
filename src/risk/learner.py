@@ -206,11 +206,23 @@ def count_closed_with_r(conn: sqlite3.Connection, since: str | None = None) -> i
         return 0
 
 
-def compute_mdd(conn: sqlite3.Connection, initial_balance: float) -> float:
-    """청산거래 누적손익 기준 최대낙폭(MDD) — paper 없이도 킬스위치 평가용."""
+def compute_mdd(
+    conn: sqlite3.Connection, initial_balance: float, since: str | None = None
+) -> float:
+    """청산거래 누적손익 기준 최대낙폭(MDD) — paper 없이도 킬스위치 평가용.
+
+    Args:
+        conn: DB 연결
+        initial_balance: 시작 자본
+        since: epoch 시작(ISO) — 구체제 낙폭이 신체제 킬스위치를 영구 동결하지 않도록
+    """
+    where = "pnl IS NOT NULL AND status IN ('SL','TP','manual')"
+    params: tuple = ()
+    if since:
+        where += " AND exit_time >= ?"
+        params = (since,)
     rows = conn.execute(
-        "SELECT pnl FROM trades WHERE pnl IS NOT NULL AND status IN ('SL','TP','manual') "
-        "ORDER BY exit_time ASC"
+        f"SELECT pnl FROM trades WHERE {where} ORDER BY exit_time ASC", params
     ).fetchall()
     if not rows or initial_balance <= 0:
         return 0.0
@@ -295,7 +307,7 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
     cooldown = learning.get("cooldown_trades", 10)
     deadband = learning.get("deadband_R", 0.05)
 
-    min_rr = risk.get("min_rr_ratio", 2.0)
+    min_rr = risk.get("min_rr_ratio", 2.5)
     total_n = agg["overall"]["n"]
     tiers = risk.get("risk_tiers", [])
     boundaries = sorted([t["min_score"] for t in tiers], reverse=True)
@@ -368,11 +380,15 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
                 }
 
     # ── 3) 위험 축소: min_rr 상향 (승률 양호한데 기대값 적자 확신 = 손익비 나쁨) ──
+    # '승률 양호'의 기준은 고정 50%가 아니라 손익분기 승률(1/(1+RR)) + 5%p 마진.
+    # (고정 0.5는 구체제 고승률 가정 — RR2.5 체제 설계 승률 37~42%에서는 사문화됨)
     ov = agg["overall"]
+    breakeven_wr = 1.0 / (1.0 + min_rr) if min_rr > 0 else 0.5
     if (total_n >= 30 and cooled("min_rr_ratio", total_n) and min_rr < MIN_RR_MAX
             and losing(ov)
             and ov.get("expectancy_ub") is not None and ov["expectancy_ub"] < 0
-            and ov["laplace_winrate"] is not None and ov["laplace_winrate"] > 0.5):
+            and ov["laplace_winrate"] is not None
+            and ov["laplace_winrate"] > breakeven_wr + 0.05):
         new = min(MIN_RR_MAX, round(min_rr + MINRR_STEP, 2))
         if new > min_rr:
             return {
@@ -667,8 +683,8 @@ def maybe_update(paper=None, notifier=None, dry_run: bool | None = None,
     try:
         cap = cfg.get("capital", {})
         initial = cap.get("total_capital", 5000) * cap.get("trading_allocation", 0.25)
-        max_mdd = cfg.get("promote", {}).get("max_mdd", 0.05)
-        if compute_mdd(db_conn, initial) > max_mdd:
+        max_mdd = cfg.get("promote", {}).get("max_mdd", 0.10)
+        if compute_mdd(db_conn, initial, since=epoch) > max_mdd:
             state["kill_switch"] = True
     except Exception:
         pass
