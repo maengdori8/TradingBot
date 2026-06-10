@@ -27,6 +27,7 @@ def _cfg():
             "enabled": True, "dry_run": False, "min_trades_to_learn": 20,
             "every_n_trades": 5, "cooldown_trades": 10, "lookback_trades": 0,
             "deadband_R": 0.05, "bucket_min_n": 12, "session_min_n": 10,
+            "bucket_min_n_expand": 12,   # 기존 테스트 호환 (운영 기본은 24)
             "global_min_n_for_min_score": 20,
         },
         "promote": {"max_mdd": 0.05},
@@ -519,3 +520,25 @@ class TestEpochFilter:
         assert len(L.fetch_closed_trades(conn, since="2025-01-01T00:00:00")) == 0
         assert L.count_closed_with_r(conn) == 10
         assert L.count_closed_with_r(conn, since="2025-01-01T00:00:00") == 0
+
+
+class TestExpandSampleGate:
+    def test_default_expand_gate_blocks_small_n(self):
+        """bucket_min_n_expand 미설정(기본 24) 시 n=15 행운 버킷 확대 차단."""
+        cfg = _cfg()
+        del cfg["learning"]["bucket_min_n_expand"]   # 기본값 24 사용
+        trades = [_mk(90, 2) for _ in range(15)] + [_mk(80, -1) for _ in range(8)]
+        agg = L.aggregate(trades, BOUNDS)
+        dec = L.decide_adjustment(agg, cfg, _baseline(),
+                                  {"last_change_at": {}, "kill_switch": False})
+        assert dec is None or not (dec["kind"] == "risk_pct" and dec["new"] > dec["old"])
+
+    def test_expand_allowed_with_enough_n(self):
+        """n>=24면 확대 허용 (흑자 확신 시)."""
+        cfg = _cfg()
+        del cfg["learning"]["bucket_min_n_expand"]
+        trades = [_mk(90, 2) for _ in range(25)] + [_mk(80, -1) for _ in range(8)]
+        agg = L.aggregate(trades, BOUNDS)
+        dec = L.decide_adjustment(agg, cfg, _baseline(),
+                                  {"last_change_at": {}, "kill_switch": False})
+        assert dec is not None and dec["kind"] == "risk_pct" and dec["new"] > dec["old"]

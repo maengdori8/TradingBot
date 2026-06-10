@@ -303,6 +303,8 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
     learning = cfg.get("learning", {})
 
     bucket_min_n = learning.get("bucket_min_n", 12)
+    # 위험 확대는 더 큰 표본 요구 (소표본 행운 버킷의 리스크 상향 오발동 차단)
+    bucket_min_n_expand = learning.get("bucket_min_n_expand", 24)
     global_min_score_n = learning.get("global_min_n_for_min_score", 20)
     cooldown = learning.get("cooldown_trades", 10)
     deadband = learning.get("deadband_R", 0.05)
@@ -404,7 +406,7 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
     for b in sorted(boundaries, reverse=True):
         seg = agg["by_score_bucket"].get(f">={b:g}", {})
         seg_n = seg.get("n", 0)
-        if seg_n < bucket_min_n or not winning(seg):
+        if seg_n < bucket_min_n_expand or not winning(seg):
             continue
         tier = next((t for t in tiers if t["min_score"] == b), None)
         if not tier:
@@ -437,7 +439,8 @@ def decide_adjustment(agg: dict, cfg: dict, baseline: dict, state: dict) -> dict
         low_seg = agg["by_score_bucket"].get(f">={lowest:g}", {})
         qualified = [s for s in agg["by_score_bucket"].values() if s.get("n", 0) >= bucket_min_n]
         # 문턱 인근(최저 버킷)에 충분 표본 + 흑자확신이 있어야 완화 (미측정 구간 재유입 방지)
-        if (low_seg.get("n", 0) >= bucket_min_n and winning(low_seg)
+        # min_score 하향도 위험 확대 — 확대용 표본 기준(bucket_min_n_expand) 적용
+        if (low_seg.get("n", 0) >= bucket_min_n_expand and winning(low_seg)
                 and qualified and all(winning(s) for s in qualified)):
             new = max(base_ms, cur_ms - MINSCORE_STEP)
             if new < cur_ms:

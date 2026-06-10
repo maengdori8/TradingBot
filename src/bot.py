@@ -161,6 +161,18 @@ def run() -> None:
             logger.info("[%s] 거래 차단: %s", res.symbol, reason)
             continue
 
+        # 손절 직후 동일 심볼 재진입 쿨다운 (복수매매 차단 — Coval&Shumway 2005:
+        # 손실 직후 거래는 기대값 음수. 봇도 같은 셋업 재시도 패턴 구조적 차단)
+        last_sl = paper.last_sl_exit(res.symbol)
+        if last_sl is not None:
+            elapsed_h = (datetime.now(timezone.utc) - last_sl).total_seconds() / 3600
+            if elapsed_h < risk.reentry_cooldown_hours:
+                logger.info(
+                    "[%s] SL 재진입 쿨다운 (%.1f/%.0fh)",
+                    res.symbol, elapsed_h, risk.reentry_cooldown_hours,
+                )
+                continue
+
         sig = res.signal
 
         # BTC 역추세 신호 → 리스크 최하단 강등 (차단 아님, fail-open: btc_trend=None이면 미적용)

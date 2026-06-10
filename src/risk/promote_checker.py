@@ -47,7 +47,7 @@ class PromoteResult:
 
 # 2026-06 전략 개정(RR 2.5, 설계 승률 37~42%)에 맞춘 기본값 — config promote 섹션과 동기화
 _DEFAULTS: dict[str, float] = {
-    "min_trades": 30,
+    "min_trades": 50,          # 운/실력 구분 표본 (Barber 2014)
     "min_win_rate": 0.38,      # RR2.5 손익분기 28.6% + 마진
     "min_profit_factor": 1.5,
     "max_mdd": 0.10,
@@ -83,6 +83,10 @@ class PromoteChecker:
         self.max_mdd: float = float(cfg.get("max_mdd", _DEFAULTS["max_mdd"]))
         self.min_sharpe: float = float(cfg.get("min_sharpe", _DEFAULTS["min_sharpe"]))
         self.min_return_pct: float = float(cfg.get("min_return_pct", _DEFAULTS["min_return_pct"]))
+        # 통계 게이트: 승률의 Wilson 95% 신뢰하한 > 손익분기 승률 (운/실력 구분 —
+        # Barber et al. 2014: 지속 수익 데이트레이더 <1%. 점추정만으론 운도 통과함)
+        self.require_wilson_gate: bool = bool(cfg.get("require_wilson_gate", True))
+        self.breakeven_winrate: float = float(cfg.get("breakeven_winrate", 0.286))
 
         logger.info(
             "PromoteChecker 초기화: trades>=%d, wr>=%.2f, pf>=%.2f, mdd<=%.2f, sharpe>=%.2f, ret>=%.2f",
@@ -196,6 +200,19 @@ class PromoteChecker:
             threshold=self.min_return_pct,
             weight=_WEIGHTS["return_pct"],
         )
+
+        # --- 7. 통계 게이트: 승률 Wilson 95% 신뢰하한 > 손익분기 (운/실력 구분) ---
+        if self.require_wilson_gate:
+            from src.risk.learner import wilson_interval
+            wins = int(round(win_rate * total_trades))
+            wl_lb, _ = wilson_interval(wins, total_trades) if total_trades else (0.0, 1.0)
+            criteria["winrate_lb"] = CriterionResult(
+                name="승률 신뢰하한",
+                passed=wl_lb > self.breakeven_winrate,
+                value=round(wl_lb, 4),
+                threshold=self.breakeven_winrate,
+                weight=0.0,   # 점수 미반영, eligible 판별에만 포함
+            )
 
         # --- 종합 점수 계산 ---
         score = 0.0

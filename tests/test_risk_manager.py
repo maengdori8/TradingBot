@@ -329,3 +329,42 @@ class TestRecordResult:
     def test_callback_error_safe(self, risk_manager):
         risk_manager.register_on_result(lambda p, r: 1 / 0)
         risk_manager.record_result(-10.0, "SL")
+
+
+class TestGradedLossResponse:
+    """그레이디드 손실 대응층 — 연패 단계 축소 / 일중 소프트 강등 / 명목노출 캡."""
+
+    def test_streak_decay_halves_risk(self, risk_manager):
+        with patch.object(risk_manager.cb, "get_consecutive_losses", return_value=1), \
+             patch.object(risk_manager.cb, "get_daily_pnl", return_value=0.0):
+            p1 = risk_manager.calculate_trade_params(50000, 49000, score=None)
+        with patch.object(risk_manager.cb, "get_consecutive_losses", return_value=0), \
+             patch.object(risk_manager.cb, "get_daily_pnl", return_value=0.0):
+            p0 = risk_manager.calculate_trade_params(50000, 49000, score=None)
+        assert p1["risk_pct"] == pytest.approx(p0["risk_pct"] * 0.5)
+
+    def test_streak_decay_floor_quarter(self, risk_manager):
+        """연패가 깊어도 하한 1/4."""
+        with patch.object(risk_manager.cb, "get_consecutive_losses", return_value=6), \
+             patch.object(risk_manager.cb, "get_daily_pnl", return_value=0.0):
+            p = risk_manager.calculate_trade_params(50000, 49000, score=None)
+        assert p["risk_pct"] == pytest.approx(risk_manager.risk_per_trade * 0.25)
+
+    def test_soft_daily_demote(self, risk_manager):
+        """일중 -2% 도달 시 리스크 절반."""
+        loss = -risk_manager.trading_capital * 0.025
+        with patch.object(risk_manager.cb, "get_consecutive_losses", return_value=0), \
+             patch.object(risk_manager.cb, "get_daily_pnl", return_value=loss):
+            p = risk_manager.calculate_trade_params(50000, 49000, score=None)
+        assert p["risk_pct"] == pytest.approx(risk_manager.risk_per_trade * 0.5)
+
+    def test_notional_cap_blocks(self, risk_manager):
+        """합산 명목노출이 자본 3배 이상이면 신규 진입 차단."""
+        # 명목 = entry*qty = 50000*0.03 = 1500 → 자본 1250의 1.2배... 3배 넘기려면 qty 크게
+        pos = _make_position(entry_price=50000, qty=0.08)   # 명목 4000 > 3*1250
+        allowed, reason = risk_manager.check_trade_allowed(
+            current_positions=1, positions=[pos],
+            symbol="ETH/USDT:USDT", direction="long",
+        )
+        assert allowed is False
+        assert "명목" in reason

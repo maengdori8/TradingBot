@@ -226,6 +226,15 @@ class CircuitBreaker:
             ).fetchone()
         return row[0] or 0.0
 
+    def get_consecutive_losses(self) -> int:
+        """현재 연속 손실 횟수 조회 (연패 단계 리스크 축소용).
+
+        Returns:
+            연속 손실 횟수 (승리 시 0으로 리셋됨)
+        """
+        with _get_conn() as conn:
+            return int(_get(conn, "consecutive_losses", "0"))
+
     def get_weekly_pnl(self) -> float:
         """
         이번 주 누적 PnL 조회.

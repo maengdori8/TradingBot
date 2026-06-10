@@ -656,6 +656,26 @@ class PaperEngine(TradingEngine):
                         current_price,
                     )
 
+    def last_sl_exit(self, symbol: str) -> datetime | None:
+        """해당 심볼의 마지막 손절(SL) 청산 시각 (재진입 쿨다운용).
+
+        Args:
+            symbol: 거래 심볼
+
+        Returns:
+            마지막 SL 청산 시각 또는 없으면 None
+        """
+        row = self.conn.execute(
+            "SELECT MAX(exit_time) FROM trades WHERE symbol = ? AND status = 'SL'",
+            (symbol,),
+        ).fetchone()
+        if row and row[0]:
+            try:
+                return datetime.fromisoformat(row[0])
+            except ValueError:
+                return None
+        return None
+
     # ------------------------------------------------------------------
     # 성과 지표
     # ------------------------------------------------------------------

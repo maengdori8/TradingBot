@@ -43,6 +43,12 @@ class RiskManager:
         self.max_per_symbol: int = risk.get("max_per_symbol", 1)
         self.max_same_direction: int = risk.get("max_same_direction", 3)
         self.max_exposure_pct: float = risk.get("max_exposure_pct", 0.80)
+        # 합산 명목노출 캡 (Heimer&Simsek 2019: 레버리지 캡만으로 손실 -40%)
+        self.max_notional_mult: float = risk.get("max_notional_mult", 3.0)
+        # 그레이디드 손실 대응층 (Coval&Shumway 2005 + 자체 시뮬: 수익↑ MDD↓ 도미넌트)
+        self.streak_risk_decay: bool = risk.get("streak_risk_decay", True)
+        self.soft_daily_loss_pct: float = risk.get("soft_daily_loss_pct", 0.02)
+        self.reentry_cooldown_hours: float = risk.get("reentry_cooldown_hours", 8)
 
         # 자동 레버리지 설정 (포지션별 손절 거리 기반)
         self.auto_leverage: bool = exch.get("auto_leverage", False)
@@ -137,6 +143,14 @@ class RiskManager:
                     f"({total_margin / self.trading_capital * 100:.0f}%)"
                 )
 
+            # 합산 명목노출 캡 (레버리지로 부푼 명목가치 — 워스트케이스 보험)
+            total_notional = sum(p.entry_price * p.qty for p in positions)
+            if total_notional >= self.max_notional_mult * self.trading_capital:
+                return False, (
+                    f"합산 명목노출 초과: {total_notional:.0f} USDT "
+                    f">= {self.max_notional_mult:g}x 자본"
+                )
+
         return True, "OK"
 
     # ------------------------------------------------------------------
@@ -193,6 +207,26 @@ class RiskManager:
         risk_pct = self.risk_pct_for_score(score)
         if risk_pct_override is not None:
             risk_pct = min(risk_pct, risk_pct_override)   # 강등만 허용 (확대 불가)
+
+        # 그레이디드 손실 대응 (안전 방향만 — 리스크 축소):
+        # ① 연패 단계 축소: 연패마다 절반 (하한 1/4) — 자체 6개월 시뮬에서
+        #    수익 58x→137x, MDD 38%→15%로 도미넌트 (손실 군집 = 레짐 부적합 신호)
+        # ② 일중 소프트 강등: 일일 -2% 도달 시 잔여 진입 리스크 절반
+        #    (0과 서킷브레이커 -5% 사이의 중간층, Coval&Shumway 2005)
+        if self.streak_risk_decay:
+            try:
+                consec = self.cb.get_consecutive_losses()
+                if consec > 0:
+                    risk_pct *= max(0.25, 0.5 ** min(consec, 2))
+                daily_pnl = self.cb.get_daily_pnl()
+                if daily_pnl <= -self.soft_daily_loss_pct * self.trading_capital:
+                    risk_pct *= 0.5
+                    logger.info(
+                        "일중 소프트 강등: 일일 PnL %.2f ≤ -%.1f%% → 리스크 절반",
+                        daily_pnl, self.soft_daily_loss_pct * 100,
+                    )
+            except Exception as e:
+                logger.warning("손실 대응층 조회 실패(무시): %s", e)
 
         if self.auto_leverage:
             leverage = float(calculate_auto_leverage(
