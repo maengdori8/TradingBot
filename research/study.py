@@ -32,12 +32,14 @@ OUT_DIR = ROOT / "research" / "out"
 logger = logging.getLogger("study")
 
 # 수수료/슬리피지 (paper_engine과 동일 가정: taker 0.055%×2 + slip 0.05%×2)
-COST_PCT = 0.0021
+# COST_PCT 환경변수로 재정의 가능 (메이커/지정가 시나리오 검증용). 워커는 env 상속.
+import os as _os
+COST_PCT = float(_os.getenv("STUDY_COST_PCT", "0.0021"))
 # 결과 판정 최대 보유 (15m 캔들 수): 7일
 MAX_HOLD = 672
 # 손절폭(ATR 배수) × 목표 R:R 그리드
-SL_MULTS = [1.0, 1.5, 2.0]
-RR_LEVELS = [1.5, 2.0, 2.5, 3.0]
+SL_MULTS = [1.0, 1.5, 2.0, 2.5, 3.0]
+RR_LEVELS = [1.5, 2.0, 2.5, 3.0, 3.5]
 
 
 def _san(symbol: str) -> str:
@@ -65,16 +67,24 @@ def fetch_history(ex, symbol: str, tf: str, months: int) -> pd.DataFrame:
     if cache.exists():
         return pd.read_pickle(cache)
 
+    import ccxt
     tf_ms = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}[tf]
     since = ex.milliseconds() - months * 30 * 24 * 3600 * 1000
     rows: list = []
     while since < ex.milliseconds() - tf_ms:
-        batch = ex.fetch_ohlcv(symbol, tf, since=since, limit=1000)
+        for attempt in range(6):                # 레이트리밋 지수 백오프
+            try:
+                batch = ex.fetch_ohlcv(symbol, tf, since=since, limit=1000)
+                break
+            except ccxt.RateLimitExceeded:
+                time.sleep(0.5 * (2 ** attempt))
+        else:
+            raise RuntimeError(f"{symbol} {tf}: 레이트리밋 재시도 초과")
         if not batch or batch[-1][0] < since:   # 진전 없음
             break
         rows.extend(batch)
         since = batch[-1][0] + tf_ms
-        time.sleep(0.05)
+        time.sleep(0.15)
 
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
     df = df.drop_duplicates("ts")
@@ -189,6 +199,7 @@ def _simulate(entry: float, direction: str, atr: float,
                 r = (last - entry) / risk if direction == "long" else (entry - last) / risk
                 done = end - start - 1
             out[f"r_m{mult:g}_rr{rr:g}"] = round(r - cost_r, 4)
+            out[f"hb_m{mult:g}_rr{rr:g}"] = int(done + 1)  # 진입바~해소바 보유 캔들수 (슬롯 점유)
             if mult == 1.5 and rr == 2.0:
                 resolve_idx = start + done
     out["resolve_idx"] = int(resolve_idx)
@@ -231,9 +242,11 @@ def replay_symbol(symbol: str) -> list[dict]:
         order = atr_pct[valid].argsort().argsort()
         ranks[valid] = order / max(1, valid.sum() - 1)
 
-    # 각 15m 시각 이하의 마지막 1h/4h 캔들 위치 (룩어헤드 없음)
-    idx1h = np.searchsorted(df1h.index.values, ts15.values, side="right") - 1
-    idx4h = np.searchsorted(df4h.index.values, ts15.values, side="right") - 1
+    # 결정 시각 = 15m 바 i 종가 시점(= ts15[i] + 15m). 그 시점에 '완전히 닫힌' HTF 바만 사용.
+    # (저장된 4h 바는 최종 OHLC라서, 형성 중 바를 쓰면 최대 4h 미래가 새어든다 → 룩어헤드)
+    dec = ts15.values + np.timedelta64(15, "m")
+    idx1h = np.searchsorted(df1h.index.values, dec - np.timedelta64(1, "h"), side="right") - 1
+    idx4h = np.searchsorted(df4h.index.values, dec - np.timedelta64(4, "h"), side="right") - 1
 
     # 4h 워밍업 100개 보장 지점부터 시작
     start_i = int(np.searchsorted(idx4h, 100))
