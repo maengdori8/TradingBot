@@ -1,10 +1,10 @@
 {
   "last_loop": "2026-06-16",
-  "N_TESTED": 841,
+  "N_TESTED": 850,
   "HOLDOUT_FROZEN_UNTIL": "2026-04-16T00:00:00+00:00",
   "HOLDOUT_FROZEN_NOTE": "2026-06-15 사이클1에서 1회 고정. 데이터 max=2026-06-15T13:00Z, 60일 전 경계. wfo.py의 이동창 홀드아웃 대신 모든 가설이 이 고정 경계로 평가된다. 재동결 시 과거 PASS 전부 무효(N은 누적 유지).",
   "HOLDOUT_2REGIME_TODO": "현재 단일 최근60일. GOAL_LOOP §2 권고대로 2024 추세장 슬라이스 추가 평가를 후속 사이클에 도입(단일레짐 운 배제).",
-  "BACKLOG_REMAINING": 3,
+  "BACKLOG_REMAINING": 0,
   "MASTER_BACKLOG": [
     "A1",
     "A2",
@@ -25,19 +25,21 @@
     "B2": "BLOCKED",
     "B3": "BLOCKED",
     "C1": "REJECTED",
-    "C2": "OPEN",
-    "D1": "OPEN",
-    "D2": "OPEN"
+    "C2": "REJECTED",
+    "D1": "REJECTED",
+    "D2": "REJECTED"
   },
   "TIER_A_EXHAUSTED": true,
   "TIER_A_FINDING": "비용은 진짜 장벽(테이커 -0.077R → 메이커 +0.053R 부호반전)이나, cost=0(그로스)에서도 정직 OOS는 노이즈 이하 + 동결홀드아웃 -0.37R. 문제는 비용이 아니라 신호. 필요: 더 두꺼운 그로스 신호(tier B 대체데이터).",
-  "ITER_COUNT": 5,
-  "LAST_VERDICT": "REJECT",
-  "CONSECUTIVE_REJECTS": 5,
-  "HOLDOUT_EVALS": 3,
+  "ITER_COUNT": 7,
+  "LAST_VERDICT": "STOP",
+  "CONSECUTIVE_REJECTS": 7,
+  "HOLDOUT_EVALS": 4,
   "AWAITING_FORWARD": [],
-  "NEXT_HYPOTHESIS": "D1 메타라벨링 (마지막 진짜 테스트), 이후 C2/D2",
-  "last_status": "RUNNING",
+  "NEXT_HYPOTHESIS": null,
+  "last_status": "STOPPED",
   "branch": "feat/research-auto-loop",
-  "TIER_B_FINDING": "OI/청산 히스토리 BLOCKED(Bybit 9~21일), 펀딩=죽은족, 온체인 미접근. 비가격 신규데이터 이 setup서 접근불가."
+  "TIER_B_FINDING": "OI/청산 히스토리 BLOCKED(Bybit 9~21일), 펀딩=죽은족, 온체인 미접근. 비가격 신규데이터 이 setup서 접근불가.",
+  "STOP_REASON": "§8-1 백로그 소진: 10개 전부 REJECTED(8)/BLOCKED(2), 실행가능 OPEN=0, PROMOTE 0. 최종보고 research/reports/FINAL_REPORT.md",
+  "RESUME_CONDITION": "마스터 백로그에 새 OPEN 항목(5축 신규+데이터확보) 추가 시에만 재탐색. 유망경로=tier E 데이터인프라 후 B2 재개."
 }

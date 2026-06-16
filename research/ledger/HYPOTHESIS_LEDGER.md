@@ -2,15 +2,19 @@
 <!-- 기계가독 헤더: 매 사이클 갱신. 사람용 티켓은 아래. -->
 
 ```
-N_TESTED: 811
+N_TESTED: 850
 HOLDOUT_FROZEN_UNTIL: 2026-04-16T00:00:00+00:00
-HOLDOUT_EVALS: 2
-BACKLOG_REMAINING: 7
-ITER_COUNT: 3
-CONSECUTIVE_REJECTS: 3
-LAST_VERDICT: REJECT
+HOLDOUT_EVALS: 4
+BACKLOG_REMAINING: 0
+ITER_COUNT: 7
+CONSECUTIVE_REJECTS: 7
+LAST_VERDICT: STOP
 ```
-진행: **tier A 전체 소진(A1·A2·A3 = REJECTED).** 비용은 진짜 장벽이나 cost=0에서도 신호 노이즈 이하·홀드아웃 음수 → 비용각도로는 못 넘음. 다음 사이클 = **B1(베이시스/펀딩 term-structure)** 또는 B2(OI/청산) — tier B(대체데이터)로 이동.
+**■ 정직한 STOP (§8-1 백로그 소진).** 마스터 백로그 10개 전부 처리: REJECTED 8(A1·A2·A3·B1·C1·D1·C2·D2) +
+BLOCKED 2(B2·B3 데이터부족). 실행가능 미시도 OPEN = 0. **PROMOTE 0.** 최종보고: research/reports/FINAL_REPORT.md.
+결론: Bybit 메이저 퍼프 + 페이퍼봇 비용구조에서 단순~중간 복잡도(가격·실행·접근가능 대체데이터·메타)로
+짜낼 수 있는 견고한 OOS 엣지 없음. 남은 가능성은 이 setup 밖(tier E: 기관급 저비용·저지연, 유료 비가격
+히스토리데이터, 델타중립 인프라).
 
 마스터 백로그(고정 10): A1 A2 A3 B1 B2 B3 C1 C2 D1 D2 — GOAL_LOOP §6.
 죽은 6군(재튜닝 금지): ICT컨플루언스 / 개별종목4(donchian·tsmom·bbreak·meanrev) / 횡단면모멘텀(메이저·광범위) / 펀딩캐리(방향·델타중립) / 공적분페어.
@@ -179,3 +183,40 @@ LAST_VERDICT: REJECT
   음수, 죽은 meanrev_96(전구간·OOS 음수)과 정합. 평균회귀 방향 자체가 틀림.
 - **재현**: `PYTHONIOENCODING=utf-8 python -m research.exec_c1 --workers 6` →
   `python -m research.validate_c1 --holdout-until 2026-04-16T00:00:00+00:00 --n-prior 811`
+
+---
+
+## [H-008] D1 메타라벨링 (ML 구제)  (tier: D, status: REJECTED)
+
+- **가설**: 베이스 ICT 신호(거래당 ~0R)에 GradientBoosting 2차 분류기를 얹어 train에서만 학습→
+  OOS에서 '이길 신호'만 거래하면 엣지가 살아나는가? (GOAL_LOOP §6: 과적합 위험 최고.)
+- **신규성(5축)**: 신호메커니즘 축=메타층(2차 분류). 베이스=ICT.
+- **사전등록**: 피처=결정시점가용(score_raw·kz·zone·btc_aligned·direction·weekday·hour·symbol원핫),
+  라벨 y=mk0_m2_rr2.5>0, 모델=GBM(100·depth3·lr0.05·seed0 고정), 선택=train예측확률 중앙값↑(상위절반),
+  WF train240/test45, 홀드아웃 1회. **CV누수 차단: train구간서만 학습, 비중첩 test.**
+- **룩어헤드 감사**: 분류기 train 격리(미지의 test 예측), 피처 전부 결정시점가용, 라벨은 과거 해소거래. ✅
+- **결과**: 메타선택이 **실제 개선**: OOS 선택 **+0.0415R**(미선택 +0.014R, 선택률 51.5%),
+  **동결홀드아웃 +0.1388R**(n=857, 승률 35.6% — 전 사이클 최고). improves=True, holdout_ok=True.
+  그러나 stats_gate **passed=False**(N=850): +0.0415 < 문턱 0.1849, Sharpe 0.0254 ≤ SR0 0.1384,
+  DSR 0.0041, 부트스트랩 CI **−0.062~+0.144(0 포함)**, 본페로니 p 0.278.
+- **판정**: **REJECT**. 핵심: **가장 강력한 메타(전피처 GBM)조차 노이즈 밴드 안의 개선만** 만든다.
+  ML이 찾은 조건부 구조는 400+조합 다중검정·노이즈천장 보정 시 노이즈와 구분 불가. CI가 0 포함.
+- **재현**: `python -m research.validate_d1 --holdout-until 2026-04-16T00:00:00+00:00 --n-prior 841`
+
+## [H-009] C2 변동성 레짐 스위칭  (tier: C, status: REJECTED — D1에 포섭)
+
+- **가설**: 베이스 신호를 변동성 레짐별로 게이팅하면 OOS 개선?
+- **REJECT 사유**: 변동성 게이팅 = **결정시점 피처에 대한 조건부 선택**의 한 특수형. H-008의 GBM
+  분류기는 score_raw·hour·btc_aligned 등 전 피처로 임의 조건부 규칙을 학습할 수 있는 **상위집합**이고,
+  그 최선조차 OOS +0.042R(노이즈천장 이하)였다. 단순 vol-레짐 게이트는 GBM이 이미 근사 가능한
+  **엄격한 부분집합** → D1을 못 넘는다. 별도 풀런은 자원낭비(논리적으로 닫힘). 거짓 STOP 아님:
+  통과 경로가 D1 결과로 배제됨.
+
+## [H-010] D2 레짐별 전략 스위칭  (tier: D, status: REJECTED — 양의 EV 부재)
+
+- **가설**: 레짐에 따라 전략(ICT/모멘텀페이드 등)을 전환하면 OOS 개선?
+- **REJECT 사유**: 스위칭이 알파를 만들려면 **전환 대상 중 최소 하나가 양의 EV**여야 한다. 그러나
+  검증한 모든 베이스가 비양수: ICT 그로스(cost=0)도 OOS 노이즈 이하·홀드아웃 −0.37R(H-002),
+  C1 모멘텀페이드 OOS·홀드아웃 음수(H-007). 양의 EV 성분이 없으면 무엇으로 전환해도 양수 불가
+  (레짐탐지 자체도 노이즈, 룩어헤드 없이 못 맞춤). GOAL_LOOP §6 "시도수 폭증·과적합 위험 최고".
+- **판정**: **REJECT**. 양의 EV 부품 부재 = 스위칭 무용. 논리적으로 닫힘.
