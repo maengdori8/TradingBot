@@ -26,6 +26,7 @@ DB_PATH = Path(__file__).parent.parent.parent / "logs" / "paper_trades.db"
 
 SLIPPAGE = 0.0005  # 0.05%
 TAKER_FEE = 0.00055  # 0.055%
+MAKER_FEE = 0.00035  # 0.035% (지정가 메이커 — config execution.maker_fee로 재정의 가능)
 # 펀딩비 보수 가정 (Bybit 00/08/16 UTC, 통상 0.01%/8h — 방향 무관 비용으로 처리)
 FUNDING_RATE = 0.0001
 FUNDING_HOURS = (0, 8, 16)
@@ -82,6 +83,18 @@ def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
             margin REAL, entry_time TEXT
         )
     """)
+    # 미체결 지정가 주문 (메이커 실행 — 사이클 간 영속)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_orders (
+            id TEXT PRIMARY KEY,
+            symbol TEXT, direction TEXT,
+            limit_price REAL, qty REAL,
+            stop_loss REAL, take_profit REAL,
+            leverage REAL, place_time TEXT, expiry_time TEXT,
+            entry_score REAL, entry_session TEXT,
+            entry_checks_json TEXT, entry_rr REAL
+        )
+    """)
     # 자동 학습용 진입조건 컬럼 멱등 추가 (기존 DB 하위호환)
     _migrate_columns(conn, "trades", {
         "entry_score": "REAL", "entry_session": "TEXT",
@@ -126,6 +139,7 @@ class PaperEngine(TradingEngine):
         self,
         initial_balance: float = 1250.0,
         db_path: Path | None = None,
+        maker_fee: float = MAKER_FEE,
     ) -> None:
         """
         페이퍼 엔진 초기화.
@@ -133,8 +147,10 @@ class PaperEngine(TradingEngine):
         Args:
             initial_balance: 초기 잔고 (USDT)
             db_path: DB 파일 경로. None이면 기본 경로 사용.
+            maker_fee: 메이커(지정가) 수수료율 (config execution.maker_fee).
         """
         self.initial_balance: float = initial_balance
+        self._maker_fee: float = maker_fee
         self._positions: list[Position] = []
         self.conn: sqlite3.Connection = _init_db(db_path)
         self._on_trade_callbacks: list[Callable[[float, str, Position], None]] = []
@@ -294,17 +310,19 @@ class PaperEngine(TradingEngine):
             return round(price * (1 + SLIPPAGE), 8)
         return round(price * (1 - SLIPPAGE), 8)
 
-    def _fee(self, notional: float) -> float:
+    def _fee(self, notional: float, maker: bool = False) -> float:
         """
         수수료 계산.
 
         Args:
             notional: 명목 금액
+            maker: 메이커(지정가) 여부 — True면 메이커 수수료 적용
 
         Returns:
             수수료 금액
         """
-        return round(notional * TAKER_FEE, 8)
+        rate = self._maker_fee if maker else TAKER_FEE
+        return round(notional * rate, 8)
 
     # ------------------------------------------------------------------
     # TradingEngine 구현
@@ -343,6 +361,7 @@ class PaperEngine(TradingEngine):
         entry_rr: float | None = None,
         entry_session: str | None = None,
         entry_time: datetime | None = None,
+        is_maker: bool = False,
     ) -> Position | None:
         """
         포지션 진입 — 담보금 및 수수료 차감.
@@ -368,11 +387,16 @@ class PaperEngine(TradingEngine):
         Returns:
             생성된 Position 또는 잔고 부족 시 None
         """
-        actual_entry = self._apply_slippage(entry_price, direction, is_entry=True)
+        # 메이커(지정가): 슬리피지 없음 — 내가 건 지정가에 정확히 체결. 메이커 수수료.
+        # 테이커(시장가): 불리한 슬리피지 + 테이커 수수료 (기존).
+        if is_maker:
+            actual_entry = round(entry_price, 8)
+        else:
+            actual_entry = self._apply_slippage(entry_price, direction, is_entry=True)
         notional = round(actual_entry * qty, 8)
         lev = leverage if leverage and leverage > 0 else 1.0
         margin = round(notional / lev, 8)        # 실제 묶이는 증거금
-        entry_fee = self._fee(notional)          # 수수료는 명목가 기준
+        entry_fee = self._fee(notional, maker=is_maker)  # 수수료는 명목가 기준
         total_cost = round(margin + entry_fee, 8)  # 증거금 + 수수료
 
         if total_cost > self._balance:
@@ -404,7 +428,7 @@ class PaperEngine(TradingEngine):
         self._positions.append(pos)
         self._save_position(pos)
         logger.info(
-            "[PAPER] %s %s 진입: id=%s price=%.4f qty=%.4f margin=%.2f lev=%gx notional=%.2f",
+            "[PAPER] %s %s 진입: id=%s price=%.4f qty=%.4f margin=%.2f lev=%gx notional=%.2f%s",
             symbol,
             direction.upper(),
             pos.id,
@@ -413,8 +437,118 @@ class PaperEngine(TradingEngine):
             margin,
             lev,
             notional,
+            " [maker]" if is_maker else "",
         )
         return pos
+
+    # ------------------------------------------------------------------
+    # 미체결 지정가 (메이커 실행) — 사이클 간 영속
+    # ------------------------------------------------------------------
+
+    def place_pending_limit(
+        self,
+        symbol: str,
+        direction: Literal["long", "short"],
+        limit_price: float,
+        qty: float,
+        stop_loss: float,
+        take_profit: float,
+        leverage: float = 1.0,
+        expiry_bars: int = 8,
+        bar_minutes: int = 15,
+        score: float | None = None,
+        checks: dict | None = None,
+        entry_rr: float | None = None,
+        entry_session: str | None = None,
+        place_time: datetime | None = None,
+    ) -> str:
+        """지정가 미체결 주문을 등록한다 (체결은 check_pending_fills에서 판정)."""
+        pt = place_time or datetime.now(timezone.utc)
+        expiry = pt + timedelta(minutes=bar_minutes * expiry_bars)
+        oid = _generate_position_id()
+        self.conn.execute(
+            "INSERT INTO pending_orders (id, symbol, direction, limit_price, qty, "
+            "stop_loss, take_profit, leverage, place_time, expiry_time, entry_score, "
+            "entry_session, entry_checks_json, entry_rr) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (oid, symbol, direction, round(limit_price, 8), qty, stop_loss, take_profit,
+             leverage, pt.isoformat(), expiry.isoformat(), score, entry_session,
+             json.dumps(checks) if checks else None, entry_rr),
+        )
+        self.conn.commit()
+        logger.info("[PAPER] 지정가 대기: %s %s limit=%.4f qty=%.4f 만료=%s",
+                    symbol, direction, limit_price, qty, expiry.isoformat())
+        return oid
+
+    def get_pending_orders(self, symbol: str | None = None) -> list[dict]:
+        """미체결 지정가 주문 목록 (dict 리스트)."""
+        cur = self.conn.execute(
+            "SELECT * FROM pending_orders" + (" WHERE symbol=?" if symbol else ""),
+            (symbol,) if symbol else (),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def _remove_pending(self, order_id: str) -> None:
+        """미체결 주문 삭제 (체결/취소/만료)."""
+        self.conn.execute("DELETE FROM pending_orders WHERE id=?", (order_id,))
+        self.conn.commit()
+
+    def cancel_pending(self, order_id: str) -> bool:
+        """미체결 지정가 취소."""
+        before = len(self.get_pending_orders())
+        self._remove_pending(order_id)
+        return len(self.get_pending_orders()) < before
+
+    def check_pending_fills(
+        self, symbol: str, candles, now: datetime | None = None,
+    ) -> list[Position]:
+        """심볼의 미체결 지정가를, 등록 이후 캔들이 지정가를 터치했으면 체결한다.
+
+        롱: 캔들 저가 ≤ 지정가 / 숏: 캔들 고가 ≥ 지정가 (가격이 와야만 체결 = 역선택 내장).
+        만료 초과·미터치 시 취소. 슬리피지 없이 지정가 정확체결 + 메이커 수수료.
+
+        Args:
+            symbol: 심볼
+            candles: DatetimeIndex(UTC) + high/low 컬럼의 최근 15m 프레임
+            now: 현재 시각 (만료 판정용)
+
+        Returns:
+            이번 호출에서 체결된 Position 리스트
+        """
+        now = now or datetime.now(timezone.utc)
+        filled: list[Position] = []
+        for od in self.get_pending_orders(symbol):
+            place_t = datetime.fromisoformat(od["place_time"])
+            expiry_t = datetime.fromisoformat(od["expiry_time"])
+            limit = float(od["limit_price"])
+            direction = od["direction"]
+            fill_time = None
+            try:
+                recent = candles[(candles.index > place_t) & (candles.index <= expiry_t)]
+            except Exception:  # noqa: BLE001  (인덱스 비교 실패 시 전체 검사)
+                recent = candles
+            for ts, row in recent.iterrows():
+                hit = (direction == "long" and float(row["low"]) <= limit) or \
+                      (direction == "short" and float(row["high"]) >= limit)
+                if hit:
+                    fill_time = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+                    break
+            if fill_time is not None:
+                checks = json.loads(od["entry_checks_json"]) if od["entry_checks_json"] else None
+                pos = self.open_position(
+                    symbol=symbol, direction=direction, entry_price=limit, qty=float(od["qty"]),
+                    stop_loss=od["stop_loss"], take_profit=od["take_profit"],
+                    leverage=od["leverage"] or 1.0, score=od["entry_score"], checks=checks,
+                    entry_rr=od["entry_rr"], entry_session=od["entry_session"],
+                    entry_time=fill_time, is_maker=True,
+                )
+                self._remove_pending(od["id"])
+                if pos is not None:
+                    filled.append(pos)
+            elif now >= expiry_t:
+                self._remove_pending(od["id"])
+                logger.info("[PAPER] 지정가 만료취소: %s %s limit=%.4f", symbol, direction, limit)
+        return filled
 
     def close_position(
         self,

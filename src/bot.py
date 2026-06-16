@@ -72,10 +72,16 @@ def run() -> None:
 
     cfg      = load_config()
     scan_cfg = cfg.get("scan", {})
+    exec_cfg = cfg.get("execution", {})
+    exec_mode = exec_cfg.get("mode", "taker")   # maker(지정가, 출혈↓) | taker(시장가)
     client   = MarketDataClient()
     notifier = DiscordNotifier(os.getenv("DISCORD_WEBHOOK_URL", ""))
     risk     = RiskManager()
-    paper    = PaperEngine(initial_balance=risk.trading_capital)
+    paper    = PaperEngine(initial_balance=risk.trading_capital,
+                           maker_fee=exec_cfg.get("maker_fee", 0.00035))
+    if exec_mode == "maker":
+        logger.info("실행방식: 메이커 지정가 (offset=%.2fR, 만료=%d봉) — 출혈↓ (수익보장 아님)",
+                    exec_cfg.get("limit_offset_r", 0.10), exec_cfg.get("fill_expiry_bars", 8))
 
     # 청산 이벤트 → 리스크 기록 + Discord 알림 연동
     def _on_trade(pnl: float, reason: str, pos: object) -> None:
@@ -92,7 +98,8 @@ def run() -> None:
     # 스캔 대상 = 동적 상위 심볼 ∪ 보유 포지션 심볼 (보유분 SL/TP 체크 보장)
     scan_symbols = _resolve_symbols(cfg, client)
     open_symbols = {p.symbol for p in paper.get_positions()}
-    all_symbols = list(dict.fromkeys(scan_symbols + list(open_symbols)))
+    pending_symbols = {o["symbol"] for o in paper.get_pending_orders()}  # 미체결 지정가 체결판정 보장
+    all_symbols = list(dict.fromkeys(scan_symbols + list(open_symbols) + list(pending_symbols)))
     logger.info("스캔 대상 %d개 심볼 (보유 %d개 포함)", len(all_symbols), len(open_symbols))
 
     min_score = scan_cfg.get("min_score", 70)
@@ -124,8 +131,17 @@ def run() -> None:
             df_15m = client.fetch_ohlcv(symbol, "15m", limit=100)
             scanned += 1
 
-            # 보유 포지션: 미실현 손익 갱신 + SL/TP 체크
-            if symbol in open_symbols:
+            # 메이커: 미체결 지정가 체결 판정 (등록 이후 캔들이 지정가 터치 시 메이커 체결, 만료 시 취소)
+            if exec_mode == "maker":
+                for fp in paper.check_pending_fills(symbol, df_15m):
+                    notifier.notify_entry(
+                        symbol=fp.symbol, direction=fp.direction, entry=fp.entry_price,
+                        stop_loss=fp.stop_loss, take_profit=fp.take_profit, qty=fp.qty,
+                        reason="지정가 체결(메이커)",
+                    )
+
+            # 보유 포지션: 미실현 손익 갱신 + SL/TP 체크 (이번 사이클 신규 체결분 포함)
+            if symbol in open_symbols or any(p.symbol == symbol for p in paper.positions):
                 paper.update_unrealized_pnl(symbol, price)
                 last = df_15m.iloc[-1]
                 paper.check_stops(symbol, float(last["high"]), float(last["low"]))
@@ -151,8 +167,12 @@ def run() -> None:
             continue
         if res.symbol in open_now:
             continue
+        # 미체결 지정가도 슬롯을 점유한 것으로 계산 (메이커서 max_positions 초과 방지)
+        pending_all = paper.get_pending_orders()
+        if exec_mode == "maker" and any(o["symbol"] == res.symbol for o in pending_all):
+            continue  # 이미 대기 주문 있음 — 중복 방지
         allowed, reason = risk.check_trade_allowed(
-            current_positions=len(paper.positions),
+            current_positions=len(paper.positions) + len(pending_all),
             positions=paper.get_positions(),
             symbol=res.symbol,
             direction=res.direction,
@@ -198,23 +218,40 @@ def run() -> None:
         entry_session = get_active_session(datetime.now(timezone.utc))
         checks = dict(res.checks or {})
         checks["btc_aligned"] = alignment       # 학습/사후분석 태깅 (JSON 보존)
-        pos = paper.open_position(
-            symbol=res.symbol, direction=sig.direction,
-            entry_price=sig.entry_price, qty=params["qty"],
-            stop_loss=sig.stop_loss, take_profit=sig.take_profit,
-            leverage=params["leverage"],
-            score=res.score, checks=checks,
-            entry_rr=sig.rr_ratio, entry_session=entry_session,
-        )
-        if pos:
-            entered += 1
-            open_now.add(res.symbol)
-            notifier.notify_entry(
-                symbol=res.symbol, direction=sig.direction,
-                entry=pos.entry_price, stop_loss=pos.stop_loss,
-                take_profit=pos.take_profit, qty=pos.qty,
-                reason=sig.reason,
+        if exec_mode == "maker":
+            # 지정가 = 진입가 ∓ offset × |진입가-손절가| (유리한 오프셋). 미체결=거래없음.
+            risk_dist = abs(sig.entry_price - sig.stop_loss)
+            off = exec_cfg.get("limit_offset_r", 0.10) * risk_dist
+            limit_price = (sig.entry_price - off if sig.direction == "long"
+                           else sig.entry_price + off)
+            paper.place_pending_limit(
+                symbol=res.symbol, direction=sig.direction, limit_price=limit_price,
+                qty=params["qty"], stop_loss=sig.stop_loss, take_profit=sig.take_profit,
+                leverage=params["leverage"], expiry_bars=exec_cfg.get("fill_expiry_bars", 8),
+                score=res.score, checks=checks, entry_rr=sig.rr_ratio,
+                entry_session=entry_session,
             )
+            entered += 1
+            open_now.add(res.symbol)   # 같은 사이클 중복 등록 방지
+            logger.info("[%s] 지정가 대기 등록 (메이커, limit=%.4f)", res.symbol, limit_price)
+        else:
+            pos = paper.open_position(
+                symbol=res.symbol, direction=sig.direction,
+                entry_price=sig.entry_price, qty=params["qty"],
+                stop_loss=sig.stop_loss, take_profit=sig.take_profit,
+                leverage=params["leverage"],
+                score=res.score, checks=checks,
+                entry_rr=sig.rr_ratio, entry_session=entry_session,
+            )
+            if pos:
+                entered += 1
+                open_now.add(res.symbol)
+                notifier.notify_entry(
+                    symbol=res.symbol, direction=sig.direction,
+                    entry=pos.entry_price, stop_loss=pos.stop_loss,
+                    take_profit=pos.take_profit, qty=pos.qty,
+                    reason=sig.reason,
+                )
     logger.info("스캔 완료: %d개 스캔, %d개 신규 진입", scanned, entered)
 
     # ── 관심종목(watchlist) 저장 ─────────────────────────────────────

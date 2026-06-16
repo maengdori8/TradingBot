@@ -379,11 +379,13 @@ def test_check_stops_ignores_other_symbol(engine):
 
 def test_funding_cost_deducted(engine):
     """보유 중 펀딩 시각(00/08/16 UTC) 통과 시 펀딩비가 pnl에서 차감된다."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     pos = engine.open_position("BTC/USDT", "long", 50000, 0.01, 49000, 52000)
-    # 진입 시각을 25시간 전으로 → 펀딩 3회 통과
-    pos.entry_time = datetime.now(timezone.utc) - timedelta(hours=25)
-    pnl = engine.close_position(pos, 50000, "manual")   # 본전 청산
+    # 고정 타임스탬프로 펀딩 3회 통과 보장 (now() 위상 의존 플레이키 제거):
+    # (01:00, 다음날 02:00] 25h 창 = 08:00·16:00·익일 00:00 = 정확히 3회
+    pos.entry_time = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
+    pnl = engine.close_position(pos, 50000, "manual",
+                                exit_time=datetime(2026, 1, 2, 2, 0, tzinfo=timezone.utc))
     row = engine.conn.execute(
         "SELECT funding_cost FROM trades WHERE id=?", (pos.id,)
     ).fetchone()
