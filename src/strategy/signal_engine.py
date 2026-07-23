@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Literal
 
 import pandas as pd
 
 from . import load_strategy_params
+from .decision import DecisionContext, DecisionFrames, slice_decision_frames
 from .market_structure import detect_bos, detect_choch
 from .fvg_detector import detect_fvg, is_price_in_fvg
 from .order_block import detect_order_blocks, is_price_in_ob
@@ -20,6 +20,26 @@ from .kill_zone import is_in_kill_zone, get_active_session
 from .ote import calculate_ote_zone, is_price_in_ote
 
 logger = logging.getLogger(__name__)
+
+
+def _decision_inputs(
+    df_4h: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    df_15m: pd.DataFrame,
+    context: DecisionContext | None,
+) -> tuple[DecisionFrames, DecisionContext]:
+    """결정 컨텍스트와 시간 안전한 입력 봉을 준비한다.
+
+    기존 RangeIndex 기반 호출은 하위 호환을 위해 받은 프레임을 그대로 사용한다.
+    명시적 컨텍스트가 전달되면 UTC 인덱스와 완전 종료 봉 규칙을 강제한다.
+    """
+    effective_context = context or DecisionContext.legacy_now()
+    if context is None:
+        return DecisionFrames(df_4h=df_4h, df_1h=df_1h, df_15m=df_15m), effective_context
+    return (
+        slice_decision_frames(df_4h, df_1h, df_15m, effective_context),
+        effective_context,
+    )
 
 
 @dataclass
@@ -81,6 +101,7 @@ def generate_signal(
     symbol: str,
     current_price: float,
     min_rr: float = 2.5,
+    context: DecisionContext | None = None,
 ) -> TradeSignal | None:
     """멀티 타임프레임 신호를 생성한다.
 
@@ -96,10 +117,21 @@ def generate_signal(
         symbol: 거래 심볼
         current_price: 현재 가격
         min_rr: 최소 R:R 비율
+        context: 판단 시각과 데이터 컷오프. 생략 시 기존 현재 시각 동작을 유지한다.
 
     Returns:
         TradeSignal 또는 None
     """
+    frames, effective_context = _decision_inputs(df_4h, df_1h, df_15m, context)
+    df_4h, df_1h, df_15m = frames.df_4h, frames.df_1h, frames.df_15m
+    if df_4h.empty or df_1h.empty or df_15m.empty:
+        logger.warning(
+            "[%s] 종료 봉 부족으로 신호 판단 중단 run_id=%s",
+            symbol,
+            effective_context.run_id,
+        )
+        return None
+
     params = load_strategy_params()
     atr_period: int = params["atr"]["period"]
     atr_multiplier: float = params["atr"]["multiplier"]
@@ -163,7 +195,7 @@ def generate_signal(
     # 킬존은 더 이상 하드 게이트가 아님 (24h 진입 허용).
     # 근거: 6개월 36심볼 신호연구에서 어떤 시간 게이트도 양(+)의 가치를 보이지 않음
     # (정정된 ICT 창 기준 in +0.079R vs out +0.068R). 세션은 태깅/가점으로만 사용.
-    now = datetime.now(timezone.utc)
+    now = effective_context.decision_time
     kz_active = is_in_kill_zone(now)
     active_session = get_active_session(now)
     logger.debug(
@@ -252,6 +284,7 @@ def scan_symbol(
     min_rr: float = 2.5,
     min_score: float = 70.0,
     require_volume: bool = False,
+    context: DecisionContext | None = None,
 ) -> ScanResult:
     """심볼을 스캔하여 진입 신호 + 관심종목 근접도 점수를 산출한다.
 
@@ -269,10 +302,14 @@ def scan_symbol(
         min_rr: 최소 R:R 비율
         min_score: 진입 확정 최소 컨플루언스 점수 (엄격도)
         require_volume: 거래량 확인 게이트 사용 여부
+        context: 판단 시각과 데이터 컷오프. 전달하면 종료 봉만 사용한다.
 
     Returns:
         ScanResult
     """
+    frames, effective_context = _decision_inputs(df_4h, df_1h, df_15m, context)
+    df_4h, df_1h, df_15m = frames.df_4h, frames.df_1h, frames.df_15m
+
     checks: dict = {
         "trend": False, "zone": False, "kill_zone": False,
         "ote": False, "volume": False, "rr": False,
@@ -280,6 +317,17 @@ def scan_symbol(
     score = 0.0
     stage = 0
     direction: Literal["long", "short", "none"] = "none"
+    if df_4h.empty or df_1h.empty or df_15m.empty:
+        return ScanResult(
+            symbol=symbol,
+            direction="none",
+            score=0.0,
+            stage=0,
+            qualified=False,
+            price=current_price,
+            reason="완전히 종료된 멀티 타임프레임 봉 부족",
+            checks=checks,
+        )
 
     # ── 1단계: 4H 추세 ───────────────────────────────────────────────
     bos_4h = detect_bos(df_4h)
@@ -330,9 +378,8 @@ def scan_symbol(
         )
 
     # ── 킬존 태깅/가점 (게이트 아님 — stage와 무관) ───────────────────
-    now = datetime.now(timezone.utc)
+    now = effective_context.decision_time
     kz_active = is_in_kill_zone(now)
-    active_session = get_active_session(now)
     if kz_active:
         score += _W_KZ
         checks["kill_zone"] = True
@@ -367,7 +414,13 @@ def scan_symbol(
     # 킬존은 게이트에서 제외 (24h 진입) — checks["kill_zone"]은 태깅/학습용으로만 기록
     if checks["trend"] and checks["zone"] and checks["ote"]:
         signal = generate_signal(
-            df_4h, df_1h, df_15m, symbol, current_price, min_rr=min_rr
+            df_4h,
+            df_1h,
+            df_15m,
+            symbol,
+            current_price,
+            min_rr=min_rr,
+            context=context,
         )
         if signal:
             rr_ok = signal.rr_ratio >= min_rr
