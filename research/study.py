@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 전략 신호 재현 연구 — 과거 데이터 전체에 ICT 스캔을 재생해 신호·결과를 수집한다.
 
@@ -10,14 +12,11 @@
 
 출력: research/out/signals.csv
 """
-from __future__ import annotations
 
 import logging
-import pickle
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -137,20 +136,6 @@ def download_all(symbols: list[str], months: int) -> None:
 # 신호 재현 (워커: 심볼 1개)
 # ──────────────────────────────────────────────────────────────────────
 
-class _FakeDT:
-    """signal_engine의 datetime.now()를 캔들 시각으로 바꾸는 셰임."""
-
-    _now: datetime = datetime.now(timezone.utc)
-
-    @classmethod
-    def now(cls, tz=None):  # noqa: ANN001
-        return cls._now
-
-    @classmethod
-    def fromisoformat(cls, s):  # noqa: ANN001
-        return datetime.fromisoformat(s)
-
-
 def _simulate(entry: float, direction: str, atr: float,
               highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
               start: int) -> dict:
@@ -209,14 +194,10 @@ def _simulate(entry: float, direction: str, atr: float,
 def replay_symbol(symbol: str) -> list[dict]:
     """심볼 1개의 전체 역사에 스캔을 재생해 신호+결과 행들을 반환한다."""
     import src.strategy.signal_engine as SE
+    from src.strategy.decision import DecisionContext, slice_decision_frames
     from src.strategy.kill_zone import is_in_kill_zone as real_kz
     from src.strategy.kill_zone import get_active_session as real_session
     from src.strategy import load_strategy_params
-
-    # 킬존 게이트 개방 + 시계 패치 (역사 재생)
-    SE.datetime = _FakeDT
-    SE.is_in_kill_zone = lambda dt: True
-    SE.get_active_session = lambda dt: real_session(dt) or "none"
 
     try:
         df15 = pd.read_pickle(DATA_DIR / f"{_san(symbol)}_15m.pkl")
@@ -245,11 +226,13 @@ def replay_symbol(symbol: str) -> list[dict]:
     # 결정 시각 = 15m 바 i 종가 시점(= ts15[i] + 15m). 그 시점에 '완전히 닫힌' HTF 바만 사용.
     # (저장된 4h 바는 최종 OHLC라서, 형성 중 바를 쓰면 최대 4h 미래가 새어든다 → 룩어헤드)
     dec = ts15.values + np.timedelta64(15, "m")
-    idx1h = np.searchsorted(df1h.index.values, dec - np.timedelta64(1, "h"), side="right") - 1
-    idx4h = np.searchsorted(df4h.index.values, dec - np.timedelta64(4, "h"), side="right") - 1
-
     # 4h 워밍업 100개 보장 지점부터 시작
-    start_i = int(np.searchsorted(idx4h, 100))
+    closed_4h = np.searchsorted(
+        df4h.index.values,
+        dec - np.timedelta64(4, "h"),
+        side="right",
+    )
+    start_i = int(np.searchsorted(closed_4h, 100))
     start_i = max(start_i, 100)
 
     rows: list[dict] = []
@@ -257,21 +240,35 @@ def replay_symbol(symbol: str) -> list[dict]:
     for i in range(start_i, len(df15)):
         if i <= busy_until:
             continue
-        j1, j4 = idx1h[i], idx4h[i]
-        if j1 < 100 or j4 < 100:
+        decision_timestamp = ts15[i] + pd.Timedelta(minutes=15)
+        decision_time = decision_timestamp.to_pydatetime()
+        context = DecisionContext.for_closed_bar(
+            decision_time,
+            strategy_version="ict-benchmark-v1",
+            run_id=f"study:{symbol}:{decision_timestamp.isoformat()}",
+        )
+        frames = slice_decision_frames(
+            df4h,
+            df1h,
+            df15,
+            context,
+            lookbacks={"4h": 100, "1h": 100, "15m": 100},
+        )
+        if min(len(frames.df_4h), len(frames.df_1h), len(frames.df_15m)) < 100:
             continue
-        ts = ts15[i].to_pydatetime()
-        _FakeDT._now = ts
-        w15 = df15.iloc[i - 99: i + 1]
-        w1h = df1h.iloc[j1 - 99: j1 + 1]
-        w4h = df4h.iloc[j4 - 99: j4 + 1]
         price = closes[i]
         try:
             res = SE.scan_symbol(
-                w4h, w1h, w15, symbol, float(price),
+                frames.df_4h,
+                frames.df_1h,
+                frames.df_15m,
+                symbol,
+                float(price),
                 min_rr=2.0, min_score=0.0, require_volume=False,
+                context=context,
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("%s %s 신호 재생 실패: %s", symbol, decision_time, exc)
             continue
         sig = res.signal
         if sig is None:
@@ -285,15 +282,15 @@ def replay_symbol(symbol: str) -> list[dict]:
             continue
         busy_until = sim.pop("resolve_idx")
 
-        kz = bool(real_kz(ts))
+        kz = bool(real_kz(decision_time))
         ck = res.checks or {}
         rows.append({
-            "symbol": symbol, "ts": ts15[i].isoformat(),
+            "symbol": symbol, "ts": decision_timestamp.isoformat(),
             "direction": sig.direction,
             "score_raw": round(res.score, 1),
             "kz_true": kz,
-            "session": real_session(ts) or "none",
-            "weekday": ts.weekday(),
+            "session": real_session(decision_time) or "none",
+            "weekday": decision_time.weekday(),
             "volume_ok": bool(ck.get("volume", False)),
             "zone_both": "FVG+OB" in (res.reason or ""),
             "entry": float(sig.entry_price),
