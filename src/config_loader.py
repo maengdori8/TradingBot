@@ -50,6 +50,11 @@ def load_config(overlay_path: Path | None = None) -> dict:
         병합된 설정 dict
     """
     cfg = _load_yaml(CONFIG_PATH)
+    learning = cfg.get("learning", {})
+    if learning.get("dry_run", False):
+        logger.info("자동학습 dry-run 활성 — 기존 학습 오버레이를 적용하지 않습니다.")
+        return cfg
+
     overlay = _read_overlay(overlay_path or OVERLAY_PATH)
     if overlay:
         _apply_overlay(cfg, overlay)

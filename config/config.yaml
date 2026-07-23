@@ -1,5 +1,15 @@
 testnet: true
 
+runtime:
+  mode: paper                   # paper만 기본 허용. demo/live는 별도 승급 아티팩트가 필요
+  strategy_version: "ict-benchmark-v1"
+  decision_interval: "15m"
+  max_data_age_sec: 120         # 이보다 오래된 데이터는 신규 진입 fail-closed
+  live_enabled: false           # 코드만으로 실전 전환 불가
+  approval_token_env: "LIVE_TRADING_APPROVAL_TOKEN"
+  validation_report_path: "logs/approved_validation_report.json"
+  validation_report_sha256: ""  # 수동 승인한 리포트 해시. 빈 값이면 live 금지
+
 exchange:
   name: bybit
   symbols:                      # scan.mode=static 일 때만 사용하는 고정 목록
@@ -20,7 +30,7 @@ exchange:
     - "4h"
 
 runner:
-  interval_sec: 300             # 로컬 주기 실행 간격(초). 5분마다 전체 스캔
+  interval_sec: 900             # 닫힌 15분봉마다 한 번 결정
 
 scan:
   mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
@@ -37,7 +47,7 @@ capital:
   risk_per_trade: 0.005      # 기본 리스크 (risk_tiers 미적용 시 fallback)
 
 risk:
-  min_rr_ratio: 2.5          # 신호연구: 2.0ATR손절 기준 RR2.5가 순R 최적 (RR2.0 = -0.01R → 2.5 = +0.07R)
+  min_rr_ratio: 2.5          # ICT 벤치마크 파라미터. 룩어헤드 정정 후 검증된 엣지는 없음
   max_positions: 4           # 동시 최대 포지션 수
   max_per_symbol: 1          # 심볼당 최대 1포지션 (분산 강제)
   max_same_direction: 3      # 같은 방향 최대 3포지션 (한쪽 쏠림 방지)
@@ -58,9 +68,10 @@ risk:
     - {min_score: 75, risk_pct: 0.005}   # B급: 표준
     - {min_score: 70, risk_pct: 0.003}   # C급: 가볍게
 
-# 실전 전환 기준 — 2026-06 전략 개정(RR 2.5, 설계 승률 37~42%)에 맞춰 재보정.
-# 구기준(승률 55%/MDD 5%)은 RR 2.0×고승률 체제용이라 신체제에선 구조적으로 도달 불가였음.
+# 레거시 성과 표시 기준. offline/demo 통계 게이트를 대신할 수 없으며 live 권한을 부여하지 않음.
 promote:
+  frozen: true                # 현 ICT WFO 음수로 승급 동결
+  strategy_id: "ict-benchmark-v1"
   min_trades: 50             # 운/실력 구분에 필요한 표본 (Barber 2014: 지속수익 <1% — 점추정 불충분)
   min_win_rate: 0.38         # RR2.5 손익분기 28.6% + 약 10%p 마진 (0.55는 신체제 도달불가)
   min_profit_factor: 1.5     # 유지 — 40%승률×순2.4R이면 PF≈1.6으로 달성 가능한 기준
@@ -75,7 +86,7 @@ promote:
 # 로드 시 병합된다. 학습을 끄려면 enabled: false.
 learning:
   enabled: true                 # 자동 학습 on/off
-  dry_run: false                # true면 제안만(오버레이 미적용)
+  dry_run: true                 # 검증 동결: 제안만 기록하고 오버레이 미적용
   epoch_start: "2026-06-10T00:00:00+00:00"  # 전략 체제 전환 시각 — 이전 청산거래는 학습 제외
                                             # (출구기하/킬존 변경으로 구체제 R과 단위가 다름)
   min_trades_to_learn: 20       # 전역 최소 청산 거래 수 (미달 시 학습 보류)
@@ -87,3 +98,49 @@ learning:
   bucket_min_n_expand: 24       # 위험확대 방향 최소 표본 (소표본 행운 버킷 차단 — 축소의 2배)
   session_min_n: 10             # 세션 세그먼트 최소 표본
   global_min_n_for_min_score: 20  # min_score 조정 전역 최소 표본
+
+# 정직한 오프라인/미래 데모 승급 게이트. 모든 항목을 통과한 서명된 리포트만 사용한다.
+validation:
+  hypothesis_max_configs_per_family: 20
+  offline:
+    min_effective_bets: 200
+    min_months: 12
+    min_net_expectancy: 0.0
+    min_expectancy_ci_lower: 0.0
+    min_daily_sharpe: 1.0
+    min_profit_factor: 1.2
+    max_mdd: 0.10
+    min_deflated_sharpe_probability: 0.95
+    max_pbo: 0.10
+    max_spa_pvalue: 0.05
+    max_contribution_share: 0.25
+    cost_stress_mult: 1.5
+    max_double_cost_loss: 0.10
+  demo:
+    min_calendar_days: 90
+    min_effective_bets: 100
+    min_expectancy_ci_lower: 0.0
+    min_daily_sharpe: 1.0
+    min_profit_factor: 1.2
+    max_mdd: 0.075
+    max_fill_error_median_bps: 5.0
+    max_fill_error_p95_bps: 25.0
+    max_fill_rate_error_pct: 0.10
+    require_full_reconciliation: true
+
+# 실전 파일럿은 별도 수동 승인 뒤에만 사용한다.
+live_pilot:
+  max_capital_krw: 1000000
+  max_investable_fraction: 0.05
+  risk_per_trade: 0.001
+  max_total_stop_risk: 0.005
+  max_directional_notional_mult: 1.0
+  max_hedged_gross_notional_mult: 2.0
+  max_net_delta_mult: 0.10
+  max_leverage: 2
+  margin_mode: isolated
+  daily_loss_limit: 0.005
+  weekly_loss_limit: 0.015
+  max_drawdown: 0.03
+  scale_review_days: 30
+  max_scale_step: 0.25
