@@ -5,8 +5,10 @@ GitHub Actions에서 15분마다 실행됨
 from __future__ import annotations
 import logging
 import os
+import sqlite3
 import sys
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # PYTHONPATH 보정 (GitHub Actions 환경 대응)
@@ -37,6 +39,107 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
+DECISION_DB_PATH = LOG_DIR / "decision_ledger.db"
+
+
+class DecisionLedger:
+    """심볼·봉·전략 버전별 주문 결정을 한 번만 허용하는 영속 원장."""
+
+    def __init__(
+        self,
+        db_path: Path = DECISION_DB_PATH,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """SQLite 결정 원장을 초기화한다.
+
+        Args:
+            db_path: 결정 원장 SQLite 경로.
+            connection: 기존 거래 DB 연결. 전달하면 연결 수명은 호출자가 관리한다.
+        """
+        self._owns_connection = connection is None
+        self.conn = connection or sqlite3.connect(str(db_path), timeout=30)
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS entry_decisions (
+                decision_key TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                bar_close_time TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                claimed_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.commit()
+
+    def claim(
+        self,
+        symbol: str,
+        bar_close_time: datetime,
+        strategy_version: str,
+        run_id: str,
+    ) -> bool:
+        """진입 결정을 원자적으로 선점한다.
+
+        Returns:
+            처음 선점한 결정이면 True, 이미 처리된 결정이면 False.
+        """
+        decision_key = (
+            f"{strategy_version}|{symbol}|{bar_close_time.astimezone(timezone.utc).isoformat()}"
+        )
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO entry_decisions
+                    (decision_key, symbol, bar_close_time, strategy_version, run_id, claimed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_key,
+                    symbol,
+                    bar_close_time.astimezone(timezone.utc).isoformat(),
+                    strategy_version,
+                    run_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def close(self) -> None:
+        """SQLite 연결을 닫는다."""
+        if self._owns_connection:
+            self.conn.close()
+
+
+def _closed_15m_boundary(now: datetime) -> datetime:
+    """현재 시각 이전의 마지막 15분 봉 종료 경계를 반환한다."""
+    utc_now = now.astimezone(timezone.utc)
+    return utc_now.replace(
+        minute=(utc_now.minute // 15) * 15,
+        second=0,
+        microsecond=0,
+    )
+
+
+def _require_paper_runtime(cfg: dict) -> str:
+    """현재 오케스트레이터가 안전하게 지원하는 paper 모드만 허용한다."""
+    runtime = cfg.get("runtime", {})
+    mode = str(runtime.get("mode", "paper")).lower()
+    if mode == "live":
+        raise RuntimeError(
+            "live 모드는 승인 리포트·수동 토큰·전용 실행 대사 경로 없이는 시작할 수 없습니다"
+        )
+    if mode == "demo":
+        raise RuntimeError(
+            "demo 주문은 BybitOrderExecutor 전용 검증 러너에서만 허용됩니다"
+        )
+    if mode != "paper":
+        raise ValueError(f"지원하지 않는 runtime.mode입니다: {mode}")
+    return mode
+
 
 def load_config() -> dict:
     # config.yaml + 학습 오버레이(logs/learned_params.yaml) 병합 로더 일원화
@@ -61,7 +164,12 @@ def _resolve_symbols(cfg: dict, client) -> list[str]:
 
 def run() -> None:
     from src.exchange.bybit_client import MarketDataClient
-    from src.strategy import load_strategy_params
+    from src.strategy import (
+        DecisionContext,
+        load_strategy_params,
+        slice_closed_bars,
+        slice_decision_frames,
+    )
     from src.strategy.signal_engine import scan_symbol
     from src.strategy.kill_zone import get_active_session
     from src.strategy.market_structure import detect_htf_trend
@@ -71,11 +179,28 @@ def run() -> None:
     from src.scan_store import save_scan_state, to_tradingview
 
     cfg      = load_config()
+    mode     = _require_paper_runtime(cfg)
     scan_cfg = cfg.get("scan", {})
+    runtime_cfg = cfg.get("runtime", {})
     client   = MarketDataClient()
     notifier = DiscordNotifier(os.getenv("DISCORD_WEBHOOK_URL", ""))
     risk     = RiskManager()
     paper    = PaperEngine(initial_balance=risk.trading_capital)
+    ledger   = DecisionLedger(connection=paper.conn)
+
+    decision_time = datetime.now(timezone.utc)
+    bar_close_time = _closed_15m_boundary(decision_time)
+    run_id = uuid.uuid4().hex
+    strategy_version = str(
+        runtime_cfg.get("strategy_version", "ict-benchmark-v1")
+    )
+    context = DecisionContext.for_closed_bar(
+        bar_close_time,
+        strategy_version=strategy_version,
+        run_id=run_id,
+        decision_time=decision_time,
+        data_cutoff=bar_close_time,
+    )
 
     # 청산 이벤트 → 리스크 기록 + Discord 알림 연동
     def _on_trade(pnl: float, reason: str, pos: object) -> None:
@@ -87,7 +212,13 @@ def run() -> None:
     paper.register_on_trade(_on_trade)
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    logger.info("══════ 봇 실행 [페이퍼] %s ══════", now_str)
+    logger.info(
+        "══════ 봇 실행 [%s] %s | bar_close=%s run_id=%s ══════",
+        mode,
+        now_str,
+        context.bar_close_time.isoformat(),
+        run_id,
+    )
 
     # 스캔 대상 = 동적 상위 심볼 ∪ 보유 포지션 심볼 (보유분 SL/TP 체크 보장)
     scan_symbols = _resolve_symbols(cfg, client)
@@ -98,42 +229,85 @@ def run() -> None:
     min_score = scan_cfg.get("min_score", 70)
     require_volume = scan_cfg.get("require_volume", False)
 
-    # BTC 상위TF 추세 레짐 (역추세 신호 사이징 강등용) — 실패 시 fail-open(강등 없음)
-    # 근거: 신호연구에서 BTC 역행 신호는 조건부 부분집합에서 -0.258R. 단 전체표본 +0.145R라
-    # 하드 차단 대신 리스크 최하단(0.3%) 강등. counter 100건 누적 후 EV로 격상/해제 재평가.
+    # BTC 상위TF 추세 레짐 (역추세 신호 사이징 강등용).
+    # 필수 시장 컨텍스트가 없으면 신규 진입은 fail-closed한다.
     btc_trend = None
+    btc_context_valid = False
     try:
         bt_params = load_strategy_params().get("btc_trend", {})
-        df_btc = client.fetch_ohlcv("BTC/USDT:USDT", "4h", limit=200)
+        df_btc_raw = client.fetch_ohlcv("BTC/USDT:USDT", "4h", limit=200)
+        df_btc = slice_closed_bars(
+            df_btc_raw,
+            "4h",
+            context,
+            lookback=200,
+        )
+        if len(df_btc) < 60:
+            raise ValueError("BTC 완전종료 4H 봉이 부족합니다")
         btc_trend = detect_htf_trend(
             df_btc,
             ema_period=bt_params.get("ema_period", 50),
             slope_lookback=bt_params.get("slope_lookback", 10),
         )
+        btc_context_valid = True
         logger.info("BTC 4H 추세 레짐: %s", btc_trend)
     except Exception as e:
-        logger.warning("BTC 추세 판정 실패(fail-open, 강등 없음): %s", e)
+        logger.error("BTC 추세 판정 실패(fail-closed, 신규 진입 중단): %s", e)
 
     results = []   # 모든 ScanResult
     scanned = 0
     for symbol in all_symbols:
         try:
-            price  = client.fetch_current_price(symbol)
-            df_4h  = client.fetch_ohlcv(symbol, "4h",  limit=100)
-            df_1h  = client.fetch_ohlcv(symbol, "1h",  limit=100)
-            df_15m = client.fetch_ohlcv(symbol, "15m", limit=100)
+            df_4h_raw  = client.fetch_ohlcv(symbol, "4h",  limit=120)
+            df_1h_raw  = client.fetch_ohlcv(symbol, "1h",  limit=120)
+            df_15m_raw = client.fetch_ohlcv(symbol, "15m", limit=120)
+            frames = slice_decision_frames(
+                df_4h_raw,
+                df_1h_raw,
+                df_15m_raw,
+                context,
+                lookbacks={"4h": 100, "1h": 100, "15m": 100},
+            )
+            if (
+                len(frames.df_4h) < 20
+                or len(frames.df_1h) < 20
+                or len(frames.df_15m) < 20
+            ):
+                raise ValueError("완전종료 OHLCV 봉이 부족합니다")
+
+            last_close = (
+                frames.df_15m.index[-1].to_pydatetime()
+                + timedelta(minutes=15)
+            )
+            data_age = (context.bar_close_time - last_close).total_seconds()
+            max_age_value = runtime_cfg.get("max_data_age_sec")
+            max_age = int(max_age_value) if max_age_value is not None else None
+            if data_age < 0 or (max_age is not None and data_age > max_age):
+                raise ValueError(
+                    f"15m 데이터 stale/future: age={data_age:.0f}s limit={max_age}s"
+                )
+            signal_price = float(frames.df_15m.iloc[-1]["close"])
             scanned += 1
 
             # 보유 포지션: 미실현 손익 갱신 + SL/TP 체크
             if symbol in open_symbols:
-                paper.update_unrealized_pnl(symbol, price)
-                last = df_15m.iloc[-1]
+                try:
+                    mark_price = client.fetch_current_price(symbol)
+                except (RuntimeError, ValueError):
+                    mark_price = signal_price
+                paper.update_unrealized_pnl(symbol, mark_price)
+                last = frames.df_15m.iloc[-1]
                 paper.check_stops(symbol, float(last["high"]), float(last["low"]))
 
             res = scan_symbol(
-                df_4h, df_1h, df_15m, symbol, price,
+                df_4h_raw,
+                df_1h_raw,
+                df_15m_raw,
+                symbol,
+                signal_price,
                 min_rr=risk.min_rr, min_score=min_score,
                 require_volume=require_volume,
+                context=context,
             )
             results.append(res)
 
@@ -151,6 +325,22 @@ def run() -> None:
             continue
         if res.symbol in open_now:
             continue
+        if not btc_context_valid:
+            logger.warning("[%s] BTC 시장 컨텍스트 부재로 신규 진입 차단", res.symbol)
+            continue
+        if not ledger.claim(
+            res.symbol,
+            context.bar_close_time,
+            context.strategy_version,
+            context.run_id,
+        ):
+            logger.info(
+                "[%s] 중복 결정 차단: %s %s",
+                res.symbol,
+                context.strategy_version,
+                context.bar_close_time.isoformat(),
+            )
+            continue
         allowed, reason = risk.check_trade_allowed(
             current_positions=len(paper.positions),
             positions=paper.get_positions(),
@@ -165,7 +355,7 @@ def run() -> None:
         # 손실 직후 거래는 기대값 음수. 봇도 같은 셋업 재시도 패턴 구조적 차단)
         last_sl = paper.last_sl_exit(res.symbol)
         if last_sl is not None:
-            elapsed_h = (datetime.now(timezone.utc) - last_sl).total_seconds() / 3600
+            elapsed_h = (context.decision_time - last_sl).total_seconds() / 3600
             if elapsed_h < risk.reentry_cooldown_hours:
                 logger.info(
                     "[%s] SL 재진입 쿨다운 (%.1f/%.0fh)",
@@ -175,7 +365,7 @@ def run() -> None:
 
         sig = res.signal
 
-        # BTC 역추세 신호 → 리스크 최하단 강등 (차단 아님, fail-open: btc_trend=None이면 미적용)
+        # BTC 역추세 신호 → 리스크 최하단 강등
         alignment = "unknown"
         override = None
         if btc_trend is not None:
@@ -195,7 +385,7 @@ def run() -> None:
             sig.entry_price, sig.stop_loss, score=res.score,
             risk_pct_override=override,
         )
-        entry_session = get_active_session(datetime.now(timezone.utc))
+        entry_session = get_active_session(context.decision_time)
         checks = dict(res.checks or {})
         checks["btc_aligned"] = alignment       # 학습/사후분석 태깅 (JSON 보존)
         pos = paper.open_position(
@@ -205,6 +395,7 @@ def run() -> None:
             leverage=params["leverage"],
             score=res.score, checks=checks,
             entry_rr=sig.rr_ratio, entry_session=entry_session,
+            entry_time=context.decision_time,
         )
         if pos:
             entered += 1
@@ -277,6 +468,7 @@ def run() -> None:
     except Exception as e:
         logger.warning("자동 학습 오류(무시): %s", e)
 
+    ledger.close()
     logger.info("══════ 완료 ══════")
 
 
