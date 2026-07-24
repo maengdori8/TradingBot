@@ -174,6 +174,10 @@ def run() -> None:
     from src.strategy.kill_zone import get_active_session
     from src.strategy.market_structure import detect_htf_trend
     from src.risk.risk_manager import RiskManager
+    from src.paper_trading.execution_model import (
+        OrderBookExecutionModel,
+        OrderBookSnapshot,
+    )
     from src.paper_trading.paper_engine import PaperEngine
     from src.notification.discord_bot import DiscordNotifier
     from src.scan_store import save_scan_state, to_tradingview
@@ -182,10 +186,24 @@ def run() -> None:
     mode     = _require_paper_runtime(cfg)
     scan_cfg = cfg.get("scan", {})
     runtime_cfg = cfg.get("runtime", {})
+    execution_cfg = cfg.get("paper_execution", {})
     client   = MarketDataClient()
     notifier = DiscordNotifier(os.getenv("DISCORD_WEBHOOK_URL", ""))
     risk     = RiskManager()
-    paper    = PaperEngine(initial_balance=risk.trading_capital)
+    paper    = PaperEngine(
+        initial_balance=risk.trading_capital,
+        execution_model=OrderBookExecutionModel(
+            queue_fill_ratio=float(
+                execution_cfg.get("queue_fill_ratio", 0.25)
+            ),
+            adverse_selection_bps=float(
+                execution_cfg.get("adverse_selection_bps", 2.0)
+            ),
+            max_slippage_bps=float(
+                execution_cfg.get("max_slippage_bps", 25.0)
+            ),
+        ),
+    )
     ledger   = DecisionLedger(connection=paper.conn)
 
     decision_time = datetime.now(timezone.utc)
@@ -291,13 +309,53 @@ def run() -> None:
 
             # 보유 포지션: 미실현 손익 갱신 + SL/TP 체크
             if symbol in open_symbols:
+                stop_orderbook = None
                 try:
-                    mark_price = client.fetch_current_price(symbol)
-                except (RuntimeError, ValueError):
+                    market_snapshot = client.fetch_market_snapshot(
+                        symbol,
+                        order_book_limit=int(
+                            execution_cfg.get("order_book_limit", 25)
+                        ),
+                        max_age_seconds=float(
+                            execution_cfg.get(
+                                "max_snapshot_age_seconds",
+                                5.0,
+                            )
+                        ),
+                    )
+                    mark_price = market_snapshot.last
+                    stop_orderbook = OrderBookSnapshot(
+                        symbol=symbol,
+                        bids=market_snapshot.bids,
+                        asks=market_snapshot.asks,
+                        timestamp=market_snapshot.exchange_timestamp,
+                        source=(
+                            f"{market_snapshot.provenance.exchange}:"
+                            f"{market_snapshot.provenance.market_type}"
+                        ),
+                    )
+                    execution_time = market_snapshot.exchange_timestamp
+                except (RuntimeError, ValueError) as exc:
+                    logger.error(
+                        "[%s] 주문장 스냅샷 실패 — 보수적 청산 모델 사용: %s",
+                        symbol,
+                        exc,
+                    )
                     mark_price = signal_price
-                paper.update_unrealized_pnl(symbol, mark_price)
+                    execution_time = context.decision_time
+                paper.update_unrealized_pnl(
+                    symbol,
+                    mark_price,
+                    current_time=execution_time,
+                )
                 last = frames.df_15m.iloc[-1]
-                paper.check_stops(symbol, float(last["high"]), float(last["low"]))
+                paper.check_stops(
+                    symbol,
+                    float(last["high"]),
+                    float(last["low"]),
+                    current_time=execution_time,
+                    orderbook=stop_orderbook,
+                )
 
             res = scan_symbol(
                 df_4h_raw,
@@ -388,6 +446,33 @@ def run() -> None:
         entry_session = get_active_session(context.decision_time)
         checks = dict(res.checks or {})
         checks["btc_aligned"] = alignment       # 학습/사후분석 태깅 (JSON 보존)
+        try:
+            market_snapshot = client.fetch_market_snapshot(
+                res.symbol,
+                order_book_limit=int(
+                    execution_cfg.get("order_book_limit", 25)
+                ),
+                max_age_seconds=float(
+                    execution_cfg.get("max_snapshot_age_seconds", 5.0)
+                ),
+            )
+            entry_orderbook = OrderBookSnapshot(
+                symbol=res.symbol,
+                bids=market_snapshot.bids,
+                asks=market_snapshot.asks,
+                timestamp=market_snapshot.exchange_timestamp,
+                source=(
+                    f"{market_snapshot.provenance.exchange}:"
+                    f"{market_snapshot.provenance.market_type}"
+                ),
+            )
+        except (RuntimeError, ValueError) as exc:
+            logger.error(
+                "[%s] 신규 진입 차단 — 주문장 출처/최신성 검증 실패: %s",
+                res.symbol,
+                exc,
+            )
+            continue
         pos = paper.open_position(
             symbol=res.symbol, direction=sig.direction,
             entry_price=sig.entry_price, qty=params["qty"],
@@ -395,7 +480,10 @@ def run() -> None:
             leverage=params["leverage"],
             score=res.score, checks=checks,
             entry_rr=sig.rr_ratio, entry_session=entry_session,
-            entry_time=context.decision_time,
+            entry_time=entry_orderbook.timestamp,
+            orderbook=entry_orderbook,
+            order_type="market",
+            time_in_force="IOC",
         )
         if pos:
             entered += 1
@@ -443,8 +531,11 @@ def run() -> None:
             checker = PromoteChecker()
             result = checker.check(perf)
             if result.eligible:
-                logger.info("🏆 실전 전환 기준 충족! 점수: %.0f/100", result.score)
-                notifier.notify_promote(result)
+                logger.info(
+                    "레거시 정보성 성과 기준 충족(%.0f/100) — "
+                    "실전 권한 없음, offline/demo 검증 필요",
+                    result.score,
+                )
             else:
                 logger.info(
                     "실전 전환 미충족 (점수: %.0f/100): %s",

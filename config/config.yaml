@@ -33,6 +33,13 @@ exchange:
 runner:
   interval_sec: 900             # 닫힌 15분봉마다 한 번 결정
 
+paper_execution:
+  order_book_limit: 25
+  max_snapshot_age_seconds: 5.0
+  queue_fill_ratio: 0.25        # 메이커 대기열 앞 물량을 반영한 관측 체결 비율
+  adverse_selection_bps: 2.0
+  max_slippage_bps: 25.0        # 이를 넘는 시장가 잔량은 IOC 미체결 처리
+
 scan:
   mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
   top_n: 40                     # 스캔할 거래량 상위 코인 수
