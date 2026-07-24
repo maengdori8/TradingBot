@@ -1,5 +1,6 @@
-"""시점 보존형 시장 데이터 모델."""
 from __future__ import annotations
+
+# 시점 보존형 시장 데이터 모델.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone

@@ -1,5 +1,6 @@
-"""주문·체결 이벤트와 계정 스냅샷을 영구 보존하는 SQLite 저장소."""
 from __future__ import annotations
+
+# 주문·체결 이벤트와 계정 스냅샷을 영구 보존하는 SQLite 저장소.
 
 import json
 import logging
