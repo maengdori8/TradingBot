@@ -1,16 +1,15 @@
-"""
-멀티 거래소 퍼블릭 클라이언트
-Bybit(swap) -> Kraken -> Coinbase fallback
-선물 심볼 자동 변환 + 재시도 로직(exponential backoff)
-"""
+"""출처 검증과 재시도를 지원하는 퍼블릭 시세 클라이언트."""
 from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import ccxt
 import pandas as pd
+
+from src.data.market_snapshot import DataProvenance, MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,7 @@ def _retry_call(func: Any, *args: Any, **kwargs: Any) -> Any:
                     "최대 재시도 초과 (%d회): %s — %s",
                     MAX_RETRIES, type(exc).__name__, str(exc)[:200],
                 )
-        except Exception as exc:
+        except Exception:
             # 네트워크 이외 오류는 즉시 전파
             raise
     raise last_exc  # type: ignore[misc]
@@ -85,21 +84,49 @@ def _retry_call(func: Any, *args: Any, **kwargs: Any) -> Any:
 class MarketDataClient:
     """퍼블릭 시세 전용 클라이언트.
 
-    Bybit(swap) -> Kraken -> Coinbase 순으로 fallback하며,
-    각 호출에 exponential backoff 재시도 로직을 적용한다.
+    현물은 Bybit -> Kraken -> Coinbase 순으로 fallback할 수 있다.
+    Bybit 무기한 선물 심볼은 기본적으로 Bybit swap 데이터만 허용해
+    다른 거래소 현물이 신호 입력에 섞이지 않도록 fail-closed 한다.
 
     거래소 클라이언트는 lazy 초기화된다. 생성자에서 load_markets()를
     호출하지 않고, 첫 번째 API 요청 시 필요한 거래소만 초기화한다.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, strict_derivatives: bool = True) -> None:
+        """시세 클라이언트를 생성한다.
+
+        Args:
+            strict_derivatives: 파생상품 심볼을 요청 거래소·상품으로만
+                제한할지 여부. 운영 신호에서는 True를 유지해야 한다.
+        """
         self._exchange_configs = EXCHANGE_CONFIGS
         self._clients: dict[str, Any] = {}
         self._initialized: set[str] = set()
+        self._strict_derivatives = strict_derivatives
         logger.info(
-            "MarketDataClient 생성 (lazy 모드, 거래소 %d개 대기)",
+            "MarketDataClient 생성 (lazy 모드, 거래소 %d개, strict=%s)",
             len(self._exchange_configs),
+            strict_derivatives,
         )
+
+    def _eligible_configs(
+        self,
+        symbol: str,
+    ) -> list[tuple[str, type, dict[str, Any], bool]]:
+        """심볼의 상품 종류에 맞는 거래소 설정만 반환한다."""
+        is_derivative = ":" in symbol
+        if is_derivative and self._strict_derivatives:
+            configs = [
+                item
+                for item in self._exchange_configs
+                if item[0] == "bybit" and item[3]
+            ]
+            if not configs:
+                raise RuntimeError(
+                    f"Bybit swap 데이터 소스가 없습니다: {symbol}"
+                )
+            return configs
+        return list(self._exchange_configs)
 
     def _ensure_client(self, name: str, cls: type, cfg: dict[str, Any]) -> Any | None:
         """거래소 클라이언트를 lazy 초기화한다.
@@ -156,7 +183,7 @@ class MarketDataClient:
         """
         errors: list[str] = []
 
-        for name, cls, cfg, futures_ok in self._exchange_configs:
+        for name, cls, cfg, futures_ok in self._eligible_configs(symbol):
             client = self._ensure_client(name, cls, cfg)
             if not client:
                 continue
@@ -174,6 +201,14 @@ class MarketDataClient:
                         df["timestamp"], unit="ms", utc=True
                     )
                     df = df.set_index("timestamp")
+                    df.attrs["provenance"] = {
+                        "exchange": name,
+                        "market_type": "swap" if futures_ok and ":" in sym else "spot",
+                        "requested_symbol": symbol,
+                        "resolved_symbol": sym,
+                        "endpoint": "fetch_ohlcv",
+                        "receive_timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
                     if name != "bybit":
                         logger.info(
                             "[fallback] %s -> %s/%s (%d candles)",
@@ -202,7 +237,7 @@ class MarketDataClient:
         """
         errors: list[str] = []
 
-        for name, cls, cfg, futures_ok in self._exchange_configs:
+        for name, cls, cfg, futures_ok in self._eligible_configs(symbol):
             client = self._ensure_client(name, cls, cfg)
             if not client:
                 continue
@@ -210,6 +245,15 @@ class MarketDataClient:
             for sym in candidates:
                 try:
                     ticker = _retry_call(client.fetch_ticker, sym)
+                    ticker = dict(ticker)
+                    ticker["_provenance"] = {
+                        "exchange": name,
+                        "market_type": "swap" if futures_ok and ":" in sym else "spot",
+                        "requested_symbol": symbol,
+                        "resolved_symbol": sym,
+                        "endpoint": "fetch_ticker",
+                        "receive_timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
                     if name != "bybit":
                         logger.info(
                             "[fallback] ticker %s -> %s/%s", symbol, name, sym
@@ -271,6 +315,133 @@ class MarketDataClient:
             현재 가격 (float)
         """
         return float(self.fetch_ticker(symbol)["last"])
+
+    def fetch_order_book(
+        self,
+        symbol: str,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """주문장을 조회하고 데이터 출처를 함께 반환한다.
+
+        Args:
+            symbol: 거래 심볼.
+            limit: 매수·매도 호가별 최대 깊이.
+
+        Returns:
+            ccxt 주문장 딕셔너리와 ``_provenance`` 메타데이터.
+
+        Raises:
+            RuntimeError: 허용된 거래소에서 주문장을 가져오지 못한 경우.
+        """
+        errors: list[str] = []
+        for name, cls, cfg, futures_ok in self._eligible_configs(symbol):
+            client = self._ensure_client(name, cls, cfg)
+            if client is None:
+                continue
+            candidates = [symbol] if futures_ok else _spot_symbols(symbol)
+            for resolved_symbol in candidates:
+                try:
+                    order_book = dict(
+                        _retry_call(
+                            client.fetch_order_book,
+                            resolved_symbol,
+                            limit,
+                        )
+                    )
+                    order_book["_provenance"] = {
+                        "exchange": name,
+                        "market_type": (
+                            "swap"
+                            if futures_ok and ":" in resolved_symbol
+                            else "spot"
+                        ),
+                        "requested_symbol": symbol,
+                        "resolved_symbol": resolved_symbol,
+                        "endpoint": "fetch_order_book",
+                        "receive_timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    return order_book
+                except Exception as exc:
+                    message = (
+                        f"[{name}/{resolved_symbol}] "
+                        f"{type(exc).__name__}: {str(exc)[:120]}"
+                    )
+                    errors.append(message)
+                    logger.debug("orderbook 실패: %s", message)
+        detail = "; ".join(errors) if errors else "클라이언트 없음"
+        raise RuntimeError(f"orderbook 조회 실패: {symbol} — {detail}")
+
+    def fetch_market_snapshot(
+        self,
+        symbol: str,
+        order_book_limit: int = 25,
+        max_age_seconds: float = 5.0,
+    ) -> MarketSnapshot:
+        """ticker와 주문장을 출처·최신성 정보가 있는 스냅샷으로 반환한다.
+
+        Args:
+            symbol: 거래 심볼.
+            order_book_limit: 주문장 조회 깊이.
+            max_age_seconds: 주문 결정에 허용할 최대 데이터 나이.
+
+        Returns:
+            출처와 두 종류 타임스탬프를 포함한 시장 스냅샷.
+
+        Raises:
+            RuntimeError: ticker와 주문장의 출처가 다르거나 오래된 경우.
+        """
+        ticker = self.fetch_ticker(symbol)
+        order_book = self.fetch_order_book(symbol, order_book_limit)
+        ticker_source = ticker.get("_provenance", {})
+        book_source = order_book.get("_provenance", {})
+        source_keys = ("exchange", "market_type", "resolved_symbol")
+        if any(ticker_source.get(key) != book_source.get(key) for key in source_keys):
+            raise RuntimeError("ticker와 orderbook 데이터 출처가 일치하지 않습니다")
+
+        received = datetime.now(timezone.utc)
+        timestamps = [
+            value
+            for value in (ticker.get("timestamp"), order_book.get("timestamp"))
+            if isinstance(value, (int, float))
+        ]
+        if not timestamps:
+            raise RuntimeError("거래소 timestamp가 없어 최신성을 검증할 수 없습니다")
+        exchange_time = datetime.fromtimestamp(max(timestamps) / 1000.0, timezone.utc)
+        last = ticker.get("last")
+        if last is None:
+            raise RuntimeError("ticker에 last 가격이 없습니다")
+        provenance = DataProvenance(
+            exchange=str(ticker_source["exchange"]),
+            market_type=str(ticker_source["market_type"]),
+            requested_symbol=symbol,
+            resolved_symbol=str(ticker_source["resolved_symbol"]),
+            endpoint="fetch_ticker+fetch_order_book",
+        )
+        snapshot = MarketSnapshot(
+            exchange_timestamp=exchange_time,
+            receive_timestamp=received,
+            provenance=provenance,
+            symbol=symbol,
+            last=float(last),
+            bid=float(ticker["bid"]) if ticker.get("bid") is not None else None,
+            ask=float(ticker["ask"]) if ticker.get("ask") is not None else None,
+            bids=tuple(
+                (float(level[0]), float(level[1]))
+                for level in order_book.get("bids", [])
+            ),
+            asks=tuple(
+                (float(level[0]), float(level[1]))
+                for level in order_book.get("asks", [])
+            ),
+            max_age_seconds=max_age_seconds,
+            raw={"ticker": ticker, "order_book": order_book},
+        )
+        expected_market = "swap" if ":" in symbol else provenance.market_type
+        snapshot.assert_usable(
+            expected_exchange="bybit" if ":" in symbol else provenance.exchange,
+            expected_market_type=expected_market,
+        )
+        return snapshot
 
     def fetch_top_symbols(
         self,
