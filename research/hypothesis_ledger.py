@@ -2,18 +2,24 @@ from __future__ import annotations
 
 """사전 가설 등록과 결과 보존을 위한 append-only JSONL 원장."""
 
-import fcntl
 import hashlib
 import json
 import logging
+import os
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import TracebackType
 from typing import Literal, Mapping
 
 logger = logging.getLogger(__name__)
 
 MAX_CONFIGS_PER_FAMILY = 20
+_DEFAULT_LOCK_TIMEOUT_SECONDS = 10.0
+_DEFAULT_STALE_LOCK_SECONDS = 120.0
+_LOCK_POLL_SECONDS = 0.05
 
 
 def _canonical_json(value: object) -> str:
@@ -25,6 +31,173 @@ def _canonical_json(value: object) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+class _PortableFileLock:
+    """원자적 lockfile 생성으로 구현한 운영체제 독립 프로세스 잠금."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        timeout_seconds: float,
+        stale_after_seconds: float,
+    ) -> None:
+        """잠금 경로와 대기·stale 제한을 설정한다."""
+        if timeout_seconds <= 0:
+            raise ValueError("lock timeout은 양수여야 합니다")
+        if stale_after_seconds <= 0:
+            raise ValueError("stale lock 제한은 양수여야 합니다")
+        self.path = path
+        self.timeout_seconds = timeout_seconds
+        self.stale_after_seconds = stale_after_seconds
+        self.token = uuid.uuid4().hex
+        self._acquired = False
+
+    @property
+    def _breaker_path(self) -> Path:
+        """stale 잠금 정리 경쟁을 막는 보조 잠금 경로를 반환한다."""
+        return self.path.with_name(f"{self.path.name}.breaker")
+
+    def _create(self) -> bool:
+        """배타적 파일 생성에 성공하면 잠금 소유 정보를 기록한다."""
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        try:
+            descriptor = os.open(self.path, flags, 0o600)
+        except FileExistsError:
+            return False
+        owner = {
+            "token": self.token,
+            "pid": os.getpid(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            os.write(descriptor, _canonical_json(owner).encode("utf-8"))
+            os.fsync(descriptor)
+        except OSError:
+            os.close(descriptor)
+            try:
+                self.path.unlink()
+            except OSError as cleanup_error:
+                logger.warning(
+                    "초기화 실패 잠금 정리 실패 path=%s error=%s",
+                    self.path,
+                    cleanup_error,
+                )
+            raise
+        os.close(descriptor)
+        self._acquired = True
+        return True
+
+    @staticmethod
+    def _age_seconds(path: Path) -> float | None:
+        """파일이 존재하면 수정 이후 경과 초를 반환한다."""
+        try:
+            return max(0.0, time.time() - path.stat().st_mtime)
+        except FileNotFoundError:
+            return None
+
+    def _remove_stale_breaker(self) -> None:
+        """중단된 정리 작업이 남긴 오래된 breaker를 제거한다."""
+        age = self._age_seconds(self._breaker_path)
+        if age is None or age <= self.stale_after_seconds:
+            return
+        try:
+            self._breaker_path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.debug("stale breaker 제거 실패 path=%s error=%s", self.path, exc)
+
+    def _remove_stale_lock(self) -> bool:
+        """단일 정리자만 stale lock을 재확인하고 제거한다."""
+        age = self._age_seconds(self.path)
+        if age is None:
+            return True
+        if age <= self.stale_after_seconds:
+            return False
+
+        self._remove_stale_breaker()
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        try:
+            breaker = os.open(self._breaker_path, flags, 0o600)
+        except FileExistsError:
+            return False
+        try:
+            os.close(breaker)
+            current_age = self._age_seconds(self.path)
+            if current_age is None:
+                return True
+            if current_age <= self.stale_after_seconds:
+                return False
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                return True
+            logger.warning("stale 가설 원장 잠금 제거 path=%s", self.path)
+            return True
+        finally:
+            try:
+                self._breaker_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.debug(
+                    "stale breaker 해제 실패 path=%s error=%s",
+                    self.path,
+                    exc,
+                )
+
+    def acquire(self) -> None:
+        """타임아웃까지 잠금 생성을 재시도한다."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            if self._create():
+                return
+            self._remove_stale_lock()
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"가설 원장 잠금 획득 시간 초과: {self.path}")
+            time.sleep(_LOCK_POLL_SECONDS)
+
+    def _owned_token(self) -> str | None:
+        """현재 lockfile에 기록된 소유 토큰을 읽는다."""
+        try:
+            owner = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+        token = owner.get("token") if isinstance(owner, dict) else None
+        return token if isinstance(token, str) else None
+
+    def release(self) -> None:
+        """자신이 소유한 lockfile만 제거한다."""
+        if not self._acquired:
+            return
+        try:
+            if self._owned_token() == self.token:
+                self.path.unlink()
+            else:
+                logger.warning("가설 원장 잠금 소유권 불일치 path=%s", self.path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("가설 원장 잠금 해제 실패 path=%s error=%s", self.path, exc)
+        finally:
+            self._acquired = False
+
+    def __enter__(self) -> _PortableFileLock:
+        """컨텍스트 진입 시 잠금을 획득한다."""
+        self.acquire()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """컨텍스트 종료 시 잠금을 해제한다."""
+        self.release()
 
 
 @dataclass(frozen=True)
@@ -80,9 +253,30 @@ class HypothesisSpec:
 class HypothesisLedger:
     """등록과 결과 이벤트만 뒤에 추가하는 파일 기반 가설 원장."""
 
-    def __init__(self, path: Path | str) -> None:
-        """원장 경로를 설정한다."""
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        lock_timeout_seconds: float = _DEFAULT_LOCK_TIMEOUT_SECONDS,
+        stale_lock_seconds: float = _DEFAULT_STALE_LOCK_SECONDS,
+    ) -> None:
+        """원장 경로와 portable lock 제한을 설정한다."""
         self.path = Path(path)
+        self.lock_timeout_seconds = lock_timeout_seconds
+        self.stale_lock_seconds = stale_lock_seconds
+        if lock_timeout_seconds <= 0:
+            raise ValueError("lock_timeout_seconds는 양수여야 합니다")
+        if stale_lock_seconds <= 0:
+            raise ValueError("stale_lock_seconds는 양수여야 합니다")
+
+    def _lock(self) -> _PortableFileLock:
+        """원장 파일에 대응하는 프로세스 잠금을 만든다."""
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        return _PortableFileLock(
+            lock_path,
+            timeout_seconds=self.lock_timeout_seconds,
+            stale_after_seconds=self.stale_lock_seconds,
+        )
 
     @staticmethod
     def _parse_lines(lines: list[str]) -> list[dict[str, object]]:
@@ -107,21 +301,17 @@ class HypothesisLedger:
 
     def read_events(self) -> list[dict[str, object]]:
         """현재 원장의 모든 이벤트를 순서대로 읽는다."""
-        if not self.path.exists():
-            return []
-        with self.path.open("r", encoding="utf-8") as ledger_file:
-            fcntl.flock(ledger_file.fileno(), fcntl.LOCK_SH)
-            try:
+        with self._lock():
+            if not self.path.exists():
+                return []
+            with self.path.open("r", encoding="utf-8") as ledger_file:
                 return self._parse_lines(ledger_file.readlines())
-            finally:
-                fcntl.flock(ledger_file.fileno(), fcntl.LOCK_UN)
 
     def register(self, spec: HypothesisSpec) -> str:
         """가설을 실행 전에 등록하고 매니페스트 해시를 반환한다."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a+", encoding="utf-8") as ledger_file:
-            fcntl.flock(ledger_file.fileno(), fcntl.LOCK_EX)
-            try:
+        with self._lock():
+            with self.path.open("a+", encoding="utf-8") as ledger_file:
                 ledger_file.seek(0)
                 events = self._parse_lines(ledger_file.readlines())
                 registrations = [
@@ -157,6 +347,7 @@ class HypothesisLedger:
                 ledger_file.seek(0, 2)
                 ledger_file.write(_canonical_json(event) + "\n")
                 ledger_file.flush()
+                os.fsync(ledger_file.fileno())
                 logger.info(
                     "가설 등록 family=%s hypothesis_id=%s hash=%s",
                     spec.family,
@@ -164,8 +355,6 @@ class HypothesisLedger:
                     spec.manifest_hash,
                 )
                 return spec.manifest_hash
-            finally:
-                fcntl.flock(ledger_file.fileno(), fcntl.LOCK_UN)
 
     def record_result(
         self,
@@ -178,9 +367,8 @@ class HypothesisLedger:
         """등록된 가설의 최종 결과를 새 이벤트로 한 번만 추가한다."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _canonical_json(dict(metrics))
-        with self.path.open("a+", encoding="utf-8") as ledger_file:
-            fcntl.flock(ledger_file.fileno(), fcntl.LOCK_EX)
-            try:
+        with self._lock():
+            with self.path.open("a+", encoding="utf-8") as ledger_file:
                 ledger_file.seek(0)
                 events = self._parse_lines(ledger_file.readlines())
                 known = any(
@@ -208,6 +396,5 @@ class HypothesisLedger:
                 ledger_file.seek(0, 2)
                 ledger_file.write(_canonical_json(event) + "\n")
                 ledger_file.flush()
+                os.fsync(ledger_file.fileno())
                 logger.info("가설 결과 기록 hash=%s status=%s", manifest_hash, status)
-            finally:
-                fcntl.flock(ledger_file.fileno(), fcntl.LOCK_UN)
