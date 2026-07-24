@@ -51,6 +51,8 @@ class OrderRequest:
             raise ValueError("client_order_id는 비어 있을 수 없습니다")
         if not self.symbol.strip():
             raise ValueError("symbol은 비어 있을 수 없습니다")
+        if not self.strategy_version.strip():
+            raise ValueError("strategy_version은 비어 있을 수 없습니다")
         if self.side not in {"buy", "sell"}:
             raise ValueError(f"지원하지 않는 side입니다: {self.side}")
         if self.order_type not in {"market", "limit"}:
