@@ -1,5 +1,6 @@
-"""거래 실행 계층에서 공유하는 주문·체결 계약."""
 from __future__ import annotations
+
+# 거래 실행 계층에서 공유하는 주문·체결 계약.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
