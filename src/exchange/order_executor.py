@@ -12,6 +12,8 @@ import os
 import stat
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from math import isfinite
+from numbers import Real
 from pathlib import Path
 from typing import Any, Literal
 
@@ -992,7 +994,7 @@ class BybitOrderExecutor(OrderExecutor):
         return stream
 
     def reconcile(self, symbol: str | None = None) -> dict[str, Any]:
-        """거래소 주문·포지션·체결을 조회해 재대사용 이벤트로 저장한다."""
+        """거래소 주문·포지션·체결·잔고를 조회해 재대사용 이벤트로 저장한다."""
         received = datetime.now(timezone.utc)
         open_orders = [dict(item) for item in self._exchange.fetch_open_orders(symbol)]
         positions = [
@@ -1005,6 +1007,9 @@ class BybitOrderExecutor(OrderExecutor):
             dict(item)
             for item in self._exchange.fetch_my_trades(symbol)
         ]
+        balance = dict(self._exchange.fetch_balance())
+        if not balance:
+            raise RuntimeError("Bybit 잔고 대사 응답이 비어 있습니다")
         collections = {
             "reconcile_order": open_orders,
             "reconcile_position": positions,
@@ -1028,12 +1033,150 @@ class BybitOrderExecutor(OrderExecutor):
                     order_id=str(item.get("order") or item.get("id") or ""),
                     client_order_id=item.get("clientOrderId"),
                 )
+        balance_basis = f"reconcile_balance:{received.isoformat()}"
+        self._store.append_event(
+            event_id=hashlib.sha256(balance_basis.encode("utf-8")).hexdigest(),
+            source=f"bybit_{self.mode.value}_rest",
+            channel="reconcile_balance",
+            payload=balance,
+            exchange_timestamp=_timestamp_from_milliseconds(
+                balance.get("timestamp")
+            ),
+            receive_timestamp=received,
+        )
         return {
             "orders": open_orders,
             "positions": positions,
             "trades": trades,
+            "balance": balance,
             "reconciled_at": received,
         }
+
+    def emergency_flatten(
+        self,
+        incident_id: str,
+        strategy_version: str,
+        symbol: str | None = None,
+    ) -> list[ExecutionReport]:
+        """열린 포지션을 idempotent reduce-only IOC 시장가로 안전 청산한다.
+
+        Args:
+            incident_id: 장애 또는 킬스위치 사건의 영속 식별자.
+            strategy_version: 승인 리포트와 대조할 실행 전략 버전.
+            symbol: 특정 심볼만 청산할 경우의 ccxt swap 심볼.
+
+        Returns:
+            각 열린 포지션에 제출한 실행 보고서 목록.
+
+        Raises:
+            RuntimeError: 포지션 조회 또는 수량·side 파싱이 불명확한 경우.
+        """
+        if not incident_id.strip():
+            raise ValueError("incident_id는 비어 있을 수 없습니다")
+        if not strategy_version.strip():
+            raise ValueError("strategy_version은 비어 있을 수 없습니다")
+        if symbol is not None and not symbol.strip():
+            raise ValueError("symbol은 비어 있을 수 없습니다")
+        if self.mode is TradingMode.LIVE:
+            self._validate_live_approval(
+                self._live_approval_token,
+                self._validation_report_hash,
+                self._validation_report_path,
+                strategy_version,
+            )
+        try:
+            raw_positions = self._exchange.fetch_positions(
+                [symbol] if symbol is not None else None
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"비상청산 포지션 조회 실패: {type(exc).__name__}: "
+                f"{str(exc)[:160]}"
+            ) from exc
+        if not isinstance(raw_positions, list):
+            raise RuntimeError("비상청산 포지션 응답이 list가 아닙니다")
+
+        requests: list[OrderRequest] = []
+        for list_index, raw_position in enumerate(raw_positions):
+            if not isinstance(raw_position, dict):
+                raise RuntimeError("비상청산 포지션 항목이 object가 아닙니다")
+            position_symbol = raw_position.get("symbol")
+            if not isinstance(position_symbol, str) or not position_symbol.strip():
+                raise RuntimeError("비상청산 포지션 symbol이 불명확합니다")
+            raw_quantity = raw_position.get("contracts")
+            if (
+                isinstance(raw_quantity, bool)
+                or not isinstance(raw_quantity, Real)
+                or not isfinite(float(raw_quantity))
+                or raw_quantity < 0
+            ):
+                raise RuntimeError(
+                    f"비상청산 포지션 수량이 불명확합니다: {position_symbol}"
+                )
+            numeric_quantity = float(raw_quantity)
+            if numeric_quantity == 0:
+                continue
+            if symbol is not None and position_symbol != symbol:
+                continue
+            if ":" not in position_symbol:
+                raise RuntimeError(
+                    f"비상청산 포지션이 swap 심볼이 아닙니다: {position_symbol}"
+                )
+            quantity = round(numeric_quantity, 8)
+            if quantity <= 0:
+                raise RuntimeError(
+                    f"비상청산 포지션 수량 정밀도가 불명확합니다: {position_symbol}"
+                )
+            raw_side = raw_position.get("side")
+            if not isinstance(raw_side, str):
+                raise RuntimeError(
+                    f"비상청산 포지션 side가 불명확합니다: {position_symbol}"
+                )
+            position_side = raw_side.lower()
+            if position_side not in {"long", "short"}:
+                raise RuntimeError(
+                    f"비상청산 포지션 side가 불명확합니다: {position_symbol}"
+                )
+            info = raw_position.get("info")
+            raw_position_index = (
+                info.get("positionIdx")
+                if isinstance(info, dict) and info.get("positionIdx") is not None
+                else list_index
+            )
+            if isinstance(raw_position_index, bool) or not isinstance(
+                raw_position_index,
+                (int, str),
+            ):
+                raise RuntimeError(
+                    f"비상청산 position index가 불명확합니다: {position_symbol}"
+                )
+            position_index = str(raw_position_index).strip()
+            if not position_index:
+                raise RuntimeError(
+                    f"비상청산 position index가 불명확합니다: {position_symbol}"
+                )
+            identity = (
+                f"{incident_id}|{position_symbol}|{position_index}|"
+                f"{position_side}"
+            )
+            client_order_id = (
+                "emergency-"
+                + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            )
+            requests.append(
+                OrderRequest(
+                    client_order_id=client_order_id,
+                    symbol=position_symbol,
+                    side="sell" if position_side == "long" else "buy",
+                    quantity=quantity,
+                    order_type="market",
+                    reduce_only=True,
+                    time_in_force="IOC",
+                    strategy_version=strategy_version,
+                    run_id=incident_id,
+                )
+            )
+        return [self.submit_order(request) for request in requests]
 
     def close(self) -> None:
         """이벤트 저장소 연결을 닫는다."""
