@@ -41,6 +41,7 @@ DecisionContext ── 완전히 닫힌 15m·1h·4h만 선택
 | `src/exchange/contracts.py` | `TradingMode`, 주문·체결·실행 보고서 공통 계약 |
 | `src/exchange/order_executor.py` | Bybit Demo/Live 주문, 계정 수수료, 보호주문, 대사 |
 | `src/data/execution_store.py` | 주문·체결·private WebSocket·수수료 스냅샷 영구 저장 |
+| `src/data/feature_store.py` | OI·펀딩·주문장 복합 특징과 public 청산 이벤트 시점 보존 |
 | `src/paper_trading/execution_model.py` | 주문장 깊이, 부분체결, IOC/FOK/PostOnly, 불리한 선택 모델 |
 | `src/paper_trading/paper_engine.py` | 현금·증거금·미실현손익 자산곡선과 순성과 |
 | `src/risk/validation_gate.py` | 오프라인/데모 통계 승급 게이트와 승인 리포트 |

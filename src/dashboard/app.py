@@ -339,7 +339,10 @@ def _promote_status(perf: dict, initial_balance: float = 1250.0) -> dict:
         "criteria": criteria,
         "passed_count": passed_count,
         "total_count": total_count,
-        "eligible": passed_count == total_count,
+        "criteria_met": passed_count == total_count,
+        "eligible": False,
+        "informational_only": True,
+        "frozen": bool(promote.get("frozen", True)),
     }
 
 

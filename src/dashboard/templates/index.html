@@ -269,14 +269,14 @@
             <!-- Promote Checker -->
             <div class="card p-3">
                 <div class="section-title">
-                    실전 전환 기준
-                    <span class="float-end badge {{ 'badge-pass' if promote.eligible else 'badge-fail' }}">
+                    레거시 성과 기준 <span class="text-muted">(정보용·승급 동결)</span>
+                    <span class="float-end badge badge-fail">
                         {{ promote.passed_count }}/{{ promote.total_count }}
                     </span>
                 </div>
                 <div class="promote-progress mb-3">
                     {% set pct = (promote.passed_count / promote.total_count * 100) if promote.total_count > 0 else 0 %}
-                    <div class="promote-fill" style="width: {{ pct }}%; background: {{ 'var(--green)' if promote.eligible else 'var(--gold)' if pct >= 50 else 'var(--red)' }};"></div>
+                    <div class="promote-fill" style="width: {{ pct }}%; background: {{ 'var(--gold)' if pct >= 50 else 'var(--red)' }};"></div>
                 </div>
                 <table class="table table-sm mb-0">
                     <tbody>
