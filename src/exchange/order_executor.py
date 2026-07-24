@@ -506,6 +506,14 @@ class BybitOrderExecutor(OrderExecutor):
         actual_hash = hashlib.sha256(report_bytes).hexdigest()
         if not hmac.compare_digest(actual_hash, normalized_hash):
             raise ValueError("검증 보고서 파일의 SHA-256이 승인 해시와 다릅니다")
+        if report.get("stage") != "demo":
+            raise ValueError(
+                "validation report stage는 정확히 'demo'여야 합니다"
+            )
+        if report.get("passed") is not True:
+            raise ValueError(
+                "validation report의 demo 게이트가 통과되지 않았습니다"
+            )
         report_strategy_version = report.get("strategy_version")
         if (
             not isinstance(report_strategy_version, str)
