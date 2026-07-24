@@ -1,8 +1,7 @@
-"""
-OHLCV 데이터 SQLite 저장소.
-시세 데이터를 로컬에 영속적으로 보관하여 API 호출을 절약한다.
-"""
 from __future__ import annotations
+
+# OHLCV 데이터 SQLite 저장소.
+# 시세 데이터를 로컬에 영속적으로 보관하여 API 호출을 절약한다.
 
 import json
 import logging

@@ -1,5 +1,6 @@
-"""출처 검증과 재시도를 지원하는 퍼블릭 시세 클라이언트."""
 from __future__ import annotations
+
+# 출처 검증과 재시도를 지원하는 퍼블릭 시세 클라이언트.
 
 import logging
 import time

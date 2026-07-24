@@ -1,8 +1,7 @@
-"""
-캔들 데이터 수집 및 캐싱 모듈.
-MarketDataClient를 래핑하여 타임프레임별 TTL 캐시를 제공한다.
-"""
 from __future__ import annotations
+
+# 캔들 데이터 수집 및 캐싱 모듈.
+# MarketDataClient를 래핑하여 타임프레임별 TTL 캐시를 제공한다.
 
 import logging
 import time

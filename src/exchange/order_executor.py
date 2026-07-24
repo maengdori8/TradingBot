@@ -1,9 +1,8 @@
-"""
-주문 실행 추상 인터페이스 및 페이퍼 트레이딩 구현.
-페이퍼/실전 공통 주문 인터페이스를 정의하고,
-PaperEngine과 연동하는 페이퍼 주문 실행기를 제공한다.
-"""
 from __future__ import annotations
+
+# 주문 실행 추상 인터페이스 및 페이퍼 트레이딩 구현.
+# 페이퍼/실전 공통 주문 인터페이스를 정의하고,
+# PaperEngine과 연동하는 페이퍼 주문 실행기를 제공한다.
 
 import logging
 import hashlib
