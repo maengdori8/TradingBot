@@ -49,8 +49,8 @@ DecisionContext ── 완전히 닫힌 15m·1h·4h만 선택
 | `research/hypothesis_ledger.py` | 실행 전 가설 등록과 성공·실패 결과 append-only 보존 |
 
 Demo private 주문·체결 이벤트는 거래소 보존기간에 기대지 않고 로컬 DB에 저장한다. 시작과
-주기적 실행 때 REST 주문·포지션·체결을 다시 조회해 대사하며, 불일치·고아 포지션·중복 주문은
-실전 신규 주문 중단과 안전 청산 사유다.
+주기적 실행 때 REST 주문·포지션·체결·잔고를 다시 조회해 대사하며, 불일치·고아 포지션·중복
+주문은 실전 신규 주문 중단과 idempotent reduce-only IOC 안전 청산 사유다.
 
 ## 승급 흐름
 
