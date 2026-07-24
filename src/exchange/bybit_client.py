@@ -545,7 +545,7 @@ class MarketDataClient:
         self,
         symbol: str,
         order_book_limit: int = 25,
-        max_age_seconds: float = 5.0,
+        max_age_seconds: float = 360.0,
     ) -> DerivativesFeatureSnapshot:
         """동일 Bybit swap의 OI·펀딩·주문장을 시점 보존해 조회한다.
 
@@ -577,7 +577,13 @@ class MarketDataClient:
         if client is None:
             raise RuntimeError("Bybit swap 클라이언트를 초기화할 수 없습니다")
         try:
-            open_interest = dict(_retry_call(client.fetch_open_interest, symbol))
+            open_interest = dict(
+                _retry_call(
+                    client.fetch_open_interest,
+                    symbol,
+                    {"interval": "5m"},
+                )
+            )
             funding = dict(_retry_call(client.fetch_funding_rate, symbol))
             order_book = dict(
                 _retry_call(
