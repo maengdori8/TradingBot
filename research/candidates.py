@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 CandidateFamily = Literal["delta_neutral_carry", "forced_flow"]
 CandidateEvaluator = Callable[["CandidateExperiment"], Mapping[str, object]]
 
+# Bybit OI는 최소 5분 완결 버킷이다. 360초는 완결 300초 + 수집 여유 60초이며,
+# 4h/8h 저회전 재조정 주기에 비해 충분히 짧다. 신호 함수는 이를 넘으면 fail-closed한다.
+_FORCED_FLOW_MAX_SNAPSHOT_AGE_SECONDS = 360
+
 _UNIVERSE_POLICY: dict[str, object] = {
     "selection": "point_in_time_30d_median_quote_volume",
     "top_n": 10,
@@ -103,6 +107,7 @@ def predefined_candidates(family: CandidateFamily) -> tuple[CandidateExperiment,
                     config_id = (
                         f"flow-r{rebalance_hours}-t{threshold:.2f}"
                         f"-f{crowding_weight:.2f}"
+                        f"-oi{_FORCED_FLOW_MAX_SNAPSHOT_AGE_SECONDS}"
                     )
                     candidates.append(
                         CandidateExperiment(
@@ -131,7 +136,9 @@ def predefined_candidates(family: CandidateFamily) -> tuple[CandidateExperiment,
                                 "weight_liquidation": 0.25,
                                 "weight_orderbook": 0.25,
                                 "weight_funding_crowding": crowding_weight,
-                                "max_snapshot_age_seconds": 60,
+                                "max_snapshot_age_seconds": (
+                                    _FORCED_FLOW_MAX_SNAPSHOT_AGE_SECONDS
+                                ),
                             },
                         )
                     )
