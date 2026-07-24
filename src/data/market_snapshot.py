@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from math import isfinite
+from numbers import Real
 from typing import Any
 from typing import Literal
 
@@ -115,8 +116,81 @@ class DerivativesFeatureSnapshot(PointInTimeRecord):
     bids: tuple[tuple[float, float], ...]
     asks: tuple[tuple[float, float], ...]
     next_funding_rate: float | None = None
-    max_age_seconds: float = 5.0
+    max_age_seconds: float = 360.0
     raw: dict[str, Any] = field(default_factory=dict, compare=False)
+
+    def __post_init__(self) -> None:
+        """비가격 특징의 값·호가·시점 불변식을 생성 즉시 검증한다."""
+        super().__post_init__()
+        if not self.symbol.strip():
+            raise ValueError("선물 특징 symbol은 비어 있을 수 없습니다")
+        if (
+            isinstance(self.open_interest, bool)
+            or not isinstance(self.open_interest, Real)
+            or not isfinite(float(self.open_interest))
+            or self.open_interest < 0
+        ):
+            raise ValueError("open_interest는 0 이상의 유한한 값이어야 합니다")
+        if (
+            isinstance(self.current_funding_rate, bool)
+            or not isinstance(self.current_funding_rate, Real)
+            or not isfinite(float(self.current_funding_rate))
+        ):
+            raise ValueError("current_funding_rate는 유한한 값이어야 합니다")
+        if self.next_funding_rate is not None and (
+            isinstance(self.next_funding_rate, bool)
+            or not isinstance(self.next_funding_rate, Real)
+            or not isfinite(float(self.next_funding_rate))
+        ):
+            raise ValueError("next_funding_rate는 유한한 값이어야 합니다")
+        if (
+            isinstance(self.max_age_seconds, bool)
+            or not isinstance(self.max_age_seconds, Real)
+            or not isfinite(float(self.max_age_seconds))
+            or self.max_age_seconds < 0
+        ):
+            raise ValueError("max_age_seconds는 0 이상의 유한한 값이어야 합니다")
+        for side_name, levels in (("bids", self.bids), ("asks", self.asks)):
+            if not levels:
+                raise ValueError(f"{side_name} 호가는 비어 있을 수 없습니다")
+            for level in levels:
+                if not isinstance(level, (list, tuple)) or len(level) < 2:
+                    raise ValueError(f"{side_name} 호가 형식이 잘못되었습니다")
+                price, quantity = level[0], level[1]
+                if (
+                    isinstance(price, bool)
+                    or isinstance(quantity, bool)
+                    or not isinstance(price, Real)
+                    or not isinstance(quantity, Real)
+                    or not isfinite(float(price))
+                    or not isfinite(float(quantity))
+                    or price <= 0
+                    or quantity <= 0
+                ):
+                    raise ValueError(
+                        f"{side_name} 가격과 수량은 양의 유한값이어야 합니다"
+                    )
+        received = ensure_utc(self.receive_timestamp)
+        component_times = (
+            ensure_utc(self.open_interest_timestamp),
+            ensure_utc(self.funding_timestamp),
+            ensure_utc(self.order_book_timestamp),
+        )
+        if any(component_time > received for component_time in component_times):
+            raise ValueError("선물 특징 timestamp가 수신 시각보다 미래입니다")
+        if any(
+            (received - component_time).total_seconds() > self.max_age_seconds
+            for component_time in component_times
+        ):
+            raise ValueError("오래된 선물 특징 데이터입니다")
+        if (
+            max(component_times) - min(component_times)
+        ).total_seconds() > self.max_age_seconds:
+            raise ValueError("선물 특징 timestamp 편차가 허용 범위를 초과합니다")
+        if ensure_utc(self.exchange_timestamp) != min(component_times):
+            raise ValueError("복합 선물 특징 시각은 가장 오래된 입력이어야 합니다")
+        if ensure_utc(self.next_funding_timestamp) <= received:
+            raise ValueError("다음 펀딩 시각이 이미 지났습니다")
 
     def assert_usable(self, as_of: datetime | None = None) -> None:
         """각 입력의 출처·최신성·시각 편차를 검증한다."""
@@ -129,7 +203,12 @@ class DerivativesFeatureSnapshot(PointInTimeRecord):
             raise RuntimeError(
                 f"선물 특징 상품 종류 불일치: {self.provenance.market_type}"
             )
-        if not isfinite(self.max_age_seconds) or self.max_age_seconds < 0:
+        if (
+            isinstance(self.max_age_seconds, bool)
+            or not isinstance(self.max_age_seconds, Real)
+            or not isfinite(float(self.max_age_seconds))
+            or self.max_age_seconds < 0
+        ):
             raise ValueError("max_age_seconds는 0 이상의 유한한 값이어야 합니다")
         component_times = (
             ensure_utc(self.open_interest_timestamp),
