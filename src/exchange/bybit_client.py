@@ -7,12 +7,19 @@ import time
 from datetime import datetime, timezone
 from math import isfinite
 from numbers import Real
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ccxt
 import pandas as pd
 
-from src.data.market_snapshot import DataProvenance, MarketSnapshot
+from src.data.market_snapshot import (
+    DataProvenance,
+    DerivativesFeatureSnapshot,
+    MarketSnapshot,
+)
+
+if TYPE_CHECKING:
+    from src.data.feature_store import MarketFeatureStore
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +91,77 @@ def _retry_call(func: Any, *args: Any, **kwargs: Any) -> Any:
     raise last_exc  # type: ignore[misc]
 
 
+def _validated_max_age(max_age_seconds: float) -> float:
+    """최신성 한도를 0 이상의 유한한 초 단위 값으로 검증한다."""
+    if (
+        isinstance(max_age_seconds, bool)
+        or not isinstance(max_age_seconds, Real)
+        or not isfinite(float(max_age_seconds))
+        or max_age_seconds < 0
+    ):
+        raise ValueError("max_age_seconds는 0 이상의 유한한 숫자여야 합니다")
+    return float(max_age_seconds)
+
+
+def _fresh_component_time(
+    component: str,
+    raw_timestamp: Any,
+    received: datetime,
+    max_age_seconds: float,
+) -> datetime:
+    """복합 스냅샷 구성요소의 거래소 timestamp와 최신성을 검증한다."""
+    if (
+        isinstance(raw_timestamp, bool)
+        or not isinstance(raw_timestamp, Real)
+        or not isfinite(float(raw_timestamp))
+    ):
+        raise RuntimeError(
+            f"{component}에 유효한 numeric timestamp가 없습니다"
+        )
+    component_time = datetime.fromtimestamp(
+        float(raw_timestamp) / 1000.0,
+        timezone.utc,
+    )
+    if component_time > received:
+        raise RuntimeError(
+            f"{component} timestamp가 검증 시점보다 미래입니다"
+        )
+    component_age = (received - component_time).total_seconds()
+    if component_age > max_age_seconds:
+        raise RuntimeError(
+            f"오래된 {component} 데이터: age={component_age:.3f}s"
+        )
+    return component_time
+
+
+def _normalized_order_book_levels(
+    order_book: dict[str, Any],
+    side: str,
+) -> tuple[tuple[float, float], ...]:
+    """주문장 한쪽 호가를 양수 가격·수량 튜플로 정규화한다."""
+    raw_levels = order_book.get(side)
+    if not isinstance(raw_levels, list) or not raw_levels:
+        raise RuntimeError(f"orderbook {side} 호가가 비어 있습니다")
+    levels: list[tuple[float, float]] = []
+    for raw_level in raw_levels:
+        if not isinstance(raw_level, (list, tuple)) or len(raw_level) < 2:
+            raise RuntimeError(f"orderbook {side} 호가 형식이 잘못되었습니다")
+        price, quantity = raw_level[0], raw_level[1]
+        if (
+            isinstance(price, bool)
+            or isinstance(quantity, bool)
+            or not isinstance(price, Real)
+            or not isinstance(quantity, Real)
+            or not isfinite(float(price))
+            or not isfinite(float(quantity))
+            or float(price) <= 0
+            or float(quantity) <= 0
+        ):
+            raise RuntimeError(f"orderbook {side} 호가 값이 유효하지 않습니다")
+        levels.append((float(price), float(quantity)))
+    return tuple(levels)
+
+
 class MarketDataClient:
     """퍼블릭 시세 전용 클라이언트.
 
@@ -106,6 +184,7 @@ class MarketDataClient:
         self._clients: dict[str, Any] = {}
         self._initialized: set[str] = set()
         self._strict_derivatives = strict_derivatives
+        self._public_streams: list[Any] = []
         logger.info(
             "MarketDataClient 생성 (lazy 모드, 거래소 %d개, strict=%s)",
             len(self._exchange_configs),
@@ -402,47 +481,25 @@ class MarketDataClient:
             raise RuntimeError("ticker와 orderbook 데이터 출처가 일치하지 않습니다")
 
         received = datetime.now(timezone.utc)
-        if (
-            isinstance(max_age_seconds, bool)
-            or not isinstance(max_age_seconds, Real)
-            or not isfinite(float(max_age_seconds))
-            or max_age_seconds < 0
-        ):
-            raise ValueError("max_age_seconds는 0 이상의 유한한 숫자여야 합니다")
+        max_age = _validated_max_age(max_age_seconds)
         component_times: dict[str, datetime] = {}
         for component, raw_timestamp in (
             ("ticker", ticker.get("timestamp")),
             ("orderbook", order_book.get("timestamp")),
         ):
-            if (
-                isinstance(raw_timestamp, bool)
-                or not isinstance(raw_timestamp, Real)
-                or not isfinite(float(raw_timestamp))
-            ):
-                raise RuntimeError(
-                    f"{component}에 유효한 numeric timestamp가 없습니다"
-                )
-            component_time = datetime.fromtimestamp(
-                float(raw_timestamp) / 1000.0,
-                timezone.utc,
+            component_times[component] = _fresh_component_time(
+                component,
+                raw_timestamp,
+                received,
+                max_age,
             )
-            if component_time > received:
-                raise RuntimeError(
-                    f"{component} timestamp가 검증 시점보다 미래입니다"
-                )
-            component_age = (received - component_time).total_seconds()
-            if component_age > max_age_seconds:
-                raise RuntimeError(
-                    f"오래된 {component} 데이터: age={component_age:.3f}s"
-                )
-            component_times[component] = component_time
         component_skew = abs(
             (
                 component_times["ticker"]
                 - component_times["orderbook"]
             ).total_seconds()
         )
-        if component_skew > max_age_seconds:
+        if component_skew > max_age:
             raise RuntimeError(
                 "ticker와 orderbook timestamp 편차가 허용 범위를 초과합니다: "
                 f"skew={component_skew:.3f}s"
@@ -474,7 +531,7 @@ class MarketDataClient:
                 (float(level[0]), float(level[1]))
                 for level in order_book.get("asks", [])
             ),
-            max_age_seconds=max_age_seconds,
+            max_age_seconds=max_age,
             raw={"ticker": ticker, "order_book": order_book},
         )
         expected_market = "swap" if ":" in symbol else provenance.market_type
@@ -483,6 +540,204 @@ class MarketDataClient:
             expected_market_type=expected_market,
         )
         return snapshot
+
+    def fetch_derivatives_feature_snapshot(
+        self,
+        symbol: str,
+        order_book_limit: int = 25,
+        max_age_seconds: float = 5.0,
+    ) -> DerivativesFeatureSnapshot:
+        """동일 Bybit swap의 OI·펀딩·주문장을 시점 보존해 조회한다.
+
+        Args:
+            symbol: ccxt 형식 Bybit USDT 무기한 선물 심볼.
+            order_book_limit: 주문장 조회 깊이.
+            max_age_seconds: 각 입력 및 입력 간 시각 편차 허용 한도.
+
+        Returns:
+            세 비가격 입력과 provenance를 포함한 복합 스냅샷.
+
+        Raises:
+            RuntimeError: Bybit 데이터가 누락·오래됨·불일치 상태인 경우.
+        """
+        if ":" not in symbol:
+            raise ValueError("선물 특징 조회에는 swap 심볼이 필요합니다")
+        if (
+            isinstance(order_book_limit, bool)
+            or not isinstance(order_book_limit, int)
+            or order_book_limit <= 0
+        ):
+            raise ValueError("order_book_limit는 0보다 큰 정수여야 합니다")
+        max_age = _validated_max_age(max_age_seconds)
+        client = self._ensure_client(
+            "bybit",
+            ccxt.bybit,
+            {"options": {"defaultType": "swap"}},
+        )
+        if client is None:
+            raise RuntimeError("Bybit swap 클라이언트를 초기화할 수 없습니다")
+        try:
+            open_interest = dict(_retry_call(client.fetch_open_interest, symbol))
+            funding = dict(_retry_call(client.fetch_funding_rate, symbol))
+            order_book = dict(
+                _retry_call(
+                    client.fetch_order_book,
+                    symbol,
+                    order_book_limit,
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Bybit 선물 특징 조회 실패: {symbol} — "
+                f"{type(exc).__name__}: {str(exc)[:160]}"
+            ) from exc
+
+        for component, payload in (
+            ("open_interest", open_interest),
+            ("funding", funding),
+            ("orderbook", order_book),
+        ):
+            if payload.get("symbol") != symbol:
+                raise RuntimeError(
+                    f"{component} 응답 심볼이 요청과 일치하지 않습니다"
+                )
+        received = datetime.now(timezone.utc)
+        component_times = {
+            "open_interest": _fresh_component_time(
+                "open_interest",
+                open_interest.get("timestamp"),
+                received,
+                max_age,
+            ),
+            "funding": _fresh_component_time(
+                "funding",
+                funding.get("timestamp"),
+                received,
+                max_age,
+            ),
+            "orderbook": _fresh_component_time(
+                "orderbook",
+                order_book.get("timestamp"),
+                received,
+                max_age,
+            ),
+        }
+        component_skew = (
+            max(component_times.values()) - min(component_times.values())
+        ).total_seconds()
+        if component_skew > max_age:
+            raise RuntimeError(
+                "OI·펀딩·orderbook timestamp 편차가 허용 범위를 초과합니다: "
+                f"skew={component_skew:.3f}s"
+            )
+
+        raw_open_interest = open_interest.get("openInterestAmount")
+        raw_funding_rate = funding.get("fundingRate")
+        for label, value in (
+            ("openInterestAmount", raw_open_interest),
+            ("fundingRate", raw_funding_rate),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not isfinite(float(value))
+            ):
+                raise RuntimeError(f"Bybit {label} 값이 누락되었거나 유효하지 않습니다")
+        if float(raw_open_interest) < 0:
+            raise RuntimeError("Bybit openInterestAmount는 음수일 수 없습니다")
+
+        next_funding_raw = funding.get("nextFundingTimestamp")
+        if next_funding_raw is None:
+            next_funding_raw = funding.get("fundingTimestamp")
+        if (
+            isinstance(next_funding_raw, bool)
+            or not isinstance(next_funding_raw, Real)
+            or not isfinite(float(next_funding_raw))
+        ):
+            raise RuntimeError("Bybit 다음 펀딩 timestamp가 없습니다")
+        next_funding_time = datetime.fromtimestamp(
+            float(next_funding_raw) / 1000.0,
+            timezone.utc,
+        )
+        if next_funding_time <= received:
+            raise RuntimeError("Bybit 다음 펀딩 timestamp가 이미 지났습니다")
+
+        next_funding_rate: float | None = None
+        raw_next_funding_rate = funding.get("nextFundingRate")
+        if raw_next_funding_rate is not None:
+            if (
+                isinstance(raw_next_funding_rate, bool)
+                or not isinstance(raw_next_funding_rate, Real)
+                or not isfinite(float(raw_next_funding_rate))
+            ):
+                raise RuntimeError("Bybit nextFundingRate 값이 유효하지 않습니다")
+            next_funding_rate = float(raw_next_funding_rate)
+
+        snapshot = DerivativesFeatureSnapshot(
+            exchange_timestamp=min(component_times.values()),
+            receive_timestamp=received,
+            provenance=DataProvenance(
+                exchange="bybit",
+                market_type="swap",
+                requested_symbol=symbol,
+                resolved_symbol=symbol,
+                endpoint=(
+                    "fetch_open_interest+fetch_funding_rate+fetch_order_book"
+                ),
+            ),
+            symbol=symbol,
+            open_interest=float(raw_open_interest),
+            current_funding_rate=float(raw_funding_rate),
+            next_funding_rate=next_funding_rate,
+            next_funding_timestamp=next_funding_time,
+            open_interest_timestamp=component_times["open_interest"],
+            funding_timestamp=component_times["funding"],
+            order_book_timestamp=component_times["orderbook"],
+            bids=_normalized_order_book_levels(order_book, "bids"),
+            asks=_normalized_order_book_levels(order_book, "asks"),
+            max_age_seconds=max_age,
+            raw={
+                "open_interest": open_interest,
+                "funding": funding,
+                "order_book": order_book,
+            },
+        )
+        snapshot.assert_usable(received)
+        return snapshot
+
+    def start_public_liquidation_stream(
+        self,
+        symbols: list[str],
+        store: MarketFeatureStore,
+    ) -> Any:
+        """Bybit public all-liquidation 스트림을 시점 보존 저장소에 연결한다.
+
+        Args:
+            symbols: ccxt 형식 Bybit swap 심볼 목록.
+            store: liquidation 레코드를 저장할 feature 저장소.
+
+        Returns:
+            실행 중인 pybit public WebSocket 객체.
+        """
+        if not symbols or any(":" not in symbol for symbol in symbols):
+            raise ValueError("public liquidation 스트림에는 swap 심볼이 필요합니다")
+        try:
+            from pybit.unified_trading import WebSocket
+        except ImportError as exc:
+            raise RuntimeError(
+                "public liquidation stream에는 pybit 설치가 필요합니다"
+            ) from exc
+        bybit_symbols = [
+            symbol.split(":")[0].replace("/", "")
+            for symbol in symbols
+        ]
+        stream = WebSocket(testnet=False, channel_type="linear")
+        stream.all_liquidation_stream(
+            symbol=bybit_symbols,
+            callback=store.ingest_bybit_liquidations,
+        )
+        self._public_streams.append(stream)
+        return stream
 
     def fetch_top_symbols(
         self,
