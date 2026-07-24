@@ -1,8 +1,8 @@
-"""
-ICT Paper Trading Bot — 메인 실행 파일
-GitHub Actions에서 15분마다 실행됨
-"""
 from __future__ import annotations
+
+# ICT Paper Trading Bot — 메인 실행 파일
+# GitHub Actions에서 15분마다 실행됨
+
 import logging
 import os
 import sqlite3

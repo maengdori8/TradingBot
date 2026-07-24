@@ -7,8 +7,9 @@ runtime:
   max_data_age_sec: 120         # 이보다 오래된 데이터는 신규 진입 fail-closed
   live_enabled: false           # 코드만으로 실전 전환 불가
   approval_token_env: "LIVE_TRADING_APPROVAL_TOKEN"
+  validation_report_hash_env: "LIVE_TRADING_VALIDATION_REPORT_SHA256"
   validation_report_path: "logs/approved_validation_report.json"
-  validation_report_sha256: ""  # 수동 승인한 리포트 해시. 빈 값이면 live 금지
+  validation_report_sha256: ""  # 환경변수 값과도 일치해야 함. 빈 값이면 live 금지
 
 exchange:
   name: bybit

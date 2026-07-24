@@ -1,11 +1,9 @@
-"""
-공용 설정 로더 — config.yaml(불변) 위에 학습 오버레이를 화이트리스트 키만 병합한다.
-
-config.yaml은 사람이 소유하며 자동으로 절대 수정하지 않는다. 자동 튜너(learner)는
-logs/learned_params.yaml 오버레이에만 기록하고, 이 로더가 로드 시점에 허용된 키만
-얕게 덮어쓴다. 사용자가 config.yaml을 손수정하면(baseline 드리프트) 오버레이는 무효화된다.
-"""
 from __future__ import annotations
+
+# 공용 설정 로더 — config.yaml(불변) 위에 학습 오버레이를 화이트리스트 키만 병합한다.
+# config.yaml은 사람이 소유하며 자동으로 절대 수정하지 않는다. 자동 튜너(learner)는
+# logs/learned_params.yaml 오버레이에만 기록하고, 이 로더가 로드 시점에 허용된 키만
+# 얕게 덮어쓴다. 사용자가 config.yaml을 손수정하면 오버레이는 무효화된다.
 
 import logging
 from pathlib import Path
