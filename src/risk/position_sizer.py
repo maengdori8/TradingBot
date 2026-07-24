@@ -1,11 +1,9 @@
-"""
-포지션 사이징 — 리스크 % 기반 수량 계산 및 담보금 산출
-"""
 from __future__ import annotations
+
+# 포지션 사이징 — 리스크 % 기반 수량 계산 및 담보금 산출.
 
 import logging
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)

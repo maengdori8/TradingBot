@@ -23,7 +23,6 @@ from src.paper_trading.execution_model import (
     OrderBookSnapshot,
     OrderRequest,
     OrderState,
-    fill_slippage_cost,
     report_maker_quantity,
     report_taker_quantity,
     report_total_fee,

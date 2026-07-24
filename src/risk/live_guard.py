@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Sequence
@@ -250,11 +250,13 @@ class LivePilotGuard:
             daily_start_equity = self._period_start_equity(
                 conn,
                 day_start,
+                now,
                 self.initial_equity,
             )
             weekly_start_equity = self._period_start_equity(
                 conn,
                 week_start,
+                now,
                 self.initial_equity,
             )
             conn.execute(
@@ -323,15 +325,24 @@ class LivePilotGuard:
     def _period_start_equity(
         conn: sqlite3.Connection,
         start: datetime,
+        as_of: datetime,
         fallback: float,
     ) -> float:
-        """기간 시작 이후 첫 순자산을 반환한다."""
+        """기간 첫 순자산, 직전 종가, 초기자본 순서로 기준 순자산을 반환한다."""
         row = conn.execute(
             """SELECT equity FROM live_equity
-               WHERE recorded_at>=? ORDER BY recorded_at LIMIT 1""",
+               WHERE recorded_at>=? AND recorded_at<=?
+               ORDER BY recorded_at LIMIT 1""",
+            (start.isoformat(), as_of.isoformat()),
+        ).fetchone()
+        if row is not None:
+            return float(row[0])
+        previous = conn.execute(
+            """SELECT equity FROM live_equity
+               WHERE recorded_at<? ORDER BY recorded_at DESC LIMIT 1""",
             (start.isoformat(),),
         ).fetchone()
-        return float(row[0]) if row else fallback
+        return float(previous[0]) if previous is not None else fallback
 
     def reset_trip(self, manual_approval: bool = False) -> bool:
         """수동 승인 때만 영속 킬스위치를 해제한다."""

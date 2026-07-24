@@ -1,11 +1,9 @@
-"""
-리스크 관리자 — 포지션 사이징, 서킷브레이커, 중복 차단, 리스크 노출 추적
-config.yaml에서 모든 파라미터를 읽어오며, 거래 결과 콜백 패턴 지원
-"""
 from __future__ import annotations
 
+# 포지션 사이징·서킷브레이커·노출을 통합 관리한다.
+
 import logging
-from typing import Callable, Literal
+from typing import Callable
 
 from src.paper_trading import Position
 from src.risk.circuit_breaker import CircuitBreaker
