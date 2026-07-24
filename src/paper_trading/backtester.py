@@ -1,20 +1,22 @@
-"""
-백테스팅 프레임워크 — 과거 OHLCV 데이터를 재생하여 ICT 전략 검증
-PaperEngine을 재사용하되 임시 DB로 격리, 시간 시뮬레이션 수행
-"""
 from __future__ import annotations
+
+# 백테스팅 프레임워크 — 과거 OHLCV 데이터를 종료 봉 기준으로 재생한다.
 
 import logging
 import math
 import tempfile
+import uuid
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from src.config_loader import load_config
 from src.paper_trading.paper_engine import PaperEngine
 from src.risk.position_sizer import calculate_position_size
+from src.strategy.decision import DecisionContext, slice_decision_frames
 from src.strategy.signal_engine import generate_signal
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class Backtester:
         leverage: float = 5.0,
         min_rr: float = 2.5,
         ignore_kill_zone: bool = False,
+        strategy_version: str | None = None,
     ) -> None:
         """
         백테스터 초기화.
@@ -56,12 +59,17 @@ class Backtester:
             min_rr: 최소 R:R 비율
             ignore_kill_zone: (구버전 호환) 킬존 게이트는 2026-06 개정으로
                 폐지되어 신호 생성이 이미 24h — 이 옵션은 사실상 no-op
+            strategy_version: 검증할 전략 버전. 미지정 시 runtime 설정 사용.
         """
         self.initial_balance: float = initial_balance
         self.risk_per_trade: float = risk_per_trade
         self.leverage: float = leverage
         self.min_rr: float = min_rr
         self.ignore_kill_zone: bool = ignore_kill_zone
+        runtime = load_config().get("runtime", {})
+        self.strategy_version = strategy_version or str(
+            runtime.get("strategy_version", "unknown")
+        )
         self._result: BacktestResult | None = None
 
         logger.info(
@@ -132,6 +140,7 @@ class Backtester:
 
         equity_curve: list[float] = []
         trade_log: list[dict] = []
+        run_id = f"backtest-{uuid.uuid4()}"
 
         # 킬존 몽키패치 제거(2026-06): 킬존은 더 이상 게이트가 아니므로 패치하면
         # 오히려 모든 시점에 +5 가점이 부여돼 결과가 오염됨. ignore_kill_zone은 no-op.
@@ -140,8 +149,14 @@ class Backtester:
 
         try:
             for i in range(start_idx, total_candles):
-                current_time = df_15m.index[i]
-                sim_time = current_time.to_pydatetime()   # 펀딩/기록용 시뮬레이션 시각
+                bar_open_time = df_15m.index[i]
+                bar_close_time = bar_open_time.to_pydatetime() + timedelta(minutes=15)
+                context = DecisionContext.for_closed_bar(
+                    bar_close_time=bar_close_time,
+                    strategy_version=self.strategy_version,
+                    run_id=f"{run_id}:{bar_open_time.isoformat()}",
+                )
+                sim_time = context.decision_time
                 current_price = float(df_15m.iloc[i]["close"])
                 current_high = float(df_15m.iloc[i]["high"])
                 current_low = float(df_15m.iloc[i]["low"])
@@ -151,24 +166,34 @@ class Backtester:
                                    current_time=sim_time)
 
                 # 미실현손익 갱신
-                engine.update_unrealized_pnl(symbol, current_price)
-
-                # 잔고 + 미실현손익 기록
-                unrealized = sum(
-                    p.unrealized_pnl
-                    for p in engine.positions
-                    if p.symbol == symbol
+                engine.update_unrealized_pnl(
+                    symbol,
+                    current_price,
+                    current_time=sim_time,
                 )
-                equity_curve.append(round(engine.balance + unrealized, 8))
+
+                # 현금 + 묶인 증거금 + 미실현손익 기록
+                equity_curve.append(engine.equity)
 
                 # 포지션 수 제한 (최대 1개)
                 if len(engine.positions) >= 1:
                     continue
 
-                # 데이터 슬라이스 추출
-                slice_15m = df_15m.iloc[max(0, i - lookback_15m) : i + 1]
-                slice_4h = df_4h[df_4h.index <= current_time].tail(lookback_4h)
-                slice_1h = df_1h[df_1h.index <= current_time].tail(lookback_1h)
+                # 각 타임프레임에서 완전히 닫힌 봉만 동일 규칙으로 추출
+                frames = slice_decision_frames(
+                    df_4h,
+                    df_1h,
+                    df_15m,
+                    context,
+                    lookbacks={
+                        "4h": lookback_4h,
+                        "1h": lookback_1h,
+                        "15m": lookback_15m,
+                    },
+                )
+                slice_4h = frames.df_4h
+                slice_1h = frames.df_1h
+                slice_15m = frames.df_15m
 
                 # 최소 데이터 확인
                 if len(slice_4h) < 20 or len(slice_1h) < 20:
@@ -183,6 +208,7 @@ class Backtester:
                         symbol,
                         current_price,
                         self.min_rr,
+                        context=context,
                     )
                 except Exception as e:
                     logger.debug("신호 생성 오류 (idx=%d): %s", i, e)
@@ -219,7 +245,7 @@ class Backtester:
 
                 if pos is not None:
                     trade_log.append({
-                        "entry_time": str(current_time),
+                        "entry_time": context.decision_time.isoformat(),
                         "direction": signal.direction,
                         "entry_price": signal.entry_price,
                         "stop_loss": signal.stop_loss,
@@ -239,7 +265,9 @@ class Backtester:
 
             # 미청산 포지션 강제 청산 (마지막 캔들 시각 기준)
             last_price = float(df_15m.iloc[-1]["close"])
-            last_time = df_15m.index[-1].to_pydatetime()
+            last_time = (
+                df_15m.index[-1].to_pydatetime() + timedelta(minutes=15)
+            )
             for pos in list(engine.positions):
                 pnl = engine.close_position(
                     pos, last_price, "backtest_end", exit_time=last_time
@@ -309,8 +337,8 @@ class Backtester:
         # 최대 낙폭 계산 (equity_curve 기반)
         max_drawdown = self._calculate_max_drawdown(equity_curve)
 
-        # Sharpe 비율 (equity_curve 기반)
-        sharpe_ratio = self._calculate_sharpe(equity_curve)
+        # UTC 일별 순자산 수익률 기반 Sharpe
+        sharpe_ratio = float(perf.get("daily_sharpe", 0.0))
 
         return BacktestResult(
             total_trades=perf["total_trades"],
@@ -362,16 +390,14 @@ class Backtester:
     @staticmethod
     def _calculate_sharpe(
         equity_curve: list[float],
-        periods_per_year: int = 365 * 24 * 4,
+        periods_per_year: int = 365,
     ) -> float:
         """
-        Equity curve에서 Sharpe ratio를 계산한다.
-
-        15분봉 기준이므로 연간 period = 365 * 24 * 4 = 35,040.
+        UTC 일별 Equity curve에서 Sharpe ratio를 계산한다.
 
         Args:
             equity_curve: 자본 변화 곡선
-            periods_per_year: 연간 기간 수 (기본: 15분봉 기준)
+            periods_per_year: 연간 일수 (기본: 암호화폐 365일)
 
         Returns:
             Sharpe ratio
@@ -382,10 +408,12 @@ class Backtester:
         arr = np.array(equity_curve)
         returns = np.diff(arr) / arr[:-1]
 
-        if returns.std() == 0:
+        if len(returns) < 2 or returns.std(ddof=1) == 0:
             return 0.0
 
-        return float(returns.mean() / returns.std() * math.sqrt(periods_per_year))
+        return float(
+            returns.mean() / returns.std(ddof=1) * math.sqrt(periods_per_year)
+        )
 
     @staticmethod
     def _log_summary(result: BacktestResult) -> None:

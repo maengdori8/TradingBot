@@ -1,12 +1,13 @@
-"""
-트레이딩 엔진 추상 인터페이스 — 페이퍼/실전 공통 계약
-"""
 from __future__ import annotations
+
+# 트레이딩 엔진 추상 인터페이스 — 페이퍼/실전 공통 계약.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
+
+from src.exchange.contracts import TradingMode
 
 
 @dataclass
@@ -29,6 +30,11 @@ class Position:
     entry_checks: dict | None = None        # ICT 단계별 통과여부
     entry_rr: float | None = None           # 진입 시 목표 R:R
     risk_amount: float | None = None        # |entry-stop|*qty (R-multiple 산출용)
+    entry_fee: float = 0.0                  # 미청산 수량에 귀속된 진입 수수료
+    entry_slippage_cost: float = 0.0         # 미청산 수량에 귀속된 진입 슬리피지
+    entry_requested_price: float | None = None
+    entry_liquidity: Literal["maker", "taker"] = "taker"
+    requested_qty: float | None = None
 
 
 class TradingEngine(ABC):

@@ -1,14 +1,20 @@
-"""
-실전 전환 판별기 -- 페이퍼 트레이딩 성과가 실전 전환 기준을 충족하는지 판별한다.
-config.yaml의 promote 섹션에서 기준을 로드하며, 없으면 기본값을 사용한다.
-"""
 from __future__ import annotations
+
+# 레거시 정보성 성과 표시와 엄격한 단계별 승급 게이트 공개 API.
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from src.risk.validation_gate import (
+    DemoPromotionGate,
+    DemoValidationEvidence,
+    GateDecision,
+    OfflinePromotionGate,
+    OfflineValidationEvidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,10 @@ class PromoteResult:
     score: float
     criteria: dict[str, CriterionResult] = field(default_factory=dict)
     summary: str = ""
+    informational_only: bool = True
+    live_authorized: bool = False
+    frozen: bool = True
+    strategy_id: str = "ict-benchmark-v1"
 
 
 # ------------------------------------------------------------------
@@ -87,6 +97,8 @@ class PromoteChecker:
         # Barber et al. 2014: 지속 수익 데이트레이더 <1%. 점추정만으론 운도 통과함)
         self.require_wilson_gate: bool = bool(cfg.get("require_wilson_gate", True))
         self.breakeven_winrate: float = float(cfg.get("breakeven_winrate", 0.286))
+        self.frozen: bool = bool(cfg.get("frozen", True))
+        self.strategy_id: str = str(cfg.get("strategy_id", "ict-benchmark-v1"))
 
         logger.info(
             "PromoteChecker 초기화: trades>=%d, wr>=%.2f, pf>=%.2f, mdd<=%.2f, sharpe>=%.2f, ret>=%.2f",
@@ -228,7 +240,10 @@ class PromoteChecker:
         total_count = len(criteria)
 
         if eligible:
-            summary = f"실전 전환 가능: 모든 기준 충족 (점수 {score:.0f}/100)"
+            summary = (
+                f"정보성 성과 기준 충족 (점수 {score:.0f}/100) — "
+                "offline/demo 게이트와 수동 승인 없이는 실전 전환 불가"
+            )
         else:
             failed = [cr.name for cr in criteria.values() if not cr.passed]
             summary = (
@@ -241,7 +256,28 @@ class PromoteChecker:
             score=round(score, 2),
             criteria=criteria,
             summary=summary,
+            informational_only=True,
+            live_authorized=False,
+            frozen=self.frozen,
+            strategy_id=self.strategy_id,
         )
 
         logger.info("실전 전환 판별 결과: %s", summary)
         return result
+
+    def can_activate_live(self, performance: dict) -> bool:
+        """레거시 표시 판정이 실전 활성화 권한을 갖지 않음을 명시한다.
+
+        Args:
+            performance: 레거시 성과 딕셔너리.
+
+        Returns:
+            항상 False. 실전 활성화는 데모 게이트와 수동 승인이 담당한다.
+        """
+        result = self.check(performance)
+        logger.warning(
+            "레거시 PromoteChecker는 live 권한이 없습니다: strategy=%s score=%.0f",
+            result.strategy_id,
+            result.score,
+        )
+        return False
