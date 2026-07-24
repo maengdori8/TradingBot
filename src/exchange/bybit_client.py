@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from math import isfinite
+from numbers import Real
 from typing import Any
 
 import ccxt
@@ -400,14 +402,52 @@ class MarketDataClient:
             raise RuntimeError("ticker와 orderbook 데이터 출처가 일치하지 않습니다")
 
         received = datetime.now(timezone.utc)
-        timestamps = [
-            value
-            for value in (ticker.get("timestamp"), order_book.get("timestamp"))
-            if isinstance(value, (int, float))
-        ]
-        if not timestamps:
-            raise RuntimeError("거래소 timestamp가 없어 최신성을 검증할 수 없습니다")
-        exchange_time = datetime.fromtimestamp(max(timestamps) / 1000.0, timezone.utc)
+        if (
+            isinstance(max_age_seconds, bool)
+            or not isinstance(max_age_seconds, Real)
+            or not isfinite(float(max_age_seconds))
+            or max_age_seconds < 0
+        ):
+            raise ValueError("max_age_seconds는 0 이상의 유한한 숫자여야 합니다")
+        component_times: dict[str, datetime] = {}
+        for component, raw_timestamp in (
+            ("ticker", ticker.get("timestamp")),
+            ("orderbook", order_book.get("timestamp")),
+        ):
+            if (
+                isinstance(raw_timestamp, bool)
+                or not isinstance(raw_timestamp, Real)
+                or not isfinite(float(raw_timestamp))
+            ):
+                raise RuntimeError(
+                    f"{component}에 유효한 numeric timestamp가 없습니다"
+                )
+            component_time = datetime.fromtimestamp(
+                float(raw_timestamp) / 1000.0,
+                timezone.utc,
+            )
+            if component_time > received:
+                raise RuntimeError(
+                    f"{component} timestamp가 검증 시점보다 미래입니다"
+                )
+            component_age = (received - component_time).total_seconds()
+            if component_age > max_age_seconds:
+                raise RuntimeError(
+                    f"오래된 {component} 데이터: age={component_age:.3f}s"
+                )
+            component_times[component] = component_time
+        component_skew = abs(
+            (
+                component_times["ticker"]
+                - component_times["orderbook"]
+            ).total_seconds()
+        )
+        if component_skew > max_age_seconds:
+            raise RuntimeError(
+                "ticker와 orderbook timestamp 편차가 허용 범위를 초과합니다: "
+                f"skew={component_skew:.3f}s"
+            )
+        exchange_time = min(component_times.values())
         last = ticker.get("last")
         if last is None:
             raise RuntimeError("ticker에 last 가격이 없습니다")
