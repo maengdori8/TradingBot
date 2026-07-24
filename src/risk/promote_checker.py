@@ -8,14 +8,6 @@ from pathlib import Path
 
 import yaml
 
-from src.risk.validation_gate import (
-    DemoPromotionGate,
-    DemoValidationEvidence,
-    GateDecision,
-    OfflinePromotionGate,
-    OfflineValidationEvidence,
-)
-
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).parent.parent.parent
