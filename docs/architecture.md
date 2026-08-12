@@ -58,6 +58,7 @@ DecisionContext ── 완전히 닫힌 15m·1h·4h만 선택
 | `src/promotion.py` | 고정 외부 해시를 검증하고 offline→demo, demo→live 전이만 허용 |
 | `research/hypothesis_ledger.py` | 실행 전 가설 등록과 성공·실패 결과 append-only 보존 |
 | `research/pipeline.py` | 사전등록 후보만 재생하고 해시 고정 증거를 생성하는 단일 CLI |
+| `src/evidence_gate.py` | 고정 연구 산출물을 통계 재계산하고 통과분만 Demo 활성화 |
 
 Demo private 주문·체결 이벤트는 거래소 보존기간에 기대지 않고 로컬 DB에 저장한다. 시작과
 주기적 실행 때 REST 주문·포지션·체결·잔고를 다시 조회해 대사하며, 불일치·고아 포지션·중복

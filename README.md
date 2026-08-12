@@ -47,7 +47,20 @@ python -m src.data.backfill \
 # 사전등록된 8개 캐리 + 8개 강제흐름 후보의 단일 증거 파이프라인
 python -m research.pipeline \
   --input logs/evidence/input.json \
-  --output logs/evidence/run
+  --output logs/evidence/run \
+  --data-manifest carry_spot_kline logs/manifests/btc-spot.json <SHA256> \
+  --data-manifest carry_perpetual_kline logs/manifests/btc-swap.json <SHA256> \
+  --data-manifest carry_funding logs/manifests/btc-funding.json <SHA256> \
+  --data-manifest carry_open_interest logs/manifests/btc-oi.json <SHA256> \
+  --data-manifest carry_metadata logs/manifests/btc-metadata.json <SHA256>
+
+# 외부에 고정한 연구 산출물만 통계 게이트로 다시 읽어 자동 판정
+python -m src.evidence_gate \
+  --evidence-dir logs/evidence/run \
+  --results-sha256 <CANDIDATE_RESULTS_SHA256> \
+  --matrix-sha256 <CANDIDATE_MATRIX_SHA256> \
+  --benchmark-sha256 <BENCHMARK_SHA256> \
+  --output logs/evidence/promotion
 
 # 통과한 offline/demo 아티팩트만 다음 실행 단계에 연결
 PROMOTION_ARTIFACT_SHA256=<고정된_SHA256> \
@@ -60,6 +73,10 @@ python -m src.backtest --symbol BTC/USDT:USDT --days 30
 
 과거 성과만으로 실전 모드가 열리지 않는다. 후보 전략은 사전등록된 가설, 비용 포함 WFO,
 미래 데이터 데모 검증과 수동 승인 리포트를 순서대로 통과해야 한다.
+
+연구 입력의 `feed_completeness` 숫자만으로는 증거가 되지 않는다. 각 manifest 파일과 그
+외부 SHA-256이 필요하며, 연구 산출물도 파일별 외부 SHA-256을 다시 확인한다. 오프라인
+게이트를 모두 통과한 후보에 한해서만 `*.demo-activation.json`이 자동 생성된다.
 
 공식 과거 API가 없는 liquidation·orderbook 이력은 collector 실행 이후 데이터만 사용한다.
 수집 공백은 0으로 보간하지 않으며, 데이터 완전성 99%와 미확인 gap 한도를 통과하지 못하면
