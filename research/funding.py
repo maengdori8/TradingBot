@@ -1,18 +1,7 @@
-"""
-펀딩비 캐리/컨트라리안 — 가격이 아닌 신호. 룩어헤드 없이 검증.
-
-가설: 펀딩이 극단적으로 높다 = 롱이 과밀/과열 → 숏(가격 반전 + 펀딩 수취). 낮다/음수 = 숏 과밀
-→ 롱. 횡단면 롱숏으로 베타 중립. 숏은 양(+)펀딩을 수취, 롱은 펀딩 지불 → 캐리 순풍.
-
-수익 = 가격수익(롱 − 숏) + 펀딩수익(숏 수취 − 롱 지불) − 거래비용.
-
-룩어헤드 차단: 랭킹은 t까지 '이미 정산된' 펀딩만. [t, t+H] 가격변화·펀딩은 실현 결과.
-
-사용:
-  python3 research/funding.py --download     # 펀딩 히스토리 받기 (1회)
-  python3 research/funding.py --cost 0.0007
-"""
 from __future__ import annotations
+
+# legacy_non_evidence 펀딩비 캐리/컨트라리안 탐색.
+# 자동 승급 근거는 research.evidence_runner만 생성한다.
 
 import argparse
 import json
@@ -30,6 +19,8 @@ import research.study as study  # noqa: E402
 from research.altsignals import UNIVERSE  # noqa: E402
 
 logger = logging.getLogger("funding")
+EVIDENCE_STATUS = "legacy_non_evidence"
+EVIDENCE_NOTE = "탐색용 동적 그리드 출력이며 자동 승급 증거로 사용할 수 없습니다."
 OUT_DIR = ROOT / "research" / "out"
 FUND_DIR = ROOT / "research" / "data"
 HOLDOUT_DAYS = 60
@@ -236,7 +227,9 @@ def main() -> None:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUT_DIR / "funding_battery.json", "w", encoding="utf-8") as f:
-        json.dump({"cost": args.cost, "results": results,
+        json.dump({"evidence_status": EVIDENCE_STATUS,
+                   "evidence_note": EVIDENCE_NOTE,
+                   "cost": args.cost, "results": results,
                    "wfo_maker": walk_forward(fp, pp, args.cost, grid),
                    "wfo_taker": walk_forward(fp, pp, 0.0021, grid),
                    "yearly_rep": yearly(fp, pp, rep, args.cost)}, f, ensure_ascii=False, indent=2)

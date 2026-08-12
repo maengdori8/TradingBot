@@ -1,15 +1,6 @@
-"""
-광범위 유니버스 횡단면 모멘텀 — 중·소형주는 덜 효율적이라 모멘텀 엣지가 강할 수 있다.
-
-14 메이저 + 44 중형 크립토 = 58종목. 상장일이 달라 NaN 인지 랭킹(데이터 유효 종목만).
-현실적 비용(중형주 스프레드 반영) + 정직 WFO(config도 train선택) + 연도별.
-
-룩어헤드 차단: 랭킹은 t까지 종가만. 진입 close[t], 청산 close[t+H]. NaN인 종목(미상장/
-데이터없음)은 그 시점 랭킹에서 제외 = 미래 상장정보 안 씀.
-
-사용: python3 research/xsmom_broad.py --cost 0.0010
-"""
 from __future__ import annotations
+
+# 광범위 유니버스 횡단면 모멘텀 legacy 탐색. 자동 승급 후보군에는 포함하지 않는다.
 
 import argparse
 import json

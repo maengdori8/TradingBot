@@ -1,13 +1,8 @@
-"""
-대체 전략 배터리 — 여러 전략×파라미터를 14심볼 전체에 재생 후 WFO로 OOS 평가.
-
-각 config: 신호 생성(룩어헤드 없음) → 전체표본 최선 출구 + 워크포워드 OOS + 홀드아웃.
-정직 원칙: 인샘플 최선이 아니라 OOS와 홀드아웃이 양수여야 '엣지 후보'. 파라미터는 표준값
-소수만(과최적화 방지). 비용은 인자로(기본 maker 낙관 시나리오).
-
-사용: python3 research/alt_driver.py --cost 0.0007 --workers 6
-"""
 from __future__ import annotations
+
+# 대체 전략 배터리 — 여러 전략×파라미터를 14심볼 전체에 재생 후 WFO로 OOS 평가.
+# 각 config는 룩어헤드 없이 재생하지만 legacy_non_evidence 탐색 결과다.
+# 사용: python3 research/alt_driver.py --cost 0.0007 --workers 6
 
 import argparse
 import json

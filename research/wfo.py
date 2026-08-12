@@ -1,20 +1,6 @@
-"""
-Walk-Forward Optimization (WFO) — 룩어헤드 없이 진입기준을 최적화한다.
-
-요구사항 충족:
-1) 각 신호의 결과는 진입 이후 바로만 판정 (study.py 재생, searchsorted = 룩어헤드 차단)
-2) 파라미터 선택은 '훈련 구간'에서만 → 직후 '미지의 검증 구간'에 적용 → 한 칸씩 전진
-   → 검증(OOS) 구간은 최적화가 한 번도 보지 못한 미래 = 정직한 성과
-3) 맨 끝 HOLDOUT_DAYS는 어떤 훈련/검증에도 안 쓰임 → 마지막에 1회만 평가 (메타 과최적화 방지)
-
-핵심 원칙: 같은 구간을 '수익 날 때까지' 돌리는 것은 과최적화다. 대신 OOS에서 견고하면
-채택, 아니면 '엣지 없음'을 정직하게 보고한다. 승률이 아니라 기대값(R)을 최적화하고
-승률은 함께 보고한다 (승률만 올리면 EV가 깎임 — exit_variants.json에서 입증됨).
-
-사용법:
-    python3 research/wfo.py --start 2024-01-01 --rounds 3
-"""
 from __future__ import annotations
+
+# legacy ICT WFO 탐색. 자동 승급 근거는 evidence_runner의 고정 후보 WFO만 허용한다.
 
 import argparse
 import itertools
@@ -33,6 +19,8 @@ sys.path.insert(0, str(ROOT))
 import research.study as study  # noqa: E402
 
 logger = logging.getLogger("wfo")
+EVIDENCE_STATUS = "legacy_non_evidence"
+EVIDENCE_NOTE = "ICT 파라미터 탐색 출력이며 자동 승급 증거로 사용할 수 없습니다."
 OUT_DIR = ROOT / "research" / "out"
 
 # 2024-01 이전부터 존재한 고유동성 심볼 (역사 충분)
@@ -282,6 +270,8 @@ def main() -> None:
         holdout_eval = evaluate(holdout_df, best["robust_param"])
 
     report = {
+        "evidence_status": EVIDENCE_STATUS,
+        "evidence_note": EVIDENCE_NOTE,
         "period": [str(df["ts"].min()), str(df["ts"].max())],
         "total_signals": int(len(df)),
         "rounds": results,

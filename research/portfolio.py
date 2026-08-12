@@ -1,15 +1,6 @@
-"""
-포트폴리오 시뮬레이터 — '신호당 R'이 아니라 실거래 제약 하의 자본 곡선을 낸다.
-
-신호당 기대값(R)은 모든 신호를 다 잡을 수 있다고 가정하지만, 실제 봇은:
-- 동시 보유 N슬롯 제한 (config max_positions=4) → 슬롯 차면 이후 신호는 스킵 (선착순)
-- 점수 차등 리스크 (risk_tiers) + 연패 단계 축소 (streak_risk_decay)
-- 손절 심볼 재진입 쿨다운 (reentry_cooldown_hours)
-이 시뮬은 그 제약을 시간순으로 적용해 '봇이 실제로 했을 거래'만 체결한다.
-
-전제: signals.csv에 r_m{mult}_rr{rr}(순R) + hb_m{mult}_rr{rr}(보유캔들수)가 있어야 한다.
-"""
 from __future__ import annotations
+
+# legacy 신호 포트폴리오 제약 탐색. 자동 승급 근거는 evidence_runner가 만든다.
 
 import argparse
 import logging

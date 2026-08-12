@@ -1,24 +1,14 @@
-"""
-대체 신호 연구 — ICT가 아닌 다른 가설을 룩어헤드 없이 검증한다.
-
-설계:
-- 각 전략은 '결정 봉까지의 데이터'만으로 방향(+1 long / -1 short / 0 none)을 벡터로 산출.
-  지표의 룩어헤드 차단: rolling max/min/표준편차는 현재봉 제외(.shift(1)) 또는 현재봉 포함이
-  정당한 것(EMA/SMA/ATR는 종가 확정 시점에 알 수 있음)만 사용.
-- 출구는 study._simulate 그리드 재사용(손절 ATR배수 × RR, 동시터치=손절우선, 비용반영).
-- busy_until로 같은 심볼 중복 포지션 차단(study.replay_symbol과 동일 규약).
-- 출력 = study와 동일한 signals 테이블 → research/wfo.py·portfolio.py로 그대로 평가.
-
-전략:
-  donchian   돌파(터틀): 직전 N봉 고점 상향돌파=long, 저점 하향돌파=short
-  tsmom      추세추종: EMA_fast>EMA_slow & close>EMA_slow = long (역=short)
-  meanrev    평균회귀: z=(close-SMA)/std, z<-k=long, z>+k=short (저변동 레짐 게이트 옵션)
-  bbreak     변동성 돌파: 종가가 직전 SMA±k*ATR 밖 = 추세방향 진입
-
-사용:
-  python3 research/altsignals.py --strategy donchian --param 96 --workers 6
-"""
 from __future__ import annotations
+
+# 대체 신호 연구 — ICT가 아닌 다른 가설을 룩어헤드 없이 탐색한다.
+# 각 전략은 결정 봉까지의 데이터만으로 방향을 산출하며 study 재생 형식을 공유한다.
+# 아래 목록과 출력은 legacy_non_evidence이며 자동 승급에 사용하지 않는다.
+# 전략:
+# - donchian: 직전 N봉 고점·저점 돌파
+# - tsmom: EMA 추세
+# - meanrev: 표준화 평균회귀
+# - bbreak: ATR 변동성 돌파
+# 사용: python3 research/altsignals.py --strategy donchian --param 96 --workers 6
 
 import argparse
 import logging

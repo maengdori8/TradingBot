@@ -1,15 +1,7 @@
-"""
-출구 관리 변형 검증 — 6개월 재현 신호에 BE스톱/부분익절/트레일링/시간손절을 적용해
-승률·기대값 변화를 측정한다 (외부 문헌 규칙의 사전 검증용).
-
-베이스라인: 고정 손절 2.0ATR / 목표 RR 2.5 (현행 봇).
-보수 규칙: 동시터치=손절 우선, 상태 변경(BE암/트레일)은 다음 캔들부터 적용(인트라캔들 낙관 방지).
-비용: 왕복 0.21% (study.py와 동일, 펀딩 제외 — 베이스라인과 비교 가능성 유지).
-
-사용법: python3 research/exit_variants.py
-출력: research/out/exit_variants.json
-"""
 from __future__ import annotations
+
+# 출구 관리 변형 탐색 — BE스톱/부분익절/트레일링/시간손절 비교.
+# 동시터치는 손절 우선이며 출력은 자동 승급 근거가 아닌 legacy 연구다.
 
 import json
 import logging

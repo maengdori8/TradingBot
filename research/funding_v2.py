@@ -1,21 +1,7 @@
-"""
-펀딩 하베스터 v2 — 저회전율 연속 북(book) 델타중립. 비용 문턱을 넘는 게 목표.
-
-v1 발견: 순수 펀딩 스프레드는 승률 80%로 실재하나 +0.1%/리밸로 거래비용 미만 → 순손실.
-핵심 레버: 매 리밸 전량 교체가 아니라 '책을 계속 들고 바뀐 다리만 거래' → 회전율↓ 비용 분산.
-
-설계 (적절한 포트폴리오 시뮬):
-- 8h 그리드. pos[sym] = 포트폴리오 가중치(롱 +w, 숏 −w), 등명목 롱숏 → 근사 델타중립.
-- 매 인터벌: 펀딩손익 = −Σ pos·funding (롱은 +펀딩 지불, 숏은 +펀딩 수취),
-            가격손익 = Σ pos·(price_t/price_{t-1} − 1).
-- 리밸 인터벌마다: 목표가중치 재계산, 회전율=Σ|new−old|, 비용=회전율×cost (바뀐 다리만 과금).
-- 옵션: 펀딩 크기 가중(고펀딩일수록 큰 비중), price_neutral(가격손익 제거 = 순수캐리 측정).
-
-정직 검증: config(L,R,M,wmode)도 train에서만 선택하는 WFO + 연도별 + 비용민감도(maker/taker).
-
-사용: python3 research/funding_v2.py --cost 0.0005
-"""
 from __future__ import annotations
+
+# legacy_non_evidence 저회전 펀딩 하베스터 탐색.
+# 자동 승급 근거는 research.evidence_runner만 생성한다.
 
 import argparse
 import json
@@ -31,6 +17,8 @@ sys.path.insert(0, str(ROOT))
 import research.funding as fv1  # noqa: E402  (load_panels 재사용)
 
 logger = logging.getLogger("funding_v2")
+EVIDENCE_STATUS = "legacy_non_evidence"
+EVIDENCE_NOTE = "탐색용 동적 그리드 출력이며 자동 승급 증거로 사용할 수 없습니다."
 OUT_DIR = ROOT / "research" / "out"
 HOLDOUT_DAYS = 60
 
@@ -180,7 +168,9 @@ def main() -> None:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUT_DIR / "funding_v2.json", "w", encoding="utf-8") as f:
-        json.dump({"cost": args.cost, "results": results[:15],
+        json.dump({"evidence_status": EVIDENCE_STATUS,
+                   "evidence_note": EVIDENCE_NOTE,
+                   "cost": args.cost, "results": results[:15],
                    "wfo_maker": walk_forward(fp, pp, args.cost, grid),
                    "wfo_taker": walk_forward(fp, pp, 0.0021, grid),
                    "yearly_rep": yearly(fp, pp, rep, args.cost)}, f, ensure_ascii=False, indent=2)

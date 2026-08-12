@@ -1,9 +1,7 @@
-"""
-신호 연구 집계 — 레짐 태깅(공포지수/BTC추세/변동성/이벤트일) 후 세그먼트별 성과 통계.
-
-출력: research/out/report.json + REPORT.md
-"""
 from __future__ import annotations
+
+# 신호 연구 집계 — 레짐 태깅(공포지수/BTC추세/변동성/이벤트일) 후 세그먼트별 성과 통계.
+# 출력: research/out/report.json + REPORT.md
 
 import json
 import logging

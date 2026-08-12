@@ -1,15 +1,6 @@
-"""
-통계적 차익 — 공적분 페어 트레이딩 (시장중립 상대가치). 룩어헤드 없이 검증.
-
-가설: 공적분된 두 코인의 스프레드(logA − β·logB)는 평균회귀한다. z>+entry면 스프레드 매도
-(A숏/B롱), z<−entry면 매수, |z|<exit면 청산. 방향장과 무관한 중립 수익.
-
-룩어헤드 차단: 각 test 구간 직전 train 구간에서만 β·스프레드 평균/표준편차 추정 → test에서
-그 파라미터로 z 계산·거래. 페어 선택(공적분 p값)도 train에서만. 굴리며 OOS 누적.
-
-사용: python3 research/pairs.py --cost 0.0007
-"""
 from __future__ import annotations
+
+# 공적분 페어 트레이딩 legacy 탐색. 자동 승급 후보군에는 포함하지 않는다.
 
 import argparse
 import itertools

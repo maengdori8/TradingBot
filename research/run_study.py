@@ -1,11 +1,6 @@
-"""
-연구 파이프라인 오케스트레이터 — 다운로드 → 신호 재생 → 레짐 태깅/집계.
-
-사용법:
-    python3 research/run_study.py --months 6 --top 40 --workers 6
-    python3 research/run_study.py --smoke          # 1심볼 1개월 스모크 테스트
-"""
 from __future__ import annotations
+
+# legacy ICT 연구 파이프라인 — 다운로드 → 신호 재생 → 레짐 태깅/집계.
 
 import argparse
 import logging

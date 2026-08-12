@@ -1,17 +1,6 @@
-"""
-횡단면 모멘텀 (cross-sectional momentum) — 롱숏 중립 포트폴리오, 룩어헤드 없이 검증.
-
-가설: 과거 L일 수익률 상위 종목은 계속 오르고 하위는 계속 내린다(상대강도). crypto에서
-문서화된 엣지. 베타 제거를 위해 상위 M 롱 / 하위 M 숏.
-
-룩어헤드 차단: 리밸런스 시점 t의 랭킹은 [t-L, t] 종가(전부 확정)만 사용. 진입 close[t],
-청산 close[t+H]. 비용은 회전율×비용%로 진입·청산 양쪽 반영.
-
-정직: 여러 (L,H,M)을 전구간 + 최근 홀드아웃 60일로 분해 보고. OOS/홀드 양수만 후보.
-
-사용: python3 research/xsmom.py --cost 0.0007
-"""
 from __future__ import annotations
+
+# 횡단면 모멘텀 legacy 탐색. 자동 승급 후보군에는 포함하지 않는다.
 
 import argparse
 import json

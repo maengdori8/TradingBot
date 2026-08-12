@@ -149,6 +149,19 @@ def predefined_candidates(family: CandidateFamily) -> tuple[CandidateExperiment,
     return tuple(candidates)
 
 
+def all_predefined_candidates() -> tuple[CandidateExperiment, ...]:
+    """승급 연구가 평가할 정확히 8개 캐리와 8개 강제흐름 후보를 반환한다."""
+    carry = predefined_candidates("delta_neutral_carry")
+    forced_flow = predefined_candidates("forced_flow")
+    if len(carry) != 8 or len(forced_flow) != 8:
+        raise AssertionError("근거 연구 후보는 정확히 8개+8개여야 합니다")
+    candidates = carry + forced_flow
+    ids = [candidate.config_id for candidate in candidates]
+    if len(ids) != len(set(ids)):
+        raise AssertionError("근거 연구 candidate_id가 중복됐습니다")
+    return candidates
+
+
 def build_carry_config(
     experiment: CandidateExperiment,
     *,
