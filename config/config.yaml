@@ -62,14 +62,12 @@ risk:
   max_exposure_pct: 0.80     # 총 담보금 < 트레이딩 자본 80%
   daily_loss_limit: 0.05     # 트레이딩 자본 5% 손실 시 당일 중단
   weekly_loss_limit: 0.12    # 트레이딩 자본 12% 손실 시 주간 중단
-  # 그레이디드 손실 대응층 (2026-06 행동재무 패치 — 자체 시뮬: 수익↑ MDD 38→15%)
+  # 레거시 자본보존 오버레이. 오염 제거 후 알파를 만들지는 못했으며 paper 벤치마크에만 사용.
   streak_risk_decay: true    # 연패마다 리스크 절반 (하한 1/4, 승리 시 복귀)
   soft_daily_loss_pct: 0.02  # 일중 -2% 도달 시 잔여 진입 리스크 절반 (브레이커 전 중간층)
   reentry_cooldown_hours: 8  # 손절된 심볼 재진입 금지 시간 (복수매매 차단)
   max_notional_mult: 3.0     # 합산 명목노출 ≤ 자본 3배 (Heimer&Simsek 2019)
-  max_consecutive_losses: 7  # 7연패 시 1일 강제 휴식 — 신체제(승률~40%)에서 5연패는
-                             # 확률 7.8%의 일상 변동이라 오발동. 7연패(2.8%)가 구설계의
-                             # 희귀도(~2%)와 동급. 7연패×0.7% = -4.9% < 일일한도 5%로 정합
+  max_consecutive_losses: 7  # ICT paper 벤치마크의 레거시 휴식 기준
   # 컨플루언스 점수별 차등 리스크 (강한 셋업 크게, 약한 셋업 작게)
   risk_tiers:
     - {min_score: 85, risk_pct: 0.007}   # A급: 풀 컨플루언스
