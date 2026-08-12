@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import asdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from pathlib import Path
 from statistics import NormalDist
@@ -1147,14 +1147,20 @@ def build_offline_evidence_from_records(
     benchmark = np.asarray(
         [item.benchmark_return for item in ordered_daily], dtype=float
     )
-    started_at = ordered_daily[0].observed_at.astimezone(timezone.utc)
-    ended_at = ordered_daily[-1].observed_at.astimezone(timezone.utc)
-    if ended_at <= started_at:
-        raise ValueError("검증 기간은 0보다 길어야 합니다.")
+    first_utc = ordered_daily[0].observed_at.astimezone(timezone.utc)
+    last_utc = ordered_daily[-1].observed_at.astimezone(timezone.utc)
+    # 일별 레코드의 시각은 수집 시각일 수 있으므로 UTC 날짜 전체를 증거 구간으로 본다.
+    started_at = first_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    ended_at = last_utc.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    ) + timedelta(days=1)
     for trade in ordered_trades:
         closed_at = trade.closed_at.astimezone(timezone.utc)
-        if closed_at < started_at or closed_at > ended_at:
-            raise ValueError("거래 시각은 일별 증거 기간 안에 있어야 합니다.")
+        if closed_at < started_at or closed_at >= ended_at:
+            raise ValueError("거래 시각은 UTC 일별 증거의 [시작, 종료) 구간에 있어야 합니다.")
 
     net = np.asarray([item.net_return for item in ordered_trades], dtype=float)
     stressed = np.asarray(
