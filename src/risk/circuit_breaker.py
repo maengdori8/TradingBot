@@ -1,9 +1,7 @@
-"""
-서킷브레이커 — 일일/주간 손실 한도 및 연속 손실 관리
-SQLite로 상태 영속화 (봇 재시작 후에도 유지)
-휴식 후 자동 복귀 + 주간 리셋 (월요일 00:00 UTC)
-"""
 from __future__ import annotations
+
+# 일일·주간·연속 손실을 SQLite에 영속화하는 서킷브레이커.
+# 휴식 후 자동 복귀하고 월요일 00:00 UTC에 주간 상태를 리셋한다.
 
 import logging
 import sqlite3

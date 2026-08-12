@@ -2,13 +2,13 @@ from __future__ import annotations
 
 # 오프라인·미래 데모 통계 승급 게이트.
 
-import logging
 import hashlib
 import json
+import logging
 from dataclasses import asdict
-from itertools import combinations
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from statistics import NormalDist
 from types import MappingProxyType
@@ -147,6 +147,67 @@ class DemoValidationEvidence:
             raise ValueError("reconciliation_rate는 0과 1 사이여야 합니다.")
         if self.orphan_positions < 0 or self.duplicate_orders < 0:
             raise ValueError("오류 건수는 음수일 수 없습니다.")
+
+
+@dataclass(frozen=True)
+class DatedTradeReturn:
+    """거래 단위 수익과 비용 스트레스를 담는 원시 검증 레코드."""
+
+    trade_id: str
+    closed_at: datetime
+    symbol: str
+    net_return: float
+    stressed_return: float
+    double_cost_return: float
+
+    def __post_init__(self) -> None:
+        """원시 거래 레코드의 시각·식별자·수익률을 검증한다."""
+        if not self.trade_id.strip() or not self.symbol.strip():
+            raise ValueError("trade_id와 symbol은 비어 있을 수 없습니다.")
+        if self.closed_at.tzinfo is None:
+            raise ValueError("closed_at은 timezone-aware여야 합니다.")
+        values = (self.net_return, self.stressed_return, self.double_cost_return)
+        if not all(np.isfinite(float(value)) for value in values):
+            raise ValueError("거래 수익률은 유한한 값이어야 합니다.")
+        if any(float(value) <= -1 for value in values):
+            raise ValueError("거래 수익률은 -100% 이하일 수 없습니다.")
+
+
+@dataclass(frozen=True)
+class DatedCandidateReturns:
+    """UTC 일별 선택 전략·벤치마크·전체 후보 수익률 레코드."""
+
+    observed_at: datetime
+    strategy_return: float
+    benchmark_return: float
+    candidate_returns: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        """일별 레코드와 후보 행렬 한 행을 검증하고 불변화한다."""
+        if self.observed_at.tzinfo is None:
+            raise ValueError("observed_at은 timezone-aware여야 합니다.")
+        if not np.isfinite(float(self.strategy_return)) or not np.isfinite(
+            float(self.benchmark_return)
+        ):
+            raise ValueError("일별 수익률은 유한한 값이어야 합니다.")
+        if self.strategy_return <= -1 or self.benchmark_return <= -1:
+            raise ValueError("일별 수익률은 -100% 이하일 수 없습니다.")
+        normalized: dict[str, float] = {}
+        for candidate_id, value in self.candidate_returns.items():
+            key = str(candidate_id).strip()
+            numeric = float(value)
+            if not key or key in normalized or not np.isfinite(numeric):
+                raise ValueError("후보 ID와 수익률이 올바르지 않습니다.")
+            if numeric <= -1:
+                raise ValueError("후보 일별 수익률은 -100% 이하일 수 없습니다.")
+            normalized[key] = numeric
+        if len(normalized) < 2:
+            raise ValueError("후보 행렬에는 서로 다른 설정이 2개 이상 필요합니다.")
+        object.__setattr__(
+            self,
+            "candidate_returns",
+            MappingProxyType(dict(sorted(normalized.items()))),
+        )
 
 
 def _load_validation_config() -> dict:
@@ -474,6 +535,59 @@ def clustered_expectancy_ci(
     )
 
 
+def two_way_clustered_expectancy_ci(
+    returns: Sequence[float],
+    dates: Sequence[str],
+    symbols: Sequence[str],
+    confidence: float = 0.95,
+    bootstrap_samples: int = 2_000,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """일자와 심볼을 독립 재표집하는 2방향 pigeonhole 신뢰구간을 계산한다."""
+    if not returns or len(returns) != len(dates) or len(returns) != len(symbols):
+        raise ValueError("수익률·일자·심볼은 같은 길이의 비어 있지 않은 배열이어야 합니다.")
+    if not 0 < confidence < 1 or bootstrap_samples <= 0:
+        raise ValueError("confidence와 bootstrap_samples 값이 올바르지 않습니다.")
+    values = np.asarray(returns, dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError("수익률에 유한하지 않은 값이 있습니다.")
+    unique_dates = sorted({str(value) for value in dates})
+    unique_symbols = sorted({str(value) for value in symbols})
+    if len(unique_dates) < 2 or len(unique_symbols) < 2:
+        raise ValueError("2방향 클러스터에는 각각 2개 이상의 일자와 심볼이 필요합니다.")
+    date_lookup = {value: index for index, value in enumerate(unique_dates)}
+    symbol_lookup = {value: index for index, value in enumerate(unique_symbols)}
+    date_index = np.asarray([date_lookup[str(value)] for value in dates], dtype=int)
+    symbol_index = np.asarray(
+        [symbol_lookup[str(value)] for value in symbols], dtype=int
+    )
+    rng = np.random.default_rng(seed)
+    means = np.empty(bootstrap_samples)
+    for sample_index in range(bootstrap_samples):
+        # 각 차원을 독립 재표집하고 교차 가중치로 관측치 종속성을 보존한다.
+        for _ in range(100):
+            date_counts = np.bincount(
+                rng.integers(0, len(unique_dates), size=len(unique_dates)),
+                minlength=len(unique_dates),
+            )
+            symbol_counts = np.bincount(
+                rng.integers(0, len(unique_symbols), size=len(unique_symbols)),
+                minlength=len(unique_symbols),
+            )
+            weights = date_counts[date_index] * symbol_counts[symbol_index]
+            weight_sum = int(weights.sum())
+            if weight_sum > 0:
+                means[sample_index] = float(np.average(values, weights=weights))
+                break
+        else:
+            raise RuntimeError("2방향 클러스터 재표집에서 유효 표본을 만들지 못했습니다.")
+    alpha = (1 - confidence) / 2
+    return (
+        float(np.quantile(means, alpha)),
+        float(np.quantile(means, 1 - alpha)),
+    )
+
+
 def deflated_sharpe_probability(
     observed_sharpe: float,
     observations: int,
@@ -483,23 +597,24 @@ def deflated_sharpe_probability(
     kurtosis: float = 3.0,
 ) -> float:
     """다중 시도와 비정규성을 반영한 양의 Deflated Sharpe 확률을 근사한다."""
-    if observations < 2 or trials < 1 or sharpe_std < 0:
+    inputs = (observed_sharpe, sharpe_std, skewness, kurtosis)
+    if not all(np.isfinite(float(value)) for value in inputs):
+        raise ValueError("DSR 입력은 모두 유한해야 합니다.")
+    if observations < 2 or trials < 2 or sharpe_std <= 0 or kurtosis < 1:
         raise ValueError("관측 수·시도 수·Sharpe 표준편차가 올바르지 않습니다.")
     normal = NormalDist()
-    if trials == 1 or sharpe_std == 0:
-        expected_max = 0.0
-    else:
-        euler_gamma = 0.5772156649
-        expected_max = sharpe_std * (
-            (1 - euler_gamma) * normal.inv_cdf(1 - 1 / trials)
-            + euler_gamma * normal.inv_cdf(1 - 1 / (trials * np.e))
-        )
-    denominator = max(
-        1e-12,
+    euler_gamma = 0.5772156649
+    expected_max = sharpe_std * (
+        (1 - euler_gamma) * normal.inv_cdf(1 - 1 / trials)
+        + euler_gamma * normal.inv_cdf(1 - 1 / (trials * np.e))
+    )
+    denominator = (
         1
         - skewness * observed_sharpe
-        + ((kurtosis - 1) / 4) * observed_sharpe**2,
+        + ((kurtosis - 1) / 4) * observed_sharpe**2
     )
+    if denominator <= 1e-12:
+        raise ValueError("DSR 분산 보정치가 0 이하입니다.")
     statistic = (
         (observed_sharpe - expected_max)
         * np.sqrt(observations - 1)
@@ -524,14 +639,14 @@ def cscv_probability_of_backtest_overfitting(
 ) -> float:
     """CSCV 분할에서 IS 최우수 후보가 OOS 하위 절반인 비율(PBO)을 계산한다."""
     matrix = np.asarray(candidate_return_matrix, dtype=float)
-    if matrix.ndim != 2 or matrix.shape[0] < 4 or matrix.shape[1] < 1:
-        raise ValueError("candidate_return_matrix는 4행 이상의 2차원 배열이어야 합니다.")
-    if partitions < 2:
-        raise ValueError("partitions는 2 이상이어야 합니다.")
+    if matrix.ndim != 2 or matrix.shape[0] < 8 or matrix.shape[1] < 2:
+        raise ValueError("candidate_return_matrix는 8행·2열 이상이어야 합니다.")
+    if partitions < 4:
+        raise ValueError("partitions는 4 이상이어야 합니다.")
     if not np.isfinite(matrix).all():
         raise ValueError("candidate_return_matrix에 유한하지 않은 값이 있습니다.")
-    if matrix.shape[1] == 1:
-        return 0.0
+    if np.unique(matrix, axis=1).shape[1] < 2:
+        raise ValueError("중복 후보 열은 단일 후보 증거로 간주합니다.")
     block_count = min(partitions, matrix.shape[0])
     if block_count % 2:
         block_count -= 1
@@ -571,13 +686,16 @@ def spa_block_bootstrap_pvalue(
         candidates.ndim != 2
         or benchmark.ndim != 1
         or candidates.shape[0] != benchmark.shape[0]
-        or candidates.shape[0] < 4
+        or candidates.shape[0] < 8
+        or candidates.shape[1] < 2
     ):
         raise ValueError("후보 행렬과 벤치마크 수익률의 길이·차원이 올바르지 않습니다.")
     if bootstrap_samples <= 0:
         raise ValueError("bootstrap_samples는 양수여야 합니다.")
     if not np.isfinite(candidates).all() or not np.isfinite(benchmark).all():
         raise ValueError("SPA 입력에 유한하지 않은 값이 있습니다.")
+    if np.unique(candidates, axis=1).shape[1] < 2:
+        raise ValueError("중복 후보 열은 단일 후보 증거로 간주합니다.")
     differential = candidates - benchmark[:, None]
     means = differential.mean(axis=0)
     scales = differential.std(axis=0, ddof=1)
@@ -588,9 +706,9 @@ def spa_block_bootstrap_pvalue(
     if observed <= 0:
         return 1.0
 
-    length = block_length or max(1, int(round(np.sqrt(candidates.shape[0]))))
-    if length > candidates.shape[0]:
-        raise ValueError("block_length는 관측 수를 초과할 수 없습니다.")
+    length = block_length or max(2, int(round(np.sqrt(candidates.shape[0]))))
+    if length < 2 or length > candidates.shape[0] // 2:
+        raise ValueError("block_length는 2 이상, 관측 수의 절반 이하여야 합니다.")
     # SPA 귀무가설 아래 양의 평균만 제거해 열별 데이터 스누핑을 보정한다.
     centered = differential - np.maximum(means, 0.0)
     rng = np.random.default_rng(seed)
@@ -695,6 +813,11 @@ class DemoApprovalReport:
     summary: str
     generated_at: datetime
     evidence_sha256: str
+    raw_event_sha256: str
+    data_sha256: str
+    code_sha256: str
+    hypothesis_sha256: str
+    offline_artifact_sha256: str
     methodology: str
 
     def __init__(
@@ -703,6 +826,11 @@ class DemoApprovalReport:
         evidence_sha256: str,
         generated_at: datetime,
         token: object,
+        raw_event_sha256: str = "",
+        data_sha256: str = "",
+        code_sha256: str = "",
+        hypothesis_sha256: str = "",
+        offline_artifact_sha256: str = "",
     ) -> None:
         """내부 게이트 판정으로만 승인 리포트를 초기화한다."""
         if token is not _DEMO_REPORT_TOKEN:
@@ -728,6 +856,11 @@ class DemoApprovalReport:
         object.__setattr__(self, "summary", decision.summary)
         object.__setattr__(self, "generated_at", generated_at)
         object.__setattr__(self, "evidence_sha256", evidence_sha256)
+        object.__setattr__(self, "raw_event_sha256", raw_event_sha256)
+        object.__setattr__(self, "data_sha256", data_sha256)
+        object.__setattr__(self, "code_sha256", code_sha256)
+        object.__setattr__(self, "hypothesis_sha256", hypothesis_sha256)
+        object.__setattr__(self, "offline_artifact_sha256", offline_artifact_sha256)
         object.__setattr__(
             self,
             "methodology",
@@ -747,6 +880,11 @@ class DemoApprovalReport:
             "summary": self.summary,
             "generated_at": self.generated_at.isoformat(),
             "evidence_sha256": self.evidence_sha256,
+            "raw_event_sha256": self.raw_event_sha256,
+            "data_sha256": self.data_sha256,
+            "code_sha256": self.code_sha256,
+            "hypothesis_sha256": self.hypothesis_sha256,
+            "offline_artifact_sha256": self.offline_artifact_sha256,
             "methodology": self.methodology,
         }
 
@@ -769,9 +907,27 @@ def build_demo_approval_report(
     evidence: DemoValidationEvidence,
     gate: DemoPromotionGate | None = None,
     generated_at: datetime | None = None,
+    *,
+    raw_event_sha256: str = "",
+    data_sha256: str = "",
+    code_sha256: str = "",
+    hypothesis_sha256: str = "",
+    offline_artifact_sha256: str = "",
 ) -> DemoApprovalReport:
-    """원시 데모 증거를 게이트로 재판정해 수기 bool 없는 승인 JSON을 만든다."""
+    """원시 데모 증거를 재판정하고 이벤트·데이터·코드 계보를 결합한다."""
     decision = (gate or DemoPromotionGate()).evaluate(evidence)
+    lineage = {
+        "raw_event_sha256": raw_event_sha256,
+        "data_sha256": data_sha256,
+        "code_sha256": code_sha256,
+        "hypothesis_sha256": hypothesis_sha256,
+        "offline_artifact_sha256": offline_artifact_sha256,
+    }
+    for name, value in lineage.items():
+        if value and not _is_sha256(value):
+            raise ValueError(f"{name}은 소문자 SHA-256 헥스여야 합니다.")
+    if decision.passed and any(not value for value in lineage.values()):
+        raise ValueError("통과 데모 승인에는 이벤트·데이터·코드·가설·offline 계보 해시가 모두 필요합니다.")
     evidence_json = json.dumps(
         asdict(evidence),
         ensure_ascii=False,
@@ -787,6 +943,18 @@ def build_demo_approval_report(
         evidence_hash,
         report_time,
         _DEMO_REPORT_TOKEN,
+        raw_event_sha256,
+        data_sha256,
+        code_sha256,
+        hypothesis_sha256,
+        offline_artifact_sha256,
+    )
+
+
+def _is_sha256(value: str) -> bool:
+    """문자열이 소문자 SHA-256 헥스인지 반환한다."""
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
     )
 
 
@@ -810,7 +978,7 @@ def build_offline_evidence_report(
     bootstrap_samples: int = 2_000,
     seed: int = 0,
 ) -> OfflineEvidenceReport:
-    """검증 원시 입력에서 PBO·SPA·DSR를 직접 계산해 감사 가능한 리포트를 만든다."""
+    """호환용 수동 라벨 리포트를 만든다. 이 리포트는 승급 증거가 아니다."""
     net = np.asarray(net_returns, dtype=float)
     stressed = np.asarray(stressed_returns, dtype=float)
     doubled = np.asarray(double_cost_returns, dtype=float)
@@ -912,10 +1080,230 @@ def build_offline_evidence_report(
     )
     return OfflineEvidenceReport(
         evidence=evidence,
-        methodology="cluster-bootstrap+dSR+CSCV-PBO+block-bootstrap-SPA/v1",
+        methodology="legacy-manual-labels/non-promotable-v1",
         generated_at=datetime.now(tz=started_at.tzinfo),
         raw_input_sha256=hashlib.sha256(raw_json.encode("utf-8")).hexdigest(),
     )
+
+
+def build_offline_evidence_from_records(
+    *,
+    strategy_id: str,
+    strategy_version: str,
+    selected_candidate_id: str,
+    trades: Sequence[DatedTradeReturn],
+    daily_records: Sequence[DatedCandidateReturns],
+    bootstrap_samples: int = 2_000,
+    seed: int = 0,
+    generated_at: datetime | None = None,
+) -> OfflineEvidenceReport:
+    """날짜가 있는 원시 거래·일별 후보 행렬에서만 승급 가능 증거를 산출한다."""
+    if not strategy_id.strip() or not strategy_version.strip():
+        raise ValueError("전략 ID와 버전은 비어 있을 수 없습니다.")
+    candidate_id = selected_candidate_id.strip()
+    if not candidate_id or not trades or len(daily_records) < 8:
+        raise ValueError("선택 후보, 거래, 8일 이상의 일별 레코드가 필요합니다.")
+    ordered_trades = sorted(
+        trades,
+        key=lambda item: (item.closed_at.astimezone(timezone.utc), item.trade_id),
+    )
+    trade_ids = [item.trade_id for item in ordered_trades]
+    if len(set(trade_ids)) != len(trade_ids):
+        raise ValueError("중복 trade_id는 승급 증거에 사용할 수 없습니다.")
+    ordered_daily = sorted(
+        daily_records,
+        key=lambda item: item.observed_at.astimezone(timezone.utc),
+    )
+    utc_dates = [
+        item.observed_at.astimezone(timezone.utc).date().isoformat()
+        for item in ordered_daily
+    ]
+    if len(set(utc_dates)) != len(utc_dates):
+        raise ValueError("UTC 하루에 일별 후보 레코드는 하나만 허용됩니다.")
+    candidate_ids = tuple(ordered_daily[0].candidate_returns)
+    if candidate_id not in candidate_ids or len(candidate_ids) < 2:
+        raise ValueError("선택 후보가 2개 이상의 전체 후보 집합에 없습니다.")
+    for record in ordered_daily:
+        if tuple(record.candidate_returns) != candidate_ids:
+            raise ValueError("모든 일자의 후보 ID 집합과 순서가 같아야 합니다.")
+        if not np.isclose(
+            record.strategy_return,
+            record.candidate_returns[candidate_id],
+            rtol=0,
+            atol=1e-15,
+        ):
+            raise ValueError("선택 전략 수익률이 후보 행렬의 선택 열과 다릅니다.")
+
+    candidate_matrix = np.asarray(
+        [
+            [record.candidate_returns[key] for key in candidate_ids]
+            for record in ordered_daily
+        ],
+        dtype=float,
+    )
+    if np.unique(candidate_matrix, axis=1).shape[1] < 2:
+        raise ValueError("중복 수익 열은 단일 후보 증거로 간주합니다.")
+    daily = np.asarray([item.strategy_return for item in ordered_daily], dtype=float)
+    benchmark = np.asarray(
+        [item.benchmark_return for item in ordered_daily], dtype=float
+    )
+    started_at = ordered_daily[0].observed_at.astimezone(timezone.utc)
+    ended_at = ordered_daily[-1].observed_at.astimezone(timezone.utc)
+    if ended_at <= started_at:
+        raise ValueError("검증 기간은 0보다 길어야 합니다.")
+    for trade in ordered_trades:
+        closed_at = trade.closed_at.astimezone(timezone.utc)
+        if closed_at < started_at or closed_at > ended_at:
+            raise ValueError("거래 시각은 일별 증거 기간 안에 있어야 합니다.")
+
+    net = np.asarray([item.net_return for item in ordered_trades], dtype=float)
+    stressed = np.asarray(
+        [item.stressed_return for item in ordered_trades], dtype=float
+    )
+    doubled = np.asarray(
+        [item.double_cost_return for item in ordered_trades], dtype=float
+    )
+    trade_dates = [
+        item.closed_at.astimezone(timezone.utc).date().isoformat()
+        for item in ordered_trades
+    ]
+    symbols = [item.symbol for item in ordered_trades]
+    quarters = [
+        _quarter_label(item.closed_at.astimezone(timezone.utc))
+        for item in ordered_trades
+    ]
+    ci_lower, _ = two_way_clustered_expectancy_ci(
+        net.tolist(),
+        trade_dates,
+        symbols,
+        bootstrap_samples=bootstrap_samples,
+        seed=seed,
+    )
+    candidate_sharpes = np.apply_along_axis(
+        _unannualized_sharpe,
+        0,
+        candidate_matrix,
+    )
+    sharpe_std = float(candidate_sharpes.std(ddof=1))
+    dsr_probability = deflated_sharpe_probability(
+        observed_sharpe=_unannualized_sharpe(daily),
+        observations=len(daily),
+        trials=candidate_matrix.shape[1],
+        sharpe_std=sharpe_std,
+        skewness=_sample_skewness(daily),
+        kurtosis=_sample_kurtosis(daily),
+    )
+    symbol_contributions = _aggregate_contributions(net, symbols)
+    quarter_contributions = _aggregate_contributions(net, quarters)
+    evidence = OfflineValidationEvidence(
+        strategy_id=strategy_id,
+        strategy_version=strategy_version,
+        effective_bets=len(set(zip(trade_dates, symbols))),
+        started_at=started_at,
+        ended_at=ended_at,
+        regimes=_derive_regimes(benchmark),
+        base_net_expectancy=float(net.mean()),
+        stressed_net_expectancy=float(stressed.mean()),
+        expectancy_ci_lower=ci_lower,
+        daily_sharpe=_annualized_daily_sharpe(daily),
+        profit_factor=_profit_factor(net),
+        max_drawdown=_returns_max_drawdown(daily),
+        deflated_sharpe_probability=dsr_probability,
+        pbo=cscv_probability_of_backtest_overfitting(candidate_matrix),
+        spa_pvalue=spa_block_bootstrap_pvalue(
+            candidate_matrix,
+            benchmark,
+            bootstrap_samples=bootstrap_samples,
+            seed=seed,
+        ),
+        max_symbol_contribution_share=max_positive_contribution_share(
+            symbol_contributions
+        ),
+        max_quarter_contribution_share=max_positive_contribution_share(
+            quarter_contributions
+        ),
+        double_cost_return=float(np.prod(1 + doubled) - 1),
+        strategy_logic_intact=True,
+        hypothesis_configs=candidate_matrix.shape[1],
+    )
+    raw_payload = {
+        "strategy_id": strategy_id,
+        "strategy_version": strategy_version,
+        "selected_candidate_id": candidate_id,
+        "trades": [
+            {
+                "trade_id": item.trade_id,
+                "closed_at": item.closed_at.astimezone(timezone.utc).isoformat(),
+                "symbol": item.symbol,
+                "net_return": item.net_return,
+                "stressed_return": item.stressed_return,
+                "double_cost_return": item.double_cost_return,
+            }
+            for item in ordered_trades
+        ],
+        "daily_records": [
+            {
+                "observed_at": item.observed_at.astimezone(timezone.utc).isoformat(),
+                "strategy_return": item.strategy_return,
+                "benchmark_return": item.benchmark_return,
+                "candidate_returns": dict(item.candidate_returns),
+            }
+            for item in ordered_daily
+        ],
+        "bootstrap_samples": bootstrap_samples,
+        "seed": seed,
+    }
+    raw_json = json.dumps(
+        raw_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    report_time = generated_at or datetime.now(timezone.utc)
+    if report_time.tzinfo is None:
+        raise ValueError("generated_at은 timezone-aware여야 합니다.")
+    return OfflineEvidenceReport(
+        evidence=evidence,
+        methodology=(
+            "two-way-day-symbol-bootstrap+derived-regimes+dSR+"
+            "CSCV-PBO+block-bootstrap-SPA/v2"
+        ),
+        generated_at=report_time.astimezone(timezone.utc),
+        raw_input_sha256=hashlib.sha256(raw_json.encode("utf-8")).hexdigest(),
+    )
+
+
+def _quarter_label(value: datetime) -> str:
+    """UTC 시각을 분기 기여 라벨로 변환한다."""
+    utc_value = value.astimezone(timezone.utc)
+    return f"{utc_value.year}-Q{(utc_value.month - 1) // 3 + 1}"
+
+
+def _derive_regimes(benchmark_returns: np.ndarray) -> frozenset[str]:
+    """벤치마크 일별 수익률의 과거 창에서 시장 레짐을 결정적으로 유도한다."""
+    regimes: set[str] = set()
+    realized_volatility: list[float] = []
+    for index in range(benchmark_returns.size):
+        trend_window = benchmark_returns[max(0, index - 29) : index + 1]
+        trend = float(np.prod(1 + trend_window) - 1)
+        if trend > 0.05:
+            regimes.add("bull")
+        elif trend < -0.05:
+            regimes.add("bear")
+        else:
+            regimes.add("sideways")
+        if index >= 19:
+            volatility = float(
+                benchmark_returns[index - 19 : index + 1].std(ddof=1)
+                * np.sqrt(365)
+            )
+            if len(realized_volatility) >= 20:
+                history = realized_volatility[-252:]
+                if volatility > float(np.quantile(history, 0.75)):
+                    regimes.add("high_volatility")
+            realized_volatility.append(volatility)
+    return frozenset(regimes)
 
 
 def _annualized_daily_sharpe(values: np.ndarray) -> float:

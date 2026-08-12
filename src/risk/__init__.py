@@ -15,17 +15,29 @@ from src.risk.live_guard import (
     calculate_pilot_capital_krw,
     evaluate_scale_up,
 )
+from src.risk.promotion_artifact import (
+    PromotionArtifact,
+    StrategyActivation,
+    build_demo_promotion_artifact,
+    build_offline_promotion_artifact,
+)
 from src.risk.validation_gate import (
+    DatedCandidateReturns,
+    DatedTradeReturn,
     DemoApprovalReport,
     DemoPromotionGate,
     DemoValidationEvidence,
     OfflinePromotionGate,
     OfflineValidationEvidence,
     build_demo_approval_report,
+    build_offline_evidence_from_records,
     build_offline_evidence_report,
+    two_way_clustered_expectancy_ci,
 )
 
 __all__ = [
+    "DatedCandidateReturns",
+    "DatedTradeReturn",
     "DemoApprovalReport",
     "DemoPromotionGate",
     "DemoValidationEvidence",
@@ -36,12 +48,18 @@ __all__ = [
     "OfflinePromotionGate",
     "OfflineValidationEvidence",
     "PortfolioRiskGuard",
+    "PromotionArtifact",
     "SafetyDecision",
     "SafetySnapshot",
     "ScaleDecision",
+    "StrategyActivation",
     "TradeRiskProposal",
     "build_demo_approval_report",
+    "build_demo_promotion_artifact",
+    "build_offline_evidence_from_records",
     "build_offline_evidence_report",
+    "build_offline_promotion_artifact",
     "calculate_pilot_capital_krw",
     "evaluate_scale_up",
+    "two_way_clustered_expectancy_ci",
 ]

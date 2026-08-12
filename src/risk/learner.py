@@ -1,19 +1,7 @@
-"""
-자동 파라미터 튜너 — 청산된 거래를 분석해 "어떤 상황에서 잃고 버는지"를 스스로 파악하고
-진입 기준(scan.min_score, risk_tiers, min_rr)을 보수적으로 자동 조정한다.
-
-ML이 아니라 조건부 빈도 추정 + 보수적 의사결정 규칙이다:
-  - 청산된 거래만 사용 (미청산 포지션 제외 → 룩어헤드/누수 차단)
-  - 세그먼트(세션/방향/점수대)별 라플라스 평활 승률 + Wilson 95% 신뢰구간 + R-multiple 기대값
-  - 통계적으로 신뢰할 만한 신호에 대해서만, 한 run당 1개 파라미터를 작은 스텝으로 조정
-  - config.yaml은 절대 안 씀 → logs/learned_params.yaml 오버레이에만 기록 (로더가 병합)
-  - 무게중심은 "변경 보류(no-op)" — 표본 부족/애매하면 아무것도 안 건드림
-
-CLI:
-    python -m src.risk.learner --dry-run   # 분석/제안만 (기본)
-    python -m src.risk.learner --apply      # 실제 오버레이 적용
-"""
 from __future__ import annotations
+
+# 청산 거래의 조건부 빈도와 보수적 규칙으로 파라미터를 제안하는 튜너.
+# 미청산 포지션은 제외하고 dry-run을 기본으로 하며 적용 시 logs 오버레이만 변경한다.
 
 import argparse
 import json
