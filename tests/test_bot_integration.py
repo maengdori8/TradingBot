@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 """
 bot.py run() 통합 테스트 — 모든 외부 의존성을 mock하여
 전체 코인 스캔 기반 run() 흐름을 검증한다.
 """
-from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 import numpy as np
@@ -12,6 +14,7 @@ import pytest
 
 import src.paper_trading.paper_engine as pe_module
 import src.risk.circuit_breaker as cb_module
+from src.data.market_snapshot import DataProvenance, MarketSnapshot
 
 # ── 공통 mock 데이터 ────────────────────────────────────────────────
 
@@ -95,6 +98,24 @@ def _run_env(tmp_path):
     mock_client = mock_client_cls.return_value
     mock_client.fetch_current_price.return_value = 50000.0
     mock_client.fetch_ohlcv.return_value = _mock_ohlcv()
+    received = datetime.now(timezone.utc)
+    mock_client.fetch_market_snapshot.return_value = MarketSnapshot(
+        exchange_timestamp=received,
+        receive_timestamp=received,
+        provenance=DataProvenance(
+            exchange="bybit",
+            market_type="swap",
+            requested_symbol="BTC/USDT:USDT",
+            resolved_symbol="BTC/USDT:USDT",
+            endpoint="fetch_order_book",
+        ),
+        symbol="BTC/USDT:USDT",
+        last=50000.0,
+        bid=49999.0,
+        ask=50001.0,
+        bids=((49999.0, 2.0),),
+        asks=((50001.0, 2.0),),
+    )
 
     mock_notifier_cls = MagicMock()
     mock_notifier = mock_notifier_cls.return_value

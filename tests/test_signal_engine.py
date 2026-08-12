@@ -1,10 +1,10 @@
+from __future__ import annotations
+
 """Signal engine (multi-timeframe) tests."""
-from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 import pandas as pd
 import numpy as np
-import pytest
 
 from src.strategy.signal_engine import generate_signal, TradeSignal
 

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -14,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -23,35 +27,18 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install test tools
-        run: pip install pytest-cov ruff
-
-      - name: Create config directory
-        run: |
-          mkdir -p config
-          cat > config/strategy_params.yaml << 'EOF'
-          fvg:
-            min_gap_pct: 0.001
-          EOF
-          cat > config/config.yaml << 'EOF'
-          capital:
-            total_capital: 10000
-            trading_allocation: 0.5
-            risk_per_trade: 0.01
-          exchange:
-            leverage: 5
-          risk:
-            min_rr_ratio: 2.0
-            max_positions: 3
-            daily_loss_limit: 0.03
-            weekly_loss_limit: 0.08
-            max_consecutive_losses: 3
-          EOF
+        run: pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check src/ tests/ --select E,F,W --ignore E501
+        run: ruff check src/ tests/ --select E,F,W --ignore E501,E402
 
       - name: Unit Tests
         run: pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=80 --ignore=tests/integration
 
       - name: Integration Tests
         run: pytest tests/integration/ -v
+
+      - name: Evidence Fault Injection Tests
+        run: >-
+          pytest tests/test_promotion_evidence.py tests/test_evidence_data.py -v
+          -k 'tamper or symlink or corrupt or invalid_batch or gap or future'

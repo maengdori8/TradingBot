@@ -1,5 +1,6 @@
-"""scan_store 테스트 — TradingView 변환 + 스캔 상태 저장/로드"""
 from __future__ import annotations
+
+"""scan_store 테스트 — TradingView 변환 + 스캔 상태 저장/로드"""
 
 from src.scan_store import to_tradingview, save_scan_state, load_scan_state
 

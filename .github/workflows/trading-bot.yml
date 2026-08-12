@@ -5,6 +5,10 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: paper-trading-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -15,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Python 3.11 설정
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -24,7 +28,8 @@ jobs:
         run: pip install -r requirements.txt
 
       # logs/ 에는 페이퍼 거래 DB + 자동학습 상태(learned_params.yaml, tuning_history.jsonl)가
-      # 함께 저장된다. GitHub Actions 캐시는 best-effort(7일 미사용 시 축출 가능)이며,
+      # 함께 저장된다. GitHub Actions 캐시는 증거의 영구 저장소가 아닌
+      # best-effort 상태 복원용이다(7일 미사용 시 축출 가능).
       # 축출되면 학습 오버레이가 사라져 config.yaml 기본값으로 복귀한다(코드가 안전 처리).
       # 장기 영속이 중요하면 로컬 runner 또는 외부 스토리지 사용 권장(deploy/ 가이드 참조).
       - name: 페이퍼 트레이딩 + 학습 상태 복원

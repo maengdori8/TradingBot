@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Integration test — full bot flow from market data to position close.
 
@@ -6,7 +8,6 @@ The test exercises:
   market data fetch -> signal generation -> risk check -> position entry
   -> SL/TP check -> position close -> performance recording
 """
-from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 import pandas as pd
@@ -18,7 +19,6 @@ import src.paper_trading.paper_engine as pe_module
 from src.paper_trading.paper_engine import PaperEngine
 from src.risk.circuit_breaker import CircuitBreaker
 from src.strategy.signal_engine import TradeSignal, generate_signal
-from src.strategy.kill_zone import is_in_kill_zone
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -151,9 +151,9 @@ class TestBotFlowIntegration:
 
     def test_check_stops_auto_closes_sl(self, paper_engine):
         """PaperEngine.check_stops closes position when SL is hit."""
-        pos = paper_engine.open_position(
+        assert paper_engine.open_position(
             "BTC/USDT", "long", 50000, 0.01, 49000, 52000
-        )
+        ) is not None
         assert len(paper_engine.positions) == 1
 
         # Simulate candle where low touches SL
@@ -162,9 +162,9 @@ class TestBotFlowIntegration:
 
     def test_check_stops_auto_closes_tp(self, paper_engine):
         """PaperEngine.check_stops closes position when TP is hit."""
-        pos = paper_engine.open_position(
+        assert paper_engine.open_position(
             "BTC/USDT", "long", 50000, 0.01, 49000, 52000
-        )
+        ) is not None
         paper_engine.check_stops("BTC/USDT", current_high=52100, current_low=50000)
         assert len(paper_engine.positions) == 0
 

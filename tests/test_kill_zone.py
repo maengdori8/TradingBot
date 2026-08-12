@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Kill Zone time filter tests.
 
 킬존 시각 정정 반영(2026-06): 런던 07:00-10:00 / 뉴욕 12:00-15:00 UTC.
@@ -5,7 +7,6 @@
 """
 from datetime import datetime, timezone, timedelta
 
-import pytest
 
 from src.strategy.kill_zone import is_in_kill_zone, get_active_session
 

@@ -1,5 +1,6 @@
-"""data_store.py (DataStore) 테스트 — SQLite tmp_path 기반"""
 from __future__ import annotations
+
+"""data_store.py (DataStore) 테스트 — SQLite tmp_path 기반"""
 
 from datetime import datetime, timezone
 

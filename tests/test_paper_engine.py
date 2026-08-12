@@ -1,11 +1,11 @@
-"""페이퍼 트레이딩 엔진 테스트"""
 from __future__ import annotations
+
+"""페이퍼 트레이딩 엔진 테스트"""
 
 import pytest
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 import src.paper_trading.paper_engine as pe_module
-from src.paper_trading.paper_engine import PaperEngine, SLIPPAGE, TAKER_FEE
+from src.paper_trading.paper_engine import PaperEngine, SLIPPAGE
 from src.paper_trading import Position
 
 
@@ -143,7 +143,9 @@ def test_partial_close(tmp_path):
     assert pos is not None
     original_qty = pos.qty
 
-    pnl = engine.close_position(pos, exit_price=51000, reason="partial", qty=0.01)
+    assert engine.close_position(
+        pos, exit_price=51000, reason="partial", qty=0.01
+    ) is not None
 
     # 포지션이 여전히 남아 있음
     assert pos in engine.positions
@@ -151,7 +153,7 @@ def test_partial_close(tmp_path):
     assert pos.margin > 0
 
     # 나머지 전량 청산
-    pnl2 = engine.close_position(pos, exit_price=52000, reason="TP")
+    assert engine.close_position(pos, exit_price=52000, reason="TP") is not None
     assert pos not in engine.positions
 
 
@@ -161,7 +163,9 @@ def test_partial_close_exceeding_qty(engine):
         "BTC/USDT", "long", entry_price=50000, qty=0.01,
         stop_loss=49000, take_profit=52000,
     )
-    pnl = engine.close_position(pos, exit_price=51000, reason="manual", qty=0.05)
+    assert engine.close_position(
+        pos, exit_price=51000, reason="manual", qty=0.05
+    ) is not None
     # 초과 수량이므로 전량 청산됨
     assert pos not in engine.positions
 
@@ -383,7 +387,7 @@ def test_funding_cost_deducted(engine):
     pos = engine.open_position("BTC/USDT", "long", 50000, 0.01, 49000, 52000)
     # 진입 시각을 25시간 전으로 → 펀딩 3회 통과
     pos.entry_time = datetime.now(timezone.utc) - timedelta(hours=25)
-    pnl = engine.close_position(pos, 50000, "manual")   # 본전 청산
+    assert engine.close_position(pos, 50000, "manual") is not None
     row = engine.conn.execute(
         "SELECT funding_cost FROM trades WHERE id=?", (pos.id,)
     ).fetchone()

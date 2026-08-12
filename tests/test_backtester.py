@@ -1,10 +1,11 @@
-"""백테스터 단위 테스트 — 합성 데이터로 ICT 전략 백테스트 검증"""
 from __future__ import annotations
+
+"""백테스터 단위 테스트 — 합성 데이터로 ICT 전략 백테스트 검증"""
 
 import pytest
 import numpy as np
 import pandas as pd
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.paper_trading.backtester import Backtester, BacktestResult
 

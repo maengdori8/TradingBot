@@ -1,5 +1,6 @@
-"""discord_bot.py (DiscordNotifier) 테스트 — requests.post mock"""
 from __future__ import annotations
+
+"""discord_bot.py (DiscordNotifier) 테스트 — requests.post mock"""
 
 from unittest.mock import patch, MagicMock
 

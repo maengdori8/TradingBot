@@ -1,9 +1,9 @@
-"""실전 전환 판별기 테스트 — 통계 게이트(Wilson) 포함"""
 from __future__ import annotations
+
+"""실전 전환 판별기 테스트 — 통계 게이트(Wilson) 포함"""
 
 from unittest.mock import patch
 
-import pytest
 
 from src.risk.promote_checker import PromoteChecker
 

@@ -1,8 +1,9 @@
-"""candle_fetcher.py (CandleFetcher) 테스트 — 캐시 로직 중심"""
 from __future__ import annotations
 
+"""candle_fetcher.py (CandleFetcher) 테스트 — 캐시 로직 중심"""
+
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest

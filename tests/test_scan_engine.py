@@ -1,12 +1,12 @@
-"""scan_symbol 테스트 — 컨플루언스 점수 + 관심종목/진입 분류"""
 from __future__ import annotations
+
+"""scan_symbol 테스트 — 컨플루언스 점수 + 관심종목/진입 분류"""
 
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.strategy.signal_engine import scan_symbol, ScanResult, TradeSignal
 

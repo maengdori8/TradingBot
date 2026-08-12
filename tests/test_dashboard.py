@@ -1,5 +1,6 @@
-"""대시보드 Flask 앱 스모크 테스트 — 라우트 응답 + 헬퍼 함수"""
 from __future__ import annotations
+
+"""대시보드 Flask 앱 스모크 테스트 — 라우트 응답 + 헬퍼 함수"""
 
 import json
 
@@ -13,7 +14,6 @@ def client(tmp_path, monkeypatch):
     """격리된 임시 DB를 사용하는 Flask 테스트 클라이언트."""
     db = tmp_path / "paper.db"
     cb_db = tmp_path / "cb.db"
-    scan = tmp_path / "scan_state.json"
     monkeypatch.setattr(dash, "DB_PATH", db)
     monkeypatch.setattr(dash, "CB_DB_PATH", cb_db)
     # 스캔 상태 로더가 임시 경로를 보도록 패치

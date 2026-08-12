@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """포지션 사이징 테스트"""
 import sys
 sys.path.insert(0, "/home/claude/trading-bot")

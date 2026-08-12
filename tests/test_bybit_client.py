@@ -1,5 +1,6 @@
-"""bybit_client.py (MarketDataClient) 테스트 — 네트워크 호출 전부 mock"""
 from __future__ import annotations
+
+"""bybit_client.py (MarketDataClient) 테스트 — 네트워크 호출 전부 mock"""
 
 import pytest
 from unittest.mock import patch, MagicMock, call
@@ -182,8 +183,8 @@ class TestMarketDataClient:
         )
 
     @patch("src.exchange.bybit_client.time.sleep")
-    def test_fetch_ohlcv_fallback_bybit_fail_kraken_ok(self, mock_sleep):
-        """Bybit 실패 -> Kraken fallback 성공."""
+    def test_fetch_ohlcv_derivative_fail_closed_on_bybit_init_error(self, mock_sleep):
+        """Bybit 선물 초기화 실패를 Kraken 현물로 대체하지 않는다."""
         raw = [[1700000000000, 50000, 51000, 49500, 50500, 100]]
 
         mock_bybit = _make_mock_client(fail_init=True)
@@ -198,12 +199,11 @@ class TestMarketDataClient:
         ]
         with patch("src.exchange.bybit_client.EXCHANGE_CONFIGS", configs):
             client = MarketDataClient()
-            df = client.fetch_ohlcv("BTC/USDT:USDT", "15m", limit=100)
+            with pytest.raises(RuntimeError, match="모든 거래소 OHLCV 실패"):
+                client.fetch_ohlcv("BTC/USDT:USDT", "15m", limit=100)
 
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 1
-        # Kraken에서는 spot 심볼로 변환되어 호출
-        mock_kraken.fetch_ohlcv.assert_called()
+        mock_kraken_cls.assert_not_called()
+        mock_kraken.fetch_ohlcv.assert_not_called()
 
     @patch("src.exchange.bybit_client.time.sleep")
     def test_fetch_ohlcv_all_exchanges_fail(self, mock_sleep):
@@ -266,8 +266,8 @@ class TestMarketDataClient:
         assert isinstance(price, float)
 
     @patch("src.exchange.bybit_client.time.sleep")
-    def test_fetch_ohlcv_spot_symbol_fallback_order(self, mock_sleep):
-        """비선물 거래소에서는 spot 심볼 후보 순서대로 시도."""
+    def test_fetch_ohlcv_derivative_never_tries_spot_symbol_candidates(self, mock_sleep):
+        """Bybit 선물 실패 시 현물 심볼 후보 조회를 금지한다."""
         raw = [[1700000000000, 50000, 51000, 49500, 50500, 100]]
 
         # Bybit 초기화 실패
@@ -288,11 +288,11 @@ class TestMarketDataClient:
         ]
         with patch("src.exchange.bybit_client.EXCHANGE_CONFIGS", configs):
             client = MarketDataClient()
-            df = client.fetch_ohlcv("BTC/USDT:USDT", "15m")
+            with pytest.raises(RuntimeError, match="모든 거래소 OHLCV 실패"):
+                client.fetch_ohlcv("BTC/USDT:USDT", "15m")
 
-        assert len(df) == 1
-        # BTC/USDT 시도 후 BTC/USD로 시도
-        assert mock_kraken.fetch_ohlcv.call_count == 2
+        mock_kraken_cls.assert_not_called()
+        mock_kraken.fetch_ohlcv.assert_not_called()
 
     @patch("src.exchange.bybit_client.time.sleep")
     def test_init_generic_exception_handled(self, mock_sleep):
@@ -309,8 +309,8 @@ class TestMarketDataClient:
                 client.fetch_current_price("BTC/USDT:USDT")
 
     @patch("src.exchange.bybit_client.time.sleep")
-    def test_fetch_ohlcv_bybit_api_fail_kraken_api_ok(self, mock_sleep):
-        """Bybit API 호출 실패 -> Kraken API 성공 (초기화는 둘 다 성공)."""
+    def test_fetch_ohlcv_derivative_fail_closed_on_bybit_api_error(self, mock_sleep):
+        """Bybit 선물 API 실패를 다른 거래소 현물로 대체하지 않는다."""
         raw = [[1700000000000, 50000, 51000, 49500, 50500, 100]]
 
         mock_bybit = _make_mock_client()
@@ -326,9 +326,11 @@ class TestMarketDataClient:
         ]
         with patch("src.exchange.bybit_client.EXCHANGE_CONFIGS", configs):
             client = MarketDataClient()
-            df = client.fetch_ohlcv("BTC/USDT:USDT", "15m")
+            with pytest.raises(RuntimeError, match="bybit API down"):
+                client.fetch_ohlcv("BTC/USDT:USDT", "15m")
 
-        assert len(df) == 1
+        mock_kraken_cls.assert_not_called()
+        mock_kraken.fetch_ohlcv.assert_not_called()
 
 
 class TestFetchTopSymbols:

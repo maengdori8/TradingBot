@@ -1,5 +1,6 @@
-"""paper_engine DB 마이그레이션 멱등성 + 진입조건 영속화 하위호환 테스트"""
 from __future__ import annotations
+
+"""paper_engine DB 마이그레이션 멱등성 + 진입조건 영속화 하위호환 테스트"""
 
 import sqlite3
 

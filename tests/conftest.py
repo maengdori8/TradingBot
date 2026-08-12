@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 tests/conftest.py — Shared fixtures for the entire test suite.
 """

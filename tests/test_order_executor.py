@@ -1,9 +1,9 @@
-"""PaperOrderExecutor 단위 테스트"""
 from __future__ import annotations
+
+"""PaperOrderExecutor 단위 테스트"""
 
 import pytest
 from unittest.mock import patch
-from pathlib import Path
 
 import src.paper_trading.paper_engine as pe_module
 from src.paper_trading.paper_engine import PaperEngine

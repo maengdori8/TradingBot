@@ -1,5 +1,6 @@
-"""서킷브레이커 + RiskManager 통합 테스트"""
 from __future__ import annotations
+
+"""서킷브레이커 + RiskManager 통합 테스트"""
 
 import pytest
 from unittest.mock import patch, MagicMock
