@@ -35,7 +35,14 @@ python -m research.wfo --start 2024-01-01
 
 # 동일 Bybit 상품의 미래 OI·펀딩·호가·청산 수집
 python -m src.data.collector \
-  --symbols BTC/USDT:USDT ETH/USDT:USDT
+  --symbols BTC/USDT:USDT ETH/USDT:USDT \
+  --config config/config.yaml
+
+# 캐리용 동일 Bybit spot/swap·실제 funding·5분 OI 12개월 백필
+python -m src.data.backfill \
+  --symbols BTC/USDT:USDT ETH/USDT:USDT \
+  --start 2025-08-01 --end 2026-08-01 \
+  --db logs/market_features.db
 
 # 사전등록된 8개 캐리 + 8개 강제흐름 후보의 단일 증거 파이프라인
 python -m research.pipeline \
