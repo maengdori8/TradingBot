@@ -12,27 +12,31 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Sequence
 
+import yaml
+
 from src.data.feature_store import FeedHeartbeat, MarketFeatureStore
 from src.data.market_snapshot import DataProvenance, ensure_utc
 from src.exchange.bybit_client import MarketDataClient
 from src.exchange.bybit_history import BybitPublicBackfill, HistoricalMarketRecord
 
 logger = logging.getLogger(__name__)
+_DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "config.yaml"
 
 
 @dataclass(frozen=True)
 class CollectorPolicy:
     """공개 market collector의 주기와 fail-closed 최신성 정책."""
 
-    snapshot_interval_seconds: float = 5.0
+    snapshot_interval_seconds: float = 300.0
     heartbeat_interval_seconds: float = 30.0
-    backfill_interval_seconds: float = 300.0
+    backfill_interval_seconds: float = 900.0
     metadata_interval_seconds: float = 86400.0
     open_interest_max_age_seconds: float = 360.0
     funding_max_age_seconds: float = 60.0
     order_book_max_age_seconds: float = 5.0
     max_component_skew_seconds: float = 360.0
     clock_settle_tolerance_seconds: float = 5.0
+    order_book_limit: int = 25
 
     def __post_init__(self) -> None:
         """수집 주기와 최신성 한도가 모두 양수인지 검증한다."""
@@ -50,6 +54,54 @@ class CollectorPolicy:
             raise ValueError("collector 주기와 최신성 한도는 모두 양수여야 합니다")
         if self.clock_settle_tolerance_seconds < 0:
             raise ValueError("collector clock settle 한도는 음수일 수 없습니다")
+        if self.order_book_limit <= 0:
+            raise ValueError("collector order book limit는 양수여야 합니다")
+
+
+def load_collector_policy(
+    config_path: Path,
+    snapshot_interval_override: float | None = None,
+    heartbeat_interval_override: float | None = None,
+) -> tuple[CollectorPolicy, Path | None]:
+    """프로젝트 config의 collector 정책과 DB 경로를 검증해 반환한다."""
+    if not config_path.exists():
+        if config_path != _DEFAULT_CONFIG_PATH:
+            raise ValueError(f"collector config 파일이 없습니다: {config_path}")
+        return CollectorPolicy(), None
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw_config = yaml.safe_load(handle) or {}
+    if not isinstance(raw_config, dict):
+        raise ValueError("collector config 최상위 값은 object여야 합니다")
+    raw_collector = raw_config.get("collector") or {}
+    if not isinstance(raw_collector, dict):
+        raise ValueError("config collector 값은 object여야 합니다")
+    raw_ages = raw_collector.get("component_max_age_seconds") or {}
+    if not isinstance(raw_ages, dict):
+        raise ValueError("component_max_age_seconds는 object여야 합니다")
+    policy = CollectorPolicy(
+        snapshot_interval_seconds=float(
+            snapshot_interval_override
+            if snapshot_interval_override is not None
+            else raw_collector.get("derivatives_poll_seconds", 300.0)
+        ),
+        heartbeat_interval_seconds=float(
+            heartbeat_interval_override
+            if heartbeat_interval_override is not None
+            else raw_collector.get("heartbeat_seconds", 30.0)
+        ),
+        order_book_limit=int(raw_collector.get("order_book_limit", 25)),
+        open_interest_max_age_seconds=float(raw_ages.get("open_interest", 360.0)),
+        funding_max_age_seconds=float(raw_ages.get("funding", 60.0)),
+        order_book_max_age_seconds=float(raw_ages.get("orderbook", 5.0)),
+        max_component_skew_seconds=float(
+            raw_collector.get("component_max_skew_seconds", 360.0)
+        ),
+    )
+    raw_db_path = raw_collector.get("database_path")
+    db_path = Path(str(raw_db_path)) if raw_db_path else None
+    if db_path is not None and not db_path.is_absolute():
+        db_path = config_path.parent.parent / db_path
+    return policy, db_path
 
 
 class BybitEvidenceCollector:
@@ -76,9 +128,7 @@ class BybitEvidenceCollector:
         self._policy = policy or CollectorPolicy()
         self._stop = threading.Event()
         self._liquidation_stream: Any | None = None
-        self._last_heartbeat_monotonic = 0.0
-        self._last_backfill_monotonic = 0.0
-        self._last_metadata_monotonic = 0.0
+        self._matching_spot_swaps: set[str] = set()
 
     def stop(self) -> None:
         """다음 대기 지점에서 수집 loop를 종료하도록 요청한다."""
@@ -177,7 +227,7 @@ class BybitEvidenceCollector:
             try:
                 snapshot = self._market.fetch_derivatives_feature_snapshot(
                     symbol,
-                    order_book_limit=25,
+                    order_book_limit=self._policy.order_book_limit,
                     open_interest_max_age_seconds=(
                         self._policy.open_interest_max_age_seconds
                     ),
@@ -216,9 +266,11 @@ class BybitEvidenceCollector:
         """checkpoint 이후 닫힌 캔들·펀딩·5분 OI를 공식 REST로 보충한다."""
         cutoff = ensure_utc(now or datetime.now(timezone.utc))
         inserted = 0
+        if not self._matching_spot_swaps:
+            self.collect_metadata_once()
         for symbol in self._symbols:
             for timeframe in ("15m", "1h", "4h", "1d"):
-                key = f"backfill:kline:{timeframe}:{symbol}"
+                key = f"backfill:kline:swap:{timeframe}:{symbol}"
                 start = self._checkpoint_start(key, cutoff - timedelta(days=2))
                 records = self._history.fetch_closed_klines(
                     symbol,
@@ -227,6 +279,24 @@ class BybitEvidenceCollector:
                     cutoff,
                 )
                 inserted += self._save_backfill_page(key, records, cutoff)
+                if symbol in self._matching_spot_swaps:
+                    spot_symbol = symbol.split(":", 1)[0]
+                    spot_key = f"backfill:kline:spot:{timeframe}:{spot_symbol}"
+                    spot_start = self._checkpoint_start(
+                        spot_key,
+                        cutoff - timedelta(days=2),
+                    )
+                    spot_records = self._history.fetch_closed_spot_klines(
+                        spot_symbol,
+                        timeframe,
+                        spot_start,
+                        cutoff,
+                    )
+                    inserted += self._save_backfill_page(
+                        spot_key,
+                        spot_records,
+                        cutoff,
+                    )
             funding_key = f"backfill:funding:{symbol}"
             funding_start = self._checkpoint_start(
                 funding_key,
@@ -284,6 +354,12 @@ class BybitEvidenceCollector:
     def collect_metadata_once(self) -> int:
         """상품 상장·현물 대응·주문 규칙 snapshot을 저장한다."""
         records = self._history.fetch_instruments_metadata()
+        self._matching_spot_swaps = {
+            record.symbol
+            for record in records
+            if record.symbol in self._symbols
+            and record.payload.get("has_matching_spot") is True
+        }
         inserted = self._store.save_historical_records(records)
         self._store.set_checkpoint(
             "collector:instrument_metadata",
@@ -300,45 +376,46 @@ class BybitEvidenceCollector:
         return self.collect_snapshots_once()
 
     def run_forever(self) -> None:
-        """종료 요청까지 연결 복구·snapshot·백필을 계속 실행한다."""
+        """독립 cadence로 연결·snapshot·백필을 실행하며 즉시 종료에 반응한다."""
         self._start_liquidation_stream()
+        next_snapshot = monotonic()
+        next_heartbeat = monotonic()
+        next_backfill = monotonic()
+        next_metadata = monotonic()
         try:
             while not self._stop.is_set():
-                cycle_started = monotonic()
-                self.collect_snapshots_once()
                 now_mono = monotonic()
-                if (
-                    now_mono - self._last_heartbeat_monotonic
-                    >= self._policy.heartbeat_interval_seconds
-                ):
+                if now_mono >= next_snapshot:
+                    self.collect_snapshots_once()
+                    next_snapshot = now_mono + self._policy.snapshot_interval_seconds
+                if now_mono >= next_heartbeat:
                     if not self._stream_connected():
                         self._record_stream_heartbeat("disconnected")
                         self._close_liquidation_stream()
                         self._start_liquidation_stream()
                     else:
                         self._record_stream_heartbeat("connected")
-                    self._last_heartbeat_monotonic = now_mono
-                if (
-                    now_mono - self._last_backfill_monotonic
-                    >= self._policy.backfill_interval_seconds
-                ):
-                    try:
-                        self.backfill_once()
-                    except Exception as exc:
-                        logger.error("Bybit 공식 REST 백필 실패: %s", exc)
-                    self._last_backfill_monotonic = now_mono
-                if (
-                    now_mono - self._last_metadata_monotonic
-                    >= self._policy.metadata_interval_seconds
-                ):
+                    next_heartbeat = now_mono + self._policy.heartbeat_interval_seconds
+                if now_mono >= next_metadata:
                     try:
                         self.collect_metadata_once()
                     except Exception as exc:
                         logger.error("Bybit 상품 metadata 수집 실패: %s", exc)
-                    self._last_metadata_monotonic = now_mono
-                elapsed = monotonic() - cycle_started
+                    next_metadata = now_mono + self._policy.metadata_interval_seconds
+                if now_mono >= next_backfill:
+                    try:
+                        self.backfill_once()
+                    except Exception as exc:
+                        logger.error("Bybit 공식 REST 백필 실패: %s", exc)
+                    next_backfill = now_mono + self._policy.backfill_interval_seconds
                 wait_seconds = max(
-                    self._policy.snapshot_interval_seconds - elapsed,
+                    min(
+                        next_snapshot,
+                        next_heartbeat,
+                        next_backfill,
+                        next_metadata,
+                    )
+                    - monotonic(),
                     0.0,
                 )
                 self._stop.wait(wait_seconds)
@@ -355,7 +432,25 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="ccxt swap 심볼 목록 (예: BTC/USDT:USDT)",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=_DEFAULT_CONFIG_PATH,
+        help="collector cadence와 DB 경로를 읽을 config.yaml",
+    )
     parser.add_argument("--db", type=Path, default=None, help="SQLite DB 경로")
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=None,
+        help="파생 snapshot poll 주기 override (기본 config 또는 300초)",
+    )
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=None,
+        help="WebSocket 연결 heartbeat 주기 override",
+    )
     parser.add_argument(
         "--once",
         action="store_true",
@@ -371,8 +466,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    store = MarketFeatureStore(args.db)
-    collector = BybitEvidenceCollector(args.symbols, store)
+    policy, configured_db = load_collector_policy(
+        args.config,
+        snapshot_interval_override=args.poll_seconds,
+        heartbeat_interval_override=args.heartbeat_seconds,
+    )
+    store = MarketFeatureStore(args.db or configured_db)
+    collector = BybitEvidenceCollector(args.symbols, store, policy=policy)
     if args.once:
         results = collector.run_once()
         store.close()

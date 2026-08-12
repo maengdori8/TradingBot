@@ -7,7 +7,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Sequence
@@ -72,7 +72,34 @@ class DataQualitySummary:
     @property
     def evidence_eligible(self) -> bool:
         """99% 완전성과 15분 이하 gap 기준 충족 여부를 반환한다."""
-        return self.completeness >= 0.99 and self.largest_gap_seconds <= 900.0
+        return (
+            self.completeness >= 0.99
+            and self.largest_gap_seconds <= 900.0
+            and self.unresolved_gap_count == 0
+        )
+
+
+def _merge_intervals(
+    intervals: Sequence[tuple[datetime, datetime]],
+    start: datetime,
+    end: datetime,
+) -> tuple[tuple[datetime, datetime], ...]:
+    """겹치거나 맞닿은 장애 구간을 하나의 결정적 episode로 합친다."""
+    clipped = sorted(
+        (
+            (max(ensure_utc(left), start), min(ensure_utc(right), end))
+            for left, right in intervals
+            if min(ensure_utc(right), end) > max(ensure_utc(left), start)
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    merged: list[tuple[datetime, datetime]] = []
+    for left, right in clipped:
+        if not merged or left > merged[-1][1]:
+            merged.append((left, right))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+    return tuple(merged)
 
 
 def _json_default(value: Any) -> str:
@@ -759,10 +786,11 @@ class MarketFeatureStore:
                 raise ValueError("heartbeat 품질은 receive 시각만 사용할 수 있습니다")
             feed = dataset.split(":", 1)[1]
             query = (
-                "SELECT receive_timestamp FROM feed_heartbeats "
+                "SELECT id, receive_timestamp, status, gap_seconds "
+                "FROM feed_heartbeats "
                 "WHERE feed = ? AND symbol = ? "
                 "AND receive_timestamp BETWEEN ? AND ? "
-                "ORDER BY receive_timestamp"
+                "ORDER BY receive_timestamp, id"
             )
             params: tuple[Any, ...] = (
                 feed,
@@ -796,14 +824,30 @@ class MarketFeatureStore:
             )
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()
-        observed = [
-            _parse_timestamp(
-                row["receive_timestamp"]
-                if dataset.startswith("heartbeat:")
-                else row["observed_timestamp"]
+        if dataset == "liquidation":
+            return DataQualitySummary(
+                dataset=dataset,
+                symbol=symbol,
+                timestamp_axis=timestamp_axis,
+                start=started,
+                end=ended,
+                event_count=len(rows),
+                expected_count=0,
+                completeness=1.0,
+                largest_gap_seconds=0.0,
+                unresolved_gap_count=0,
             )
-            for row in rows
-        ]
+        if dataset.startswith("heartbeat:"):
+            return self._summarize_heartbeat_quality(
+                dataset=dataset,
+                symbol=symbol,
+                started=started,
+                ended=ended,
+                expected_interval_seconds=expected_interval_seconds,
+                maximum_allowed_gap_seconds=maximum_allowed_gap_seconds,
+                rows=rows,
+            )
+        observed = [_parse_timestamp(row["observed_timestamp"]) for row in rows]
         expected_count = max(
             int((ended - started).total_seconds() // expected_interval_seconds),
             1,
@@ -827,6 +871,84 @@ class MarketFeatureStore:
             completeness=completeness,
             largest_gap_seconds=largest_gap,
             unresolved_gap_count=unresolved,
+        )
+
+    @staticmethod
+    def _summarize_heartbeat_quality(
+        dataset: str,
+        symbol: str,
+        started: datetime,
+        ended: datetime,
+        expected_interval_seconds: float,
+        maximum_allowed_gap_seconds: float,
+        rows: Sequence[sqlite3.Row],
+    ) -> DataQualitySummary:
+        """heartbeat 누락과 장애 상태를 중복 없는 episode로 요약한다."""
+        observations: dict[datetime, tuple[bool, float]] = {}
+        for row in rows:
+            observed_at = _parse_timestamp(row["receive_timestamp"])
+            connected = str(row["status"]).strip().lower() == "connected"
+            reported_gap = max(float(row["gap_seconds"]), 0.0)
+            previous = observations.get(observed_at)
+            if previous is None:
+                observations[observed_at] = (connected, reported_gap)
+            else:
+                observations[observed_at] = (
+                    previous[0] and connected,
+                    max(previous[1], reported_gap),
+                )
+
+        ordered = sorted(observations.items(), key=lambda item: item[0])
+        observed_times = [item[0] for item in ordered]
+        boundaries = [started, *observed_times, ended]
+        chronological_gaps = [
+            (right - left).total_seconds()
+            for left, right in zip(boundaries, boundaries[1:])
+        ]
+        failure_intervals: list[tuple[datetime, datetime]] = [
+            (left, right)
+            for left, right in zip(boundaries, boundaries[1:])
+            if (right - left).total_seconds() > maximum_allowed_gap_seconds
+        ]
+        reported_gaps: list[float] = []
+        outage_start: datetime | None = None
+        previous_time = started
+        for observed_at, (connected, reported_gap) in ordered:
+            reported_gaps.append(reported_gap)
+            if reported_gap > maximum_allowed_gap_seconds:
+                failure_intervals.append(
+                    (observed_at - timedelta(seconds=reported_gap), observed_at)
+                )
+            if not connected and outage_start is None:
+                outage_start = previous_time
+            elif connected and outage_start is not None:
+                failure_intervals.append((outage_start, observed_at))
+                outage_start = None
+            previous_time = observed_at
+        if outage_start is not None:
+            failure_intervals.append((outage_start, ended))
+
+        episodes = _merge_intervals(failure_intervals, started, ended)
+        episode_durations = [(right - left).total_seconds() for left, right in episodes]
+        largest_gap = max(
+            [*chronological_gaps, *reported_gaps, *episode_durations],
+            default=(ended - started).total_seconds(),
+        )
+        expected_count = max(
+            int((ended - started).total_seconds() // expected_interval_seconds),
+            1,
+        )
+        return DataQualitySummary(
+            dataset=dataset,
+            symbol=symbol,
+            timestamp_axis="receive",
+            start=started,
+            end=ended,
+            event_count=len(ordered),
+            expected_count=expected_count,
+            completeness=min(len(ordered) / expected_count, 1.0),
+            largest_gap_seconds=largest_gap,
+            unresolved_gap_count=len(episodes),
         )
 
     def payload_hashes(

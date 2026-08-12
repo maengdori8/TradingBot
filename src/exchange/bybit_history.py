@@ -40,12 +40,22 @@ def _milliseconds(value: datetime) -> int:
     return int(ensure_utc(value).timestamp() * 1000)
 
 
-def _swap_market_id(symbol: str) -> str:
-    """ccxt USDT 무기한 선물 심볼을 Bybit market id로 변환한다."""
+def _market_descriptor(symbol: str) -> tuple[str, str, str]:
+    """엄격한 ccxt 심볼을 Bybit id·market type·category로 변환한다."""
     normalized = symbol.strip().upper()
-    if not normalized.endswith("/USDT:USDT"):
-        raise ValueError("Bybit 백필은 USDT 무기한 선물 심볼만 허용합니다")
-    return normalized.split(":", 1)[0].replace("/", "")
+    if normalized.endswith("/USDT:USDT") and normalized.count(":") == 1:
+        return normalized.split(":", 1)[0].replace("/", ""), "swap", "linear"
+    if normalized.endswith("/USDT") and ":" not in normalized:
+        return normalized.replace("/", ""), "spot", "spot"
+    raise ValueError("Bybit 백필은 USDT spot 또는 USDT 무기한 심볼만 허용합니다")
+
+
+def _swap_market_id(symbol: str) -> str:
+    """USDT 무기한 선물임을 검증하고 Bybit market id를 반환한다."""
+    market_id, market_type, _category = _market_descriptor(symbol)
+    if market_type != "swap":
+        raise ValueError("이 Bybit 이력은 USDT 무기한 선물만 허용합니다")
+    return market_id
 
 
 @dataclass(frozen=True)
@@ -143,7 +153,7 @@ class BybitPublicBackfill:
         if timeframe not in _TIMEFRAME_INTERVALS:
             raise ValueError(f"지원하지 않는 Bybit timeframe입니다: {timeframe}")
         interval, interval_ms = _TIMEFRAME_INTERVALS[timeframe]
-        market_id = _swap_market_id(symbol)
+        market_id, market_type, category = _market_descriptor(symbol)
         started_ms = _milliseconds(started)
         cutoff_ms = _milliseconds(ended)
         cursor_end = cutoff_ms
@@ -153,7 +163,7 @@ class BybitPublicBackfill:
                 "public_get_v5_market_kline",
                 "v5/market/kline",
                 {
-                    "category": "linear",
+                    "category": category,
                     "symbol": market_id,
                     "interval": interval,
                     "start": started_ms,
@@ -190,6 +200,7 @@ class BybitPublicBackfill:
                     received,
                     "public_v5_market_kline",
                     payload,
+                    market_type=market_type,
                 )
             oldest = min(page_timestamps)
             if oldest <= started_ms or oldest >= cursor_end:
@@ -219,6 +230,19 @@ class BybitPublicBackfill:
                 "raw": raw,
             },
         )
+
+    def fetch_closed_spot_klines(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[HistoricalMarketRecord]:
+        """동일 Bybit venue의 닫힌 현물 캔들과 turnover를 조회한다."""
+        _market_id, market_type, _category = _market_descriptor(symbol)
+        if market_type != "spot":
+            raise ValueError("현물 kline 조회에는 BTC/USDT 형식이 필요합니다")
+        return self.fetch_closed_klines(symbol, timeframe, start, end)
 
     def fetch_open_interest_history(
         self,
@@ -400,6 +424,7 @@ class BybitPublicBackfill:
         received: datetime,
         endpoint: str,
         payload: dict[str, Any],
+        market_type: str = "swap",
     ) -> HistoricalMarketRecord:
         """동일한 Bybit swap provenance를 가진 레코드를 생성한다."""
         exchanged = datetime.fromtimestamp(timestamp_ms / 1000.0, timezone.utc)
@@ -410,7 +435,7 @@ class BybitPublicBackfill:
             receive_timestamp=received,
             provenance=DataProvenance(
                 exchange="bybit",
-                market_type="swap",
+                market_type=market_type,
                 requested_symbol=symbol,
                 resolved_symbol=symbol,
                 endpoint=endpoint,
