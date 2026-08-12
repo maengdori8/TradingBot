@@ -134,6 +134,35 @@ def _fresh_component_time(
     return component_time
 
 
+def _settle_bounded_exchange_clock_skew(
+    component_timestamps: dict[str, Any],
+    received: datetime,
+    tolerance_seconds: float,
+) -> datetime:
+    """작은 서버 시계 선행은 해당 시각까지 기다리고 큰 선행은 거부한다."""
+    parsed: list[datetime] = []
+    for component, raw_timestamp in component_timestamps.items():
+        if (
+            isinstance(raw_timestamp, bool)
+            or not isinstance(raw_timestamp, Real)
+            or not isfinite(float(raw_timestamp))
+        ):
+            raise RuntimeError(f"{component}에 유효한 numeric timestamp가 없습니다")
+        parsed.append(
+            datetime.fromtimestamp(float(raw_timestamp) / 1000.0, timezone.utc)
+        )
+    future_gap = (max(parsed) - received).total_seconds()
+    if future_gap <= 0:
+        return received
+    if future_gap > tolerance_seconds:
+        raise RuntimeError(
+            "선물 특징 timestamp가 검증 시점보다 미래입니다: "
+            f"gap={future_gap:.3f}s, tolerance={tolerance_seconds:.3f}s"
+        )
+    time.sleep(future_gap + 0.001)
+    return datetime.now(timezone.utc)
+
+
 def _normalized_order_book_levels(
     order_book: dict[str, Any],
     side: str,
@@ -545,14 +574,25 @@ class MarketDataClient:
         self,
         symbol: str,
         order_book_limit: int = 25,
-        max_age_seconds: float = 360.0,
+        max_age_seconds: float | None = None,
+        open_interest_max_age_seconds: float = 360.0,
+        funding_max_age_seconds: float = 60.0,
+        order_book_max_age_seconds: float = 5.0,
+        max_component_skew_seconds: float = 360.0,
+        clock_settle_tolerance_seconds: float = 0.0,
     ) -> DerivativesFeatureSnapshot:
         """동일 Bybit swap의 OI·펀딩·주문장을 시점 보존해 조회한다.
 
         Args:
             symbol: ccxt 형식 Bybit USDT 무기한 선물 심볼.
             order_book_limit: 주문장 조회 깊이.
-            max_age_seconds: 각 입력 및 입력 간 시각 편차 허용 한도.
+            max_age_seconds: 이전 호출자용 공통 최신성·편차 override.
+            open_interest_max_age_seconds: 5분 OI 허용 최신성.
+            funding_max_age_seconds: 현재 펀딩 정보 허용 최신성.
+            order_book_max_age_seconds: 주문장 허용 최신성.
+            max_component_skew_seconds: 구성요소 timestamp 편차 허용 한도.
+            clock_settle_tolerance_seconds: 서버 시계가 조금 앞선 경우 실제
+                해당 시각까지 기다릴 최대 초. 기본 0은 즉시 fail-closed다.
 
         Returns:
             세 비가격 입력과 provenance를 포함한 복합 스냅샷.
@@ -568,7 +608,24 @@ class MarketDataClient:
             or order_book_limit <= 0
         ):
             raise ValueError("order_book_limit는 0보다 큰 정수여야 합니다")
-        max_age = _validated_max_age(max_age_seconds)
+        if max_age_seconds is not None:
+            legacy_max_age = _validated_max_age(max_age_seconds)
+            component_limits = {
+                "open_interest": legacy_max_age,
+                "funding": legacy_max_age,
+                "orderbook": legacy_max_age,
+            }
+            skew_limit = legacy_max_age
+        else:
+            component_limits = {
+                "open_interest": _validated_max_age(
+                    open_interest_max_age_seconds
+                ),
+                "funding": _validated_max_age(funding_max_age_seconds),
+                "orderbook": _validated_max_age(order_book_max_age_seconds),
+            }
+            skew_limit = _validated_max_age(max_component_skew_seconds)
+        clock_tolerance = _validated_max_age(clock_settle_tolerance_seconds)
         client = self._ensure_client(
             "bybit",
             ccxt.bybit,
@@ -608,33 +665,42 @@ class MarketDataClient:
                     f"{component} 응답 심볼이 요청과 일치하지 않습니다"
                 )
         received = datetime.now(timezone.utc)
+        received = _settle_bounded_exchange_clock_skew(
+            {
+                "open_interest": open_interest.get("timestamp"),
+                "funding": funding.get("timestamp"),
+                "orderbook": order_book.get("timestamp"),
+            },
+            received,
+            clock_tolerance,
+        )
         component_times = {
             "open_interest": _fresh_component_time(
                 "open_interest",
                 open_interest.get("timestamp"),
                 received,
-                max_age,
+                component_limits["open_interest"],
             ),
             "funding": _fresh_component_time(
                 "funding",
                 funding.get("timestamp"),
                 received,
-                max_age,
+                component_limits["funding"],
             ),
             "orderbook": _fresh_component_time(
                 "orderbook",
                 order_book.get("timestamp"),
                 received,
-                max_age,
+                component_limits["orderbook"],
             ),
         }
         component_skew = (
             max(component_times.values()) - min(component_times.values())
         ).total_seconds()
-        if component_skew > max_age:
+        if component_skew > skew_limit:
             raise RuntimeError(
                 "OI·펀딩·orderbook timestamp 편차가 허용 범위를 초과합니다: "
-                f"skew={component_skew:.3f}s"
+                f"skew={component_skew:.3f}s, limit={skew_limit:.3f}s"
             )
 
         raw_open_interest = open_interest.get("openInterestAmount")
@@ -701,7 +767,15 @@ class MarketDataClient:
             order_book_timestamp=component_times["orderbook"],
             bids=_normalized_order_book_levels(order_book, "bids"),
             asks=_normalized_order_book_levels(order_book, "asks"),
-            max_age_seconds=max_age,
+            open_interest_max_age_seconds=component_limits["open_interest"],
+            funding_max_age_seconds=component_limits["funding"],
+            order_book_max_age_seconds=component_limits["orderbook"],
+            max_component_skew_seconds=skew_limit,
+            max_age_seconds=(
+                _validated_max_age(max_age_seconds)
+                if max_age_seconds is not None
+                else None
+            ),
             raw={
                 "open_interest": open_interest,
                 "funding": funding,
@@ -737,10 +811,55 @@ class MarketDataClient:
             symbol.split(":")[0].replace("/", "")
             for symbol in symbols
         ]
+        from src.data.feature_store import FeedHeartbeat
+
         stream = WebSocket(testnet=False, channel_type="linear")
+
+        def _persist_message(payload: dict[str, Any]) -> None:
+            """청산 batch와 feed heartbeat를 같은 수신 시점으로 보존한다."""
+            received = datetime.now(timezone.utc)
+            store.ingest_bybit_liquidations(payload, receive_timestamp=received)
+            raw_items = payload.get("data")
+            observed_symbols: set[str] = set()
+            if isinstance(raw_items, list):
+                for item in raw_items:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_symbol = str(item.get("s") or "").upper()
+                    if raw_symbol.endswith("USDT"):
+                        observed_symbols.add(f"{raw_symbol[:-4]}/USDT:USDT")
+            for requested_symbol in sorted(observed_symbols):
+                previous = store.latest_heartbeat(
+                    "public_ws_all_liquidation",
+                    requested_symbol,
+                )
+                gap_seconds = (
+                    (received - previous.receive_timestamp).total_seconds()
+                    if previous is not None
+                    else 0.0
+                )
+                store.record_heartbeat(
+                    FeedHeartbeat(
+                        feed="public_ws_all_liquidation",
+                        symbol=requested_symbol,
+                        status="message",
+                        exchange_timestamp=received,
+                        receive_timestamp=received,
+                        gap_seconds=max(gap_seconds, 0.0),
+                        provenance=DataProvenance(
+                            exchange="bybit",
+                            market_type="swap",
+                            requested_symbol=requested_symbol,
+                            resolved_symbol=requested_symbol,
+                            endpoint="public_ws_all_liquidation",
+                        ),
+                        detail={"topic": payload.get("topic")},
+                    )
+                )
+
         stream.all_liquidation_stream(
             symbol=bybit_symbols,
-            callback=store.ingest_bybit_liquidations,
+            callback=_persist_message,
         )
         self._public_streams.append(stream)
         return stream
