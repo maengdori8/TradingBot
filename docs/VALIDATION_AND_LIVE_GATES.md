@@ -64,11 +64,15 @@ DB에 저장한다. REST 대사는 주문·포지션·체결·잔고 네 응답�
 4. 승인 검증 리포트가 존재하고 설정된 SHA-256과 일치
 5. 리포트가 `stage: demo`, `passed: true`를 명시
 6. 리포트의 전략 버전이 실행 전략 버전과 일치
+7. `PromotionArtifact`와 `StrategyActivation`의 외부 고정 SHA-256 및 코드·데이터·가설·전략
+   계보가 모두 일치
 
 표준 환경변수는 `LIVE_TRADING_APPROVAL_TOKEN`과
 `LIVE_TRADING_VALIDATION_REPORT_SHA256`이다. 설정값·환경변수·실제 파일 바이트의 해시가
 모두 같아야 하며, 리포트는 일반 UTF-8 JSON 정규 파일이어야 한다. 심볼릭 링크, 중복 JSON
 키, 실행 중 파일 교체, 전략 버전 불일치 중 하나라도 발견되면 생성과 후속 주문을 거부한다.
+`PromotionArtifact`가 offline 단계면 Demo만 허용하고, Demo 단계 통과 아티팩트만 Live를
+허용한다. 이 전이는 `python -m src.promotion` 계약 검증을 통과해야 한다.
 
 최초 자본은 100만원과 전체 투자 가능 자산의 5% 중 작은 값이다. 거래당 위험 0.1%,
 동시 총 손절 위험 0.5%, 방향성 명목노출 1배, 최대 레버리지 2배·격리마진을 사용한다.

@@ -49,7 +49,7 @@ collector:
   database_path: "logs/market_features.db"
   checkpoint_path: "logs/collector_checkpoint.json"
   symbols_refresh_seconds: 86400
-  derivatives_poll_seconds: 300
+  derivatives_poll_seconds: 300  # OI 완결 버킷에 맞춘 REST 주기(호가만 5초 허용)
   order_book_limit: 25
   heartbeat_seconds: 30
   unresolved_gap_limit_seconds: 900
@@ -70,6 +70,20 @@ research:
   max_unresolved_gap_seconds: 900
   bootstrap_samples: 2000
   random_seed: 0
+  minimum_forced_flow_history_days: 365
+  required_manifest_roles:
+    delta_neutral_carry:
+      - spot_kline
+      - perpetual_kline
+      - funding
+      - open_interest
+      - instrument_metadata
+    forced_flow:
+      - perpetual_kline
+      - open_interest
+      - funding
+      - orderbook
+      - liquidation_heartbeat
 
 scan:
   mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록

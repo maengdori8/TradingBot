@@ -53,7 +53,9 @@ DecisionContext ── 완전히 닫힌 15m·1h·4h만 선택
 | `src/paper_trading/execution_model.py` | 주문장 깊이, 부분체결, IOC/FOK/PostOnly, 불리한 선택 모델 |
 | `src/paper_trading/paper_engine.py` | 현금·증거금·미실현손익 자산곡선과 순성과 |
 | `src/risk/validation_gate.py` | 오프라인/데모 통계 승급 게이트와 승인 리포트 |
+| `src/risk/promotion_artifact.py` | 코드·데이터·가설·성과 계보를 고정한 승급/활성화 계약 |
 | `src/risk/live_guard.py` | 실전 파일럿 한도, 영속 킬스위치, 증액 판정 |
+| `src/promotion.py` | 고정 외부 해시를 검증하고 offline→demo, demo→live 전이만 허용 |
 | `research/hypothesis_ledger.py` | 실행 전 가설 등록과 성공·실패 결과 append-only 보존 |
 | `research/pipeline.py` | 사전등록 후보만 재생하고 해시 고정 증거를 생성하는 단일 CLI |
 
@@ -75,3 +77,5 @@ Demo private 주문·체결 이벤트는 거래소 보존기간에 기대지 않
 
 어느 단계든 전략 버전이나 파라미터를 바꾸면 이전 증거는 무효가 되고 처음부터 다시 검증한다.
 현재 활성화 가능한 후보 전략은 0개이며, `ict-benchmark-v1`은 paper 비교 기준으로만 실행한다.
+승급 파일은 canonical JSON이어야 하고, 파일 자체 SHA-256과 코드·데이터·가설·전략 해시가
+모두 일치해야 한다. offline 통과 파일은 Demo만, 90일 Demo 통과 파일은 Live만 열 수 있다.
