@@ -12,7 +12,7 @@ git clone <repo-url>
 cd trading-bot
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 Python 3.11 이상이 필요하다.
@@ -34,10 +34,19 @@ Discord 알림이 필요하면 `.env`에 `DISCORD_WEBHOOK_URL`을 설정한다.
 python -m research.wfo --start 2024-01-01
 
 # 동일 Bybit 상품의 미래 OI·펀딩·호가·청산 수집
-python -m src.data.collector --config config/config.yaml
+python -m src.data.collector \
+  --symbols BTC/USDT:USDT ETH/USDT:USDT
 
 # 사전등록된 8개 캐리 + 8개 강제흐름 후보의 단일 증거 파이프라인
-python -m research.pipeline --config config/config.yaml
+python -m research.pipeline \
+  --input logs/evidence/input.json \
+  --output logs/evidence/run
+
+# 통과한 offline/demo 아티팩트만 다음 실행 단계에 연결
+PROMOTION_ARTIFACT_SHA256=<고정된_SHA256> \
+  python -m src.promotion activate \
+  --artifact logs/evidence/promotion.json \
+  --output logs/strategy_activation.json
 
 python -m src.backtest --symbol BTC/USDT:USDT --days 30
 ```
