@@ -1,8 +1,8 @@
-"""
-ICT 전략 백테스트 CLI
-사용법: python -m src.backtest [--symbol BTC/USDT:USDT] [--days 30] [--balance 1250]
-"""
 from __future__ import annotations
+
+# ICT 벤치마크 백테스트 CLI.
+# 사용법: python -m src.backtest [--symbol BTC/USDT:USDT] [--days 30] [--balance 1250]
+
 
 import argparse
 import logging

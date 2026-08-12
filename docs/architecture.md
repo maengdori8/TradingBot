@@ -33,6 +33,13 @@ DecisionContext ── 완전히 닫힌 15m·1h·4h만 선택
   stale 데이터는 신규 진입을 막는다.
 - `strategy_version + symbol + bar_close_time` 결정 키와 주문의 `client_order_id`를
   SQLite에서 원자적으로 선점해 재시작·중복 실행에도 주문을 한 번만 만든다.
+- OI·펀딩·오더북은 각각 360초·60초·5초의 별도 최신성 한도를 적용한다. OI의 5분
+  완결 버킷 때문에 오더북 최신성까지 느슨하게 만들지 않는다.
+- 공식 과거 API가 없는 public liquidation과 주문장 이력은 24시간 collector가 직접
+  축적한다. heartbeat가 끊긴 구간은 청산 0건으로 해석하지 않고 데이터 공백으로 남긴다.
+- 연구 입력은 원시 payload, 거래소·수신 시각, 코드 commit과 파일 SHA-256을 묶은
+  `DataManifest`로 고정한다. completeness 99% 미만 또는 15분 초과 미확인 gap이 있으면
+  승급 증거를 생성하지 않는다.
 
 ## 실행과 영속 상태
 
@@ -42,11 +49,13 @@ DecisionContext ── 완전히 닫힌 15m·1h·4h만 선택
 | `src/exchange/order_executor.py` | Bybit Demo/Live 주문, 계정 수수료, 보호주문, 대사 |
 | `src/data/execution_store.py` | 주문·체결·private WebSocket·수수료 스냅샷 영구 저장 |
 | `src/data/feature_store.py` | OI·펀딩·주문장 복합 특징과 public 청산 이벤트 시점 보존 |
+| `src/data/collector.py` | 동일 Bybit 상품의 24시간 특징 수집·heartbeat·백필 |
 | `src/paper_trading/execution_model.py` | 주문장 깊이, 부분체결, IOC/FOK/PostOnly, 불리한 선택 모델 |
 | `src/paper_trading/paper_engine.py` | 현금·증거금·미실현손익 자산곡선과 순성과 |
 | `src/risk/validation_gate.py` | 오프라인/데모 통계 승급 게이트와 승인 리포트 |
 | `src/risk/live_guard.py` | 실전 파일럿 한도, 영속 킬스위치, 증액 판정 |
 | `research/hypothesis_ledger.py` | 실행 전 가설 등록과 성공·실패 결과 append-only 보존 |
+| `research/pipeline.py` | 사전등록 후보만 재생하고 해시 고정 증거를 생성하는 단일 CLI |
 
 Demo private 주문·체결 이벤트는 거래소 보존기간에 기대지 않고 로컬 DB에 저장한다. 시작과
 주기적 실행 때 REST 주문·포지션·체결·잔고를 다시 조회해 대사하며, 불일치·고아 포지션·중복
@@ -65,3 +74,4 @@ Demo private 주문·체결 이벤트는 거래소 보존기간에 기대지 않
 ```
 
 어느 단계든 전략 버전이나 파라미터를 바꾸면 이전 증거는 무효가 되고 처음부터 다시 검증한다.
+현재 활성화 가능한 후보 전략은 0개이며, `ict-benchmark-v1`은 paper 비교 기준으로만 실행한다.

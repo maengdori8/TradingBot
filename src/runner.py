@@ -1,16 +1,14 @@
-"""
-봇 주기 실행 러너 — 로컬에서 봇을 일정 간격으로 반복 실행한다.
-대시보드와 함께 띄워두면 관심종목/포지션이 실시간(주기)으로 갱신된다.
-
-사용법:
-    python -m src.runner                 # 기본 간격 (config.runner.interval_sec, 없으면 900초)
-    python -m src.runner --interval 300  # 5분마다
-    python -m src.runner --once          # 1회만 실행 (테스트용)
-
-GitHub Actions(15분 cron)를 쓰는 경우 이 러너는 불필요하다.
-한 사이클이 실패해도 루프는 계속 돌며, Ctrl+C로 종료한다.
-"""
 from __future__ import annotations
+
+# 봇 주기 실행 러너 — 로컬에서 봇을 일정 간격으로 반복 실행한다.
+# 대시보드와 함께 띄워두면 관심종목/포지션이 실시간(주기)으로 갱신된다.
+#
+# 사용법:
+#     python -m src.runner                 # config.runner.interval_sec 사용
+#     python -m src.runner --interval 300  # 5분마다
+#     python -m src.runner --once          # 1회만 실행
+#
+# GitHub Actions의 15분 cron을 쓰는 경우 이 러너는 불필요하다.
 
 import argparse
 import logging

@@ -1,8 +1,7 @@
-"""
-Discord 알림 모듈 — Webhook 기반
-진입/청산/에러/일일 리포트 알림
-"""
 from __future__ import annotations
+
+# Discord Webhook 기반 진입·청산·에러·일일 리포트 알림.
+
 import logging
 import requests
 from datetime import datetime, timezone

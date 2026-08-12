@@ -1,8 +1,7 @@
-"""
-스캔 상태 저장소 — 봇이 매 실행마다 스캔 결과(관심종목/진입)를 JSON으로 기록하고,
-대시보드가 이를 읽어 TradingView 차트와 관심종목 버튼을 렌더링한다.
-"""
 from __future__ import annotations
+
+# 봇의 관심종목·진입 스캔 결과를 기록하는 대시보드용 저장소.
+
 
 import json
 import logging

@@ -1,11 +1,8 @@
-"""
-페이퍼 트레이딩 대시보드 — Flask 기반 웹 UI
-실시간 잔고, 성과 지표, 오픈 포지션, 거래 내역, 에쿼티 커브를 제공한다.
-
-사용법:
-    python -m src.dashboard.app [--port 5000] [--host 0.0.0.0]
-"""
 from __future__ import annotations
+
+# Flask 기반 페이퍼 트레이딩 대시보드.
+# 사용법: python -m src.dashboard.app [--port 5000] [--host 0.0.0.0]
+
 
 import argparse
 import json

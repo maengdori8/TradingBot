@@ -2,9 +2,12 @@ testnet: true
 
 runtime:
   mode: paper                   # paper만 기본 허용. demo/live는 별도 승급 아티팩트가 필요
+  strategy_family: "ict_benchmark"  # 통과 전략이 없어 비교 기준 paper만 실행
   strategy_version: "ict-benchmark-v1"
   decision_interval: "15m"
   max_data_age_sec: 120         # 이보다 오래된 데이터는 신규 진입 fail-closed
+  activation_path: "logs/strategy_activation.json"
+  require_activation_for_demo_live: true
   live_enabled: false           # 코드만으로 실전 전환 불가
   approval_token_env: "LIVE_TRADING_APPROVAL_TOKEN"
   validation_report_hash_env: "LIVE_TRADING_VALIDATION_REPORT_SHA256"
@@ -39,6 +42,34 @@ paper_execution:
   queue_fill_ratio: 0.25        # 메이커 대기열 앞 물량을 반영한 관측 체결 비율
   adverse_selection_bps: 2.0
   max_slippage_bps: 25.0        # 이를 넘는 시장가 잔량은 IOC 미체결 처리
+
+# 동일 Bybit 상품에서 수집하는 연구 데이터. 공식 과거 API가 없는 liquidation/orderbook은
+# 24시간 collector가 직접 축적하며 결측 구간을 임의 보간하지 않는다.
+collector:
+  database_path: "logs/market_features.db"
+  checkpoint_path: "logs/collector_checkpoint.json"
+  symbols_refresh_seconds: 86400
+  derivatives_poll_seconds: 300
+  order_book_limit: 25
+  heartbeat_seconds: 30
+  unresolved_gap_limit_seconds: 900
+  component_max_age_seconds:
+    open_interest: 360
+    funding: 60
+    orderbook: 5
+  component_max_skew_seconds: 360
+  timeframes: ["15m", "1h", "4h", "D"]
+
+research:
+  evidence_schema_version: 1
+  hypothesis_ledger_path: "logs/hypothesis_ledger.jsonl"
+  evidence_directory: "logs/evidence"
+  legacy_outputs_are_evidence: false
+  allowed_families: ["delta_neutral_carry", "forced_flow"]
+  required_feed_completeness: 0.99
+  max_unresolved_gap_seconds: 900
+  bootstrap_samples: 2000
+  random_seed: 0
 
 scan:
   mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
