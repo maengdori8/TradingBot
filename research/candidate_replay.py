@@ -216,11 +216,11 @@ def _fold_for_interval(
     exit_time: datetime,
     splits: tuple[WalkForwardSplit, ...],
 ) -> int | None:
-    """진입은 OOS, 청산은 해당 embargo 안인 fold 번호를 반환한다."""
+    """진입과 청산이 모두 같은 OOS test 안인 fold 번호를 반환한다."""
     for split in splits:
         if (
             split.test_start <= entry_time < split.test_end
-            and entry_time < exit_time <= split.embargo_end
+            and entry_time < exit_time <= split.test_end
         ):
             return split.fold
     return None

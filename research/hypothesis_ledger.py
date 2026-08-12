@@ -294,6 +294,7 @@ class HypothesisLedger:
             if not isinstance(event, dict) or event.get("event") not in {
                 "registered",
                 "result",
+                "run_result",
             }:
                 raise ValueError(f"가설 원장 {line_number}행 이벤트가 유효하지 않습니다")
             events.append(event)
@@ -398,3 +399,65 @@ class HypothesisLedger:
                 ledger_file.flush()
                 os.fsync(ledger_file.fileno())
                 logger.info("가설 결과 기록 hash=%s status=%s", manifest_hash, status)
+
+    def record_run_result(
+        self,
+        hypothesis_hash: str,
+        run_manifest_hash: str,
+        status: Literal["succeeded", "insufficient_data", "failed"],
+        metrics: Mapping[str, object],
+        *,
+        note: str = "",
+    ) -> None:
+        """실행 hash별 결과를 idempotent하게 append-only 원장에 기록한다."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if len(run_manifest_hash) != 64:
+            raise ValueError("run_manifest_hash는 SHA-256이어야 합니다")
+        event_payload = {
+            "event": "run_result",
+            "hypothesis_hash": hypothesis_hash,
+            "run_manifest_hash": run_manifest_hash,
+            "status": status,
+            "metrics": dict(metrics),
+            "note": note,
+        }
+        _canonical_json(event_payload)
+        with self._lock():
+            with self.path.open("a+", encoding="utf-8") as ledger_file:
+                ledger_file.seek(0)
+                events = self._parse_lines(ledger_file.readlines())
+                known = any(
+                    event["event"] == "registered"
+                    and event.get("manifest_hash") == hypothesis_hash
+                    for event in events
+                )
+                if not known:
+                    raise ValueError("등록되지 않은 hypothesis_hash의 실행 결과입니다")
+                previous = next(
+                    (
+                        event
+                        for event in events
+                        if event["event"] == "run_result"
+                        and event.get("run_manifest_hash") == run_manifest_hash
+                    ),
+                    None,
+                )
+                if previous is not None:
+                    comparable = dict(previous)
+                    comparable.pop("recorded_at", None)
+                    if comparable == event_payload:
+                        return
+                    raise ValueError("동일 run_manifest_hash에 다른 결과를 기록할 수 없습니다")
+                event = {
+                    **event_payload,
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                }
+                ledger_file.seek(0, 2)
+                ledger_file.write(_canonical_json(event) + "\n")
+                ledger_file.flush()
+                os.fsync(ledger_file.fileno())
+                logger.info(
+                    "가설 실행 결과 기록 run_hash=%s status=%s",
+                    run_manifest_hash,
+                    status,
+                )

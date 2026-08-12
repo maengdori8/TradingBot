@@ -220,12 +220,43 @@ class DailyEvidenceRecord:
 
 
 @dataclass(frozen=True)
+class BenchmarkReturnRecord:
+    """UTC 거래일 종료 뒤 공개된 감사 가능한 일별 벤치마크 수익률."""
+
+    trade_date: date
+    benchmark_return: float
+    available_at: datetime
+
+    def __post_init__(self) -> None:
+        """일별 수익률·UTC 공개 시각·완결 거래일을 검증한다."""
+        if not isinstance(self.trade_date, date) or isinstance(self.trade_date, datetime):
+            raise TypeError("trade_date는 date여야 합니다")
+        if not math.isfinite(self.benchmark_return) or self.benchmark_return <= -1:
+            raise ValueError("benchmark return은 -1보다 큰 유한한 숫자여야 합니다")
+        available = _utc(self.available_at, "available_at")
+        day_close = datetime.combine(
+            date.fromordinal(self.trade_date.toordinal() + 1),
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        if available < day_close:
+            raise ValueError("일별 benchmark return은 UTC 거래일 종료 후에만 공개될 수 있습니다")
+        object.__setattr__(self, "available_at", available)
+
+
+@dataclass(frozen=True)
 class CandidateReplayResult:
     """후보 한 개의 정렬된 거래·일별·비용 스트레스 증거."""
 
     candidate_id: str
     family: CandidateFamily
     run_manifest_hash: str
+    run_manifest: Mapping[str, object]
+    hypothesis_hash: str
+    hypothesis_manifest: Mapping[str, object]
+    code_hash: str
+    strategy_sha256: str
+    strategy_version: str
     trades: tuple[ReplayTradeRecord, ...]
     daily: tuple[DailyEvidenceRecord, ...]
     stress_daily_returns: Mapping[str, tuple[float, ...]]
@@ -236,10 +267,65 @@ class CandidateReplayResult:
         """후보 일관성·정렬·스트레스 행렬 길이를 검증한다."""
         if not self.candidate_id.strip():
             raise ValueError("candidate_id는 비어 있을 수 없습니다")
-        if len(self.run_manifest_hash) != 64 or any(
-            char not in "0123456789abcdef" for char in self.run_manifest_hash
+        for field_name in (
+            "run_manifest_hash",
+            "hypothesis_hash",
+            "code_hash",
+            "strategy_sha256",
         ):
-            raise ValueError("run_manifest_hash는 SHA-256이어야 합니다")
+            value = getattr(self, field_name)
+            if len(value) != 64 or any(
+                char not in "0123456789abcdef" for char in value
+            ):
+                raise ValueError(f"{field_name}는 SHA-256이어야 합니다")
+        if not self.strategy_version.strip():
+            raise ValueError("strategy_version은 비어 있을 수 없습니다")
+        if set(self.hypothesis_manifest) != {
+            "hypothesis_id",
+            "family",
+            "thesis",
+            "features",
+            "universe",
+            "parameters",
+            "costs",
+            "primary_metric",
+            "created_by",
+        }:
+            raise ValueError("hypothesis_manifest schema가 계약과 다릅니다")
+        if canonical_hash(self.hypothesis_manifest) != self.hypothesis_hash:
+            raise ValueError("hypothesis_manifest가 hypothesis_hash와 일치하지 않습니다")
+        if self.hypothesis_manifest["hypothesis_id"] != self.candidate_id:
+            raise ValueError("hypothesis_id가 candidate_id와 일치하지 않습니다")
+        if self.hypothesis_manifest["family"] != self.family:
+            raise ValueError("hypothesis family가 결과 family와 일치하지 않습니다")
+        if set(self.run_manifest) != {
+            "schema_version",
+            "run_id",
+            "hypothesis_hash",
+            "data_hash",
+            "code_hash",
+            "fee_snapshot_hash",
+            "cost_snapshot",
+            "data_cutoff",
+            "created_at",
+        }:
+            raise ValueError("run_manifest schema가 계약과 다릅니다")
+        if canonical_hash(self.run_manifest) != self.run_manifest_hash:
+            raise ValueError("run_manifest가 run_manifest_hash와 일치하지 않습니다")
+        if self.run_manifest["hypothesis_hash"] != self.hypothesis_hash:
+            raise ValueError("run manifest hypothesis 계보가 일치하지 않습니다")
+        if self.run_manifest["code_hash"] != self.code_hash:
+            raise ValueError("run manifest code 계보가 일치하지 않습니다")
+        expected_strategy_hash = canonical_hash(
+            {
+                "candidate_manifest_hash": self.hypothesis_hash,
+                "code_hash": self.code_hash,
+            }
+        )
+        if self.strategy_sha256 != expected_strategy_hash:
+            raise ValueError("strategy_sha256 계보가 일치하지 않습니다")
+        if self.strategy_version != self.candidate_id:
+            raise ValueError("strategy_version은 고정 candidate_id와 같아야 합니다")
         if any(
             trade.candidate_id != self.candidate_id or trade.family != self.family
             for trade in self.trades
@@ -304,6 +390,40 @@ class CandidateReplayResult:
         )
 
 
+def unavailable_candidate_result(
+    *,
+    candidate_id: str,
+    family: CandidateFamily,
+    run_manifest_hash: str,
+    run_manifest: Mapping[str, object],
+    hypothesis_hash: str,
+    hypothesis_manifest: Mapping[str, object],
+    code_hash: str,
+    strategy_sha256: str,
+    strategy_version: str,
+    reason: str,
+) -> CandidateReplayResult:
+    """family별 데이터 부족을 빈 OOS 증거로 명시하는 결과를 만든다."""
+    if not reason.strip():
+        raise ValueError("부적격 사유는 비어 있을 수 없습니다")
+    return CandidateReplayResult(
+        candidate_id=candidate_id,
+        family=family,
+        run_manifest_hash=run_manifest_hash,
+        run_manifest=run_manifest,
+        hypothesis_hash=hypothesis_hash,
+        hypothesis_manifest=hypothesis_manifest,
+        code_hash=code_hash,
+        strategy_sha256=strategy_sha256,
+        strategy_version=strategy_version,
+        trades=(),
+        daily=(),
+        stress_daily_returns={"1.0x": (), "1.5x": (), "2.0x": ()},
+        eligible_evidence=False,
+        ineligibility_reasons=(reason,),
+    )
+
+
 def daily_evidence_from_trades(
     candidate_id: str,
     trades: Sequence[ReplayTradeRecord],
@@ -350,6 +470,8 @@ def daily_evidence_from_trades(
 
 def candidate_return_matrix(
     results: Sequence[CandidateReplayResult],
+    *,
+    required_dates: Sequence[date] | None = None,
 ) -> pd.DataFrame:
     """모든 후보의 공통 UTC 일자 수익률 행렬을 결측 없이 반환한다."""
     if len(results) < 2:
@@ -366,4 +488,21 @@ def candidate_return_matrix(
         for result in results
     }
     matrix = pd.DataFrame(series).sort_index().fillna(0.0)
+    if required_dates is not None:
+        dates = tuple(required_dates)
+        if not dates:
+            raise ValueError("required_dates는 비어 있을 수 없습니다")
+        if len(dates) != len(set(dates)):
+            raise ValueError("required_dates에 중복 날짜가 있습니다")
+        if tuple(sorted(dates)) != dates:
+            raise ValueError("required_dates는 날짜순으로 정렬돼야 합니다")
+        outside = set(matrix.index) - set(dates)
+        if outside:
+            raise ValueError(
+                f"후보 일별 수익이 OOS benchmark 범위 밖에 있습니다: {sorted(outside)}"
+            )
+        matrix = matrix.reindex(
+            pd.Index(dates, name="trade_date"),
+            fill_value=0.0,
+        )
     return matrix.reindex(sorted(matrix.columns), axis=1)
