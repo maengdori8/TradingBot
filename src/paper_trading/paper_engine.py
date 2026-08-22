@@ -128,20 +128,16 @@ def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_signal_key ON pending_orders(signal_key)"
     )
-    # 자동 학습용 진입조건 컬럼 멱등 추가 (기존 DB 하위호환)
-    _migrate_columns(conn, "trades", {
-        "entry_score": "REAL", "entry_session": "TEXT",
-        "c_trend": "INT", "c_zone": "INT", "c_kill_zone": "INT",
-        "c_ote": "INT", "c_volume": "INT", "c_rr": "INT",
-        "entry_rr": "REAL", "risk_amount": "REAL", "r_multiple": "REAL",
-        "funding_cost": "REAL",
-    })
+    # 최초 스키마(2026-05-22: trades.id INTEGER AUTOINCREMENT, margin 없음)로 만들어진 DB 복구:
+    # 현재 코드는 TEXT id 를 INSERT 하므로 INTEGER PRIMARY KEY 테이블엔 'datatype mismatch'로 실패한다.
+    _repair_trades_id_type(conn)
+    # 기본/학습용 컬럼 멱등 추가 (기존 DB 하위호환 — 최초 스키마엔 margin 도 없다)
+    _migrate_columns(conn, "trades", _TRADES_EXTRA_COLS)
     _migrate_columns(conn, "open_positions", {
         "entry_score": "REAL", "entry_session": "TEXT",
         "entry_checks_json": "TEXT", "entry_rr": "REAL", "risk_amount": "REAL",
         "entry_fee": "REAL", "is_maker": "INT", "last_checked_bar": "TEXT",
     })
-    _migrate_columns(conn, "trades", {"entry_fee": "REAL", "is_maker": "INT"})
     _migrate_legacy_fees(conn)
     conn.commit()
     return conn
@@ -159,6 +155,18 @@ def _migrate_legacy_fees(conn: sqlite3.Connection) -> None:
     버전 게이트 없이 **행 기준으로 매번** 실행한다(정상 DB에선 0행 → 무비용). 코드 롤백/재적용 사이에
     구버전이 써 둔 NULL 행도 다음 기동에서 보정되도록. engine_state.schema_version 은 진단용 스탬프.
     """
+    need = {
+        "open_positions": {"entry_price", "qty", "entry_fee", "is_maker"},
+        "trades": {"id", "entry_price", "qty", "pnl", "margin", "risk_amount", "entry_fee", "is_maker",
+                   "pnl_pct", "r_multiple"},
+    }
+    for table, cols in need.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        missing = cols - have
+        if missing:
+            # 예상 밖 스키마 — 봇을 죽이지 않는다(관측/기록 경로는 계속). 보정은 건너뛰고 경고만.
+            logger.error("스키마 v2 수수료 보정 건너뜀: %s 에 컬럼 없음 %s", table, sorted(missing))
+            return
     n_pos = conn.execute(
         "UPDATE open_positions SET entry_fee = ROUND(entry_price*qty*?, 8), is_maker = 0 "
         "WHERE entry_fee IS NULL", (TAKER_FEE,)
@@ -212,6 +220,53 @@ def _ensure_utc_index(candles: pd.DataFrame) -> pd.DataFrame:
                         "close": "last", "volume": "sum"}.get(col, "last")
         candles = candles.groupby(level=0).agg(agg)
     return candles
+
+
+_TRADES_BASE_SQL = """
+        CREATE TABLE IF NOT EXISTS trades (
+            id TEXT PRIMARY KEY,
+            symbol TEXT, direction TEXT,
+            entry_price REAL, exit_price REAL,
+            qty REAL, pnl REAL, pnl_pct REAL,
+            margin REAL,
+            entry_time TEXT, exit_time TEXT, status TEXT
+        )
+    """
+_TRADES_EXTRA_COLS: dict[str, str] = {
+    "margin": "REAL",
+    "entry_score": "REAL", "entry_session": "TEXT",
+    "c_trend": "INT", "c_zone": "INT", "c_kill_zone": "INT",
+    "c_ote": "INT", "c_volume": "INT", "c_rr": "INT",
+    "entry_rr": "REAL", "risk_amount": "REAL", "r_multiple": "REAL",
+    "funding_cost": "REAL", "entry_fee": "REAL", "is_maker": "INT",
+}
+
+
+def _repair_trades_id_type(conn: sqlite3.Connection) -> None:
+    """trades.id 가 INTEGER(최초 스키마)면 TEXT id 스키마로 재구축한다 (행 보존, 멱등).
+
+    INTEGER PRIMARY KEY 는 rowid 별칭이라 현재 코드의 TEXT id INSERT 가 실패한다. 레거시 테이블을
+    이름 바꾼 뒤 새 테이블을 만들고(현재 전체 컬럼), 공통 컬럼을 복사(id 는 TEXT 캐스팅)하고 제거한다.
+    """
+    info = conn.execute("PRAGMA table_info(trades)").fetchall()
+    if not info:
+        return
+    idcol = next((r for r in info if r[1] == "id"), None)
+    if idcol is None or not str(idcol[2] or "").upper().startswith("INT"):
+        return
+    conn.execute("ALTER TABLE trades RENAME TO trades_legacy_intid")
+    conn.execute(_TRADES_BASE_SQL)
+    _migrate_columns(conn, "trades", _TRADES_EXTRA_COLS)
+    legacy_cols = [r[1] for r in conn.execute("PRAGMA table_info(trades_legacy_intid)")]
+    new_cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+    common = [c for c in legacy_cols if c in new_cols]
+    sel = ", ".join("CAST(id AS TEXT)" if c == "id" else c for c in common)
+    n = conn.execute(
+        f"INSERT INTO trades ({', '.join(common)}) SELECT {sel} FROM trades_legacy_intid"
+    ).rowcount
+    conn.execute("DROP TABLE trades_legacy_intid")
+    conn.commit()
+    logger.warning("trades 테이블 재구축: id INTEGER → TEXT (%d행 복사, 공통 컬럼 %d개)", n, len(common))
 
 
 def _migrate_columns(

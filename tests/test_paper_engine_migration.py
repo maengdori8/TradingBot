@@ -127,3 +127,70 @@ class TestBackwardCompat:
         assert restored.entry_session == "newyork"
         assert restored.entry_checks == checks
         assert restored.risk_amount is not None
+
+
+
+class TestTrueLegacySchemas:
+    """실제 과거 스키마로 만든 DB를 현재 엔진이 깨지지 않고 열고 보정하는지 (CI 2026-08-22 장애 재현)."""
+
+    def test_oldest_schema_int_id_no_margin(self, tmp_path):
+        """2026-05-22 최초 스키마: trades.id INTEGER AUTOINCREMENT, margin 없음, 다른 테이블 없음."""
+        import sqlite3
+        from datetime import datetime, timezone, timedelta
+        from src.paper_trading.paper_engine import PaperEngine, TAKER_FEE
+        db = tmp_path / "legacy.db"
+        c = sqlite3.connect(db)
+        c.execute("""CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, direction TEXT,
+            entry_price REAL, exit_price REAL, qty REAL, pnl REAL, pnl_pct REAL,
+            entry_time TEXT, exit_time TEXT, status TEXT)""")
+        t0 = datetime(2026, 5, 22, tzinfo=timezone.utc)
+        c.execute("INSERT INTO trades (symbol, direction, entry_price, exit_price, qty, pnl, pnl_pct, "
+                  "entry_time, exit_time, status) VALUES ('BTC/USDT:USDT','long',100.0,105.0,2.0,9.8,0.049,?,?,'TP')",
+                  (t0.isoformat(), (t0 + timedelta(hours=1)).isoformat()))
+        c.commit()
+        c.close()
+
+        eng = PaperEngine(initial_balance=1000.0, db_path=db)      # 예전엔 여기서 'no such column: margin'
+        info = {r[1]: r[2] for r in eng.conn.execute("PRAGMA table_info(trades)")}
+        assert info["id"].upper() == "TEXT" and "margin" in info and "entry_fee" in info
+        row = eng.conn.execute("SELECT id, entry_fee, pnl, is_maker FROM trades").fetchone()
+        assert row[0] == "1"                                        # 정수 id → 텍스트로 보존
+        fee = round(100.0 * 2.0 * TAKER_FEE, 8)
+        assert row[1] == pytest.approx(fee, abs=1e-9) and row[2] == pytest.approx(9.8 - fee, abs=1e-9)
+        assert row[3] == 0
+        # 새 거래 기록(TEXT id)이 실패하지 않는다
+        pos = eng.open_position("ETH/USDT:USDT", "long", 100.0, 1.0, 98.0, 105.0)
+        eng.close_position(pos, 101.0, "manual")
+        assert eng.conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 2
+        # 멱등: 다시 열어도 그대로
+        eng.conn.close()
+        eng2 = PaperEngine(initial_balance=1000.0, db_path=db)
+        assert eng2.conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 2
+        assert not eng2.conn.execute("SELECT name FROM sqlite_master WHERE name='trades_legacy_intid'").fetchone()
+
+    def test_b15a304_schema_text_id_with_margin(self, tmp_path):
+        """2026-05-27 스키마: TEXT id + margin, 학습 컬럼/entry_fee 없음, open_positions 기본 컬럼만."""
+        import sqlite3
+        from datetime import datetime, timezone
+        from src.paper_trading.paper_engine import PaperEngine, TAKER_FEE
+        db = tmp_path / "legacy2.db"
+        c = sqlite3.connect(db)
+        c.execute("""CREATE TABLE trades (id TEXT PRIMARY KEY, symbol TEXT, direction TEXT,
+            entry_price REAL, exit_price REAL, qty REAL, pnl REAL, pnl_pct REAL, margin REAL,
+            entry_time TEXT, exit_time TEXT, status TEXT)""")
+        c.execute("CREATE TABLE engine_state (key TEXT PRIMARY KEY, value TEXT)")
+        c.execute("""CREATE TABLE open_positions (id TEXT PRIMARY KEY, symbol TEXT, direction TEXT,
+            entry_price REAL, qty REAL, stop_loss REAL, take_profit REAL, margin REAL, entry_time TEXT)""")
+        c.execute("INSERT INTO engine_state VALUES ('balance', '900.0')")
+        c.execute("INSERT INTO open_positions VALUES ('p1','BTC/USDT:USDT','long',100.0,1.0,98.0,105.0,100.0,?)",
+                  (datetime(2026, 5, 27, tzinfo=timezone.utc).isoformat(),))
+        c.commit()
+        c.close()
+        eng = PaperEngine(initial_balance=1000.0, db_path=db)
+        assert eng.balance == 900.0
+        p1 = [p for p in eng.get_positions() if p.id == "p1"][0]
+        assert p1.entry_fee == pytest.approx(100.0 * 1.0 * TAKER_FEE, abs=1e-9) and p1.is_maker is False
+        pnl = eng.close_position(p1, 105.0, "TP")
+        row = eng.conn.execute("SELECT pnl, entry_fee FROM trades WHERE id='p1'").fetchone()
+        assert row[0] == pytest.approx(pnl, abs=1e-9) and row[1] > 0
