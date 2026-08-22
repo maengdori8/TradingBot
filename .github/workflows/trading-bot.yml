@@ -2,15 +2,38 @@ name: ICT Paper Trading Bot
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # 15분 주기. 정각(분=0)은 GitHub가 스케줄 지연/누락을 공식 경고하는 피크라 3분 오프셋.
+    # (봇은 특정 분 정렬에 의존하지 않음 — 실제 실행 시각은 이미 스케줄 대비 0~14분 지연돼 왔음)
+    - cron: '3,18,33,48 * * * *'
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: "캐시 없이 새 상태로 시작 허용 (최초 1회 / 캐시 전부 축출 후 복구용). 평소엔 false"
+        type: boolean
+        default: false
+
+# 페이퍼 상태(logs/)는 "직전 실행의 저장본을 복원 → 갱신 → 새로 저장"으로 이어지므로 두 실행이
+# 겹치면 한쪽의 거래 기록이 유실된다(lost update). 동시 실행을 직렬화하고 진행 중인 실행은 취소하지 않는다.
+concurrency:
+  group: paper-trading-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    permissions:
+      contents: read   # checkout
+      actions: read    # 저장 확인 단계의 캐시 목록 API (actions/cache 자체는 런타임 토큰 사용)
 
     steps:
+      # 상태 캐시는 브랜치 스코프라 main 외 ref에서 돌리면 main 스케줄이 복원 못 하는 별도 체인이 생긴다.
+      - name: main 브랜치 검증
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::이 워크플로(상태 보유)는 main에서만 실행해야 합니다: ${GITHUB_REF}"
+          exit 1
+
       - name: 코드 체크아웃
         uses: actions/checkout@v4
 
@@ -27,12 +50,26 @@ jobs:
       # 함께 저장된다. GitHub Actions 캐시는 best-effort(7일 미사용 시 축출 가능)이며,
       # 축출되면 학습 오버레이가 사라져 config.yaml 기본값으로 복귀한다(코드가 안전 처리).
       # 장기 영속이 중요하면 로컬 runner 또는 외부 스토리지 사용 권장(deploy/ 가이드 참조).
+      #
+      # 키 규약 (2026-08-22 수정): 캐시는 불변이라 매 실행 `paper-trading-state-<run_id>-<attempt>`로
+      # 새로 저장하고, 복원은 `restore-keys` 접두 매칭(`paper-trading-state-`)으로 "가장 최근 생성본"을
+      # 가져온다. 복원 `key`는 현재 run_id+attempt라 정확 일치가 없으므로 항상 접두 매칭으로 떨어진다.
+      # (run_attempt 포함 이유: re-run 시 run_id가 같아 자기 이전 시도 캐시와 정확 일치 → 최신본 우회 + 저장 충돌)
+      # ※ 과거에는 복원 key가 `paper-trading-state`(정확 일치, 2026-05-22 생성본)였고 저장 key만
+      #   run_id 접미사라 매 실행 5/22 스냅샷을 복원 → 상태가 한 번도 누적되지 않던 버그.
+      #   (접두 `paper-trading-state-`는 옛 키 `paper-trading-state`와 매칭되지 않음 — 하이픈 필수)
+      # fail-on-cache-miss: 캐시가 전부 사라졌을 때 "빈 상태로 조용히 재시작 → 그게 최신 스냅샷이 됨"을
+      #   막는다(트랙레코드 무결성). 실패하면 아래 Discord 실패 알림이 간다. 의도적 새 시작은
+      #   workflow_dispatch 의 bootstrap=true 로만 가능.
       - name: 페이퍼 트레이딩 + 학습 상태 복원
-        uses: actions/cache@v4
+        id: restore
+        uses: actions/cache/restore@v4
         with:
           path: logs/
-          key: paper-trading-state
-          restore-keys: paper-trading-state
+          key: paper-trading-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            paper-trading-state-
+          fail-on-cache-miss: ${{ !(github.event_name == 'workflow_dispatch' && inputs.bootstrap == true) }}
 
       - name: logs 디렉토리 생성
         run: mkdir -p logs
@@ -42,12 +79,33 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
+      # 복원이 성공한 실행만 저장한다(복원 실패/스킵 상태를 최신 스냅샷으로 승격 금지).
+      # 봇이 중간에 실패해도 SQLite는 커밋 단위로 일관되므로 저장한다(실제 발생한 포지션 보존).
+      # 단 취소(강제종료)는 YAML/JSONL 쓰기 도중일 수 있어 저장하지 않는다 → !cancelled().
       - name: 페이퍼 트레이딩 상태 저장
         uses: actions/cache/save@v4
-        if: always()
+        if: ${{ !cancelled() && steps.restore.outcome == 'success' }}
         with:
           path: logs/
-          key: paper-trading-state-${{ github.run_id }}
+          key: paper-trading-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # actions/cache/save 는 업로드 실패를 경고로만 남기고 exit 0 → 상태 유실이 조용히 지나간다.
+      # 방금 저장한 고유 키가 실제로 존재하는지 REST로 확인하고, 없으면 실패시켜 Discord 알림을 띄운다.
+      - name: 상태 저장 확인
+        if: ${{ !cancelled() && steps.restore.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: paper-trading-state-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${CACHE_KEY}"                  --jq '.actions_caches[].key' | grep -Fxq "${CACHE_KEY}"; then
+              echo "상태 캐시 저장 확인: ${CACHE_KEY}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then sleep 3; fi
+          done
+          echo "::error::상태 캐시가 저장되지 않았습니다: ${CACHE_KEY} — 이번 실행의 거래 기록이 다음 실행에 반영되지 않습니다"
+          exit 1
 
       - name: 실패 시 Discord 알림
         if: failure()
