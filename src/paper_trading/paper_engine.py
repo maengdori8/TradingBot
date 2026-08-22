@@ -156,11 +156,9 @@ def _migrate_legacy_fees(conn: sqlite3.Connection) -> None:
     구버전은 진입 수수료를 잔고에서만 차감하고 trades.pnl / r_multiple 에는 빠뜨렸다(시장가만 존재).
     - open_positions.entry_fee NULL → entry_price×qty×TAKER_FEE, is_maker=0
     - trades.entry_fee NULL → 수수료 산출 후 pnl/pnl_pct/r_multiple 재계산
-    완료 후 engine_state.schema_version=2 기록(멱등).
+    버전 게이트 없이 **행 기준으로 매번** 실행한다(정상 DB에선 0행 → 무비용). 코드 롤백/재적용 사이에
+    구버전이 써 둔 NULL 행도 다음 기동에서 보정되도록. engine_state.schema_version 은 진단용 스탬프.
     """
-    row = conn.execute("SELECT value FROM engine_state WHERE key='schema_version'").fetchone()
-    if row is not None and int(row[0]) >= SCHEMA_VERSION:
-        return
     n_pos = conn.execute(
         "UPDATE open_positions SET entry_fee = ROUND(entry_price*qty*?, 8), is_maker = 0 "
         "WHERE entry_fee IS NULL", (TAKER_FEE,)
@@ -428,6 +426,12 @@ class PaperEngine(TradingEngine):
         ).fetchall()
         for row in rows:
             checks = json.loads(row[11]) if row[11] else None
+            if row[14] is None:
+                # 진입수수료 미기록 행(구버전 저장) — 알 수 없는 수수료를 0으로 두지 않고 테이커 수수료로 가정(보수)
+                ef = round(float(row[3]) * float(row[4]) * TAKER_FEE, 8)
+                logger.warning("포지션 %s: entry_fee 미기록 → 테이커 수수료 %.8f 가정", row[0], ef)
+            else:
+                ef = float(row[14])
             pos = Position(
                 id=row[0],
                 symbol=row[1],
@@ -443,7 +447,7 @@ class PaperEngine(TradingEngine):
                 entry_checks=checks,
                 entry_rr=row[12],
                 risk_amount=row[13],
-                entry_fee=float(row[14]) if row[14] is not None else 0.0,
+                entry_fee=ef,
                 is_maker=bool(row[15]) if row[15] is not None else False,
                 last_checked_bar=datetime.fromisoformat(row[16]) if row[16] else None,
             )

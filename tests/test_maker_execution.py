@@ -167,7 +167,7 @@ def test_bar_after_window_does_not_fill(tmp_path) -> None:
     b0 = eng.balance
     _place_long(eng, expiry_bars=2)
     candles = _candles([(_m(15), 101.0, 99.5), (_m(30), 101.0, 99.5), (_m(45), 101.0, 90.0)])
-    # 00:40: 00:30 봉은 닫혔고 미터치, 창 종료(00:45) 전 → 아직 pending
+    # 00:40: 00:15 봉만 닫힘(미터치), 00:30 봉은 아직 형성 중 → pending
     assert eng.check_pending_fills(SYM, candles, now=_m(40)) == []
     assert len(eng.get_pending_orders(SYM)) == 1
     # 00:50: 창 종료 → 만료. 00:45 봉의 터치는 무시. 잔고 불변(비용 0)
@@ -308,7 +308,9 @@ def test_stops_internal_hole_strict_then_deep_frame(tmp_path) -> None:
     eng2 = _engine(tmp_path / "t2.db")
     pos2 = eng2.open_position(SYM, "long", 100.0, 1.0, 97.0, 103.0, is_maker=False, entry_time=_m(3))
     eng2.check_stops_history(SYM, holey, now=_m(50), allow_holes=True)
-    assert _closed_trades(eng2)[0][0] == "TP" or pos2.last_checked_bar == _m(30)
+    t2 = _closed_trades(eng2)
+    assert len(t2) == 1 and t2[0][0] == "TP" and datetime.fromisoformat(t2[0][2]) == _m(45)
+    assert eng2.get_positions() == [] and pos2 not in eng2.get_positions()
 
 
 def test_duplicate_timestamps_consolidated_conservatively(tmp_path) -> None:

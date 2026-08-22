@@ -154,7 +154,10 @@ def run() -> None:
             if df is None or len(df) == 0 or not hasattr(df.index, "tz"):
                 return False
             last = df.index[-1].to_pydatetime()
-            cur = cycle_now.replace(second=0, microsecond=0) - timedelta(minutes=cycle_now.minute % 15)
+            # 검증 시계는 '조회 시점'의 현재 — 사이클 시작(cycle_now) 뒤 15분 경계를 넘겨 받은 프레임의 새 형성 봉을
+            # 미래로 오인하지 않기 위함. 닫힌 봉 판정 자체는 엔진이 cycle_now 기준으로 한다.
+            now_f = datetime.now(timezone.utc)
+            cur = now_f.replace(second=0, microsecond=0) - timedelta(minutes=now_f.minute % 15)
             # 최신성: 마지막 봉이 '직전 닫힌 봉' 이상. 미래 금지: 마지막 봉 시작 ≤ 현재 형성 중 봉 시작(cur)
             return (last >= cur - timedelta(minutes=15)) and (last <= cur)
         except (AttributeError, TypeError, ValueError):
@@ -165,6 +168,8 @@ def run() -> None:
     decision_bars: dict[str, datetime] = {}   # 심볼별 결정봉(마지막 15m 봉 시작) — signal_key용
     prices: dict[str, float] = {}
     exec_frames: dict[str, object] = {}       # 심볼별 Bybit 전용 15m 프레임 (실행 판정용, 검증 통과분만)
+    exec_prices: dict[str, float] = {}        # 심볼별 Bybit 현재가 (진입가 기준 — 진입에만 필수)
+    signal_src_ok: dict[str, bool] = {}       # 신호 프레임이 타 거래소 폴백이 아닌지 (폴백이면 진입 생략)
     for symbol in all_symbols:
         try:
             price  = client.fetch_current_price(symbol)
@@ -178,19 +183,27 @@ def run() -> None:
             except (AttributeError, IndexError):
                 pass
             if exec_ok:
-                # 실행용 데이터는 Bybit 전용(현재가·15m 프레임). 둘 중 하나라도 없거나 프레임이 비었거나 지연/미래면
-                # 이 심볼은 이번 사이클 실행(진입/체결/청산 판정)에서 제외된다 — 폴백 가격으로 진입하지 않는다.
+                # 실행용 데이터는 Bybit 전용. 15m 프레임(체결/SL·TP 판정)과 현재가(진입가)는 따로 확보한다 —
+                # 티커만 실패해도 기존 포지션/미체결 판정은 계속되고 진입만 막힌다. 프레임이 없거나 비었거나
+                # 지연/미래면 이 심볼은 이번 사이클 실행 판정에서 제외된다 — 폴백 데이터로 판정/진입하지 않는다.
                 try:
-                    bybit_price = client.fetch_current_price_bybit(symbol)
                     frame_b = client.fetch_ohlcv_bybit(symbol, "15m", limit=100)
                     if _valid_exec_frame(frame_b):
                         exec_frames[symbol] = frame_b
-                        prices[symbol] = bybit_price
-                        price = bybit_price          # 신호/진입가도 Bybit 기준으로
                     else:
                         logger.warning("[%s] Bybit 15m 프레임이 비었거나 지연/미래 — 이번 사이클 실행 판정 보류", symbol)
                 except Exception as e:  # noqa: BLE001 — 이 심볼만 이번 사이클 판정 보류
-                    logger.warning("[%s] Bybit 실행 데이터 조회 실패 — 이번 사이클 실행 판정 보류: %s", symbol, e)
+                    logger.warning("[%s] Bybit 15m 조회 실패 — 이번 사이클 실행 판정 보류: %s", symbol, e)
+                try:
+                    bybit_price = client.fetch_current_price_bybit(symbol)
+                    exec_prices[symbol] = bybit_price
+                    prices[symbol] = bybit_price
+                    price = bybit_price              # 신호/진입가도 Bybit 기준으로
+                except Exception as e:  # noqa: BLE001 — 진입만 보류
+                    logger.warning("[%s] Bybit 현재가 조회 실패 — 이번 사이클 진입 보류: %s", symbol, e)
+                # 신호 프레임 출처: 타 거래소 폴백(kraken/coinbase)이면 그 신호로 주문/진입하지 않는다 (출처 미상=허용)
+                srcs = {getattr(df, "attrs", {}).get("source") for df in (df_4h, df_1h, df_15m)}
+                signal_src_ok[symbol] = srcs <= {None, "bybit"}
 
             res = scan_symbol(
                 df_4h, df_1h, df_15m, symbol, price,
@@ -226,12 +239,15 @@ def run() -> None:
         anchored_tail = deep.index[-1] >= base.index[-1]
         return bool(deeper and anchored_tail)
 
+    held: set[str] = set()     # 이번 사이클 판정을 끝내지 못해 전체 보류를 유발한 심볼 (경보용)
+
     def _with_backfill(symbol: str, evaluate) -> tuple[bool, object, bool]:
         """기본(100봉, 엄격) → 1000봉 → 필요 시각부터 히스토리 백필 순으로 판정하고
         (완료 여부, 마지막에 쓴 프레임, 그때의 allow_holes)를 돌려준다.
         깊은 프레임은 기본 프레임보다 실제로 깊고 현재까지 닿을 때만 allow_holes=True로 평가한다."""
         frame = exec_frames.get(symbol)
         if frame is None:
+            held.add(symbol)
             return False, None, False
         _reset_flags(symbol)
         evaluate(frame, False)
@@ -284,6 +300,8 @@ def run() -> None:
             except Exception as e:
                 logger.error("[%s] SL/TP 판정 오류: %s", symbol, e, exc_info=True)
                 ok = False
+            if not ok:
+                held.add(symbol)
             positions_complete = positions_complete and ok
 
         cb_ok, cb_reason = risk.cb.is_trading_allowed()
@@ -315,6 +333,7 @@ def run() -> None:
                     ok = False
                 if not ok:
                     fills_held = True
+                    held.add(symbol)
                     logger.warning("[%s] 미체결 판정 미완 — 이번 사이클 전체 체결 판정 보류", symbol)
                     break
                 chosen[symbol] = (used_frame, used_holes)
@@ -352,6 +371,12 @@ def run() -> None:
                     fills_held = True
                     break
 
+    # 전체 보류 상태는 조용히 지나가면 안 된다(한 심볼의 데이터 결손이 전 심볼 체결/진입을 멈춘다) — 원인 심볼을 명시해 경보.
+    # 자동으로 풀지 않는다(폴백 가격으로 정리 금지). 사람이 해당 심볼을 확인/정리해야 한다.
+    if exec_ok and (not positions_complete or fills_held):
+        logger.error("실행 판정 보류(전 심볼 체결/진입 정지) — 미완 심볼: %s", sorted(held))
+        notifier.notify_error(f"실행 판정 보류(전 심볼 체결/진입 정지) — 미완 심볼: {sorted(held)} (수동 확인 필요)")
+
     # 점수 내림차순 정렬
     results.sort(key=lambda r: r.score, reverse=True)
 
@@ -371,9 +396,12 @@ def run() -> None:
             continue
         if res.symbol in open_now:
             continue
-        if res.symbol not in exec_frames:
-            # 이 심볼의 Bybit 15m 조회가 실패한 사이클 — 폴백(타 거래소 현물) 신호로 주문/진입하지 않는다
-            logger.info("[%s] Bybit 실행 프레임 없음 — 진입/주문 생략 (이번 사이클)", res.symbol)
+        if res.symbol not in exec_frames or res.symbol not in exec_prices:
+            # 이 심볼의 Bybit 15m/현재가 조회가 실패한 사이클 — 폴백(타 거래소 현물) 데이터로 주문/진입하지 않는다
+            logger.info("[%s] Bybit 실행 프레임/현재가 없음 — 진입/주문 생략 (이번 사이클)", res.symbol)
+            continue
+        if not signal_src_ok.get(res.symbol, True):
+            logger.info("[%s] 신호 프레임이 타 거래소 폴백 — 진입/주문 생략 (이번 사이클)", res.symbol)
             continue
         # 손절 직후 동일 심볼 재진입 쿨다운 (복수매매 차단 — Coval&Shumway 2005:
         # 손실 직후 거래는 기대값 음수. 봇도 같은 셋업 재시도 패턴 구조적 차단)

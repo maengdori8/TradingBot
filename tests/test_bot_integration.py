@@ -683,3 +683,89 @@ class TestObservationCutoffAndExecData:
         assert conn.execute("SELECT COUNT(*) FROM open_positions").fetchone()[0] == 0
         conn.close()
         _run_env["notifier"].notify_entry.assert_not_called()
+
+
+class TestRiskWiring:
+    """봇의 리스크 한도 배선: 미체결 예약분이 슬롯을 점유하고, 후보 주문 자체의 노출이 한도에 포함된다."""
+
+    def test_pending_reservation_counts_toward_max_positions(self, _run_env):
+        import sqlite3
+        from datetime import datetime, timedelta, timezone
+        from src.paper_trading.paper_engine import PaperEngine
+        from src.strategy.signal_engine import ScanResult, TradeSignal
+        cfg = dict(MOCK_CONFIG)
+        cfg["exchange"] = {"symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"], "leverage": 5}
+        cfg["risk"] = dict(MOCK_CONFIG["risk"], max_positions=1)
+        cfg["execution"] = {"mode": "maker"}
+        now = datetime.now(timezone.utc)
+        eng = PaperEngine(initial_balance=5000.0, db_path=pe_module.DB_PATH)
+        eng.place_pending_limit("BTC/USDT:USDT", "long", 40000.0, 0.01, 39000.0, 42000.0,
+                                place_time=now - timedelta(minutes=5))       # 아직 대상봉 없음 → 체결 X
+        eng.conn.close()
+        sig = TradeSignal(direction="long", entry_price=50000.0, stop_loss=49000.0, take_profit=52000.0,
+                          symbol="ETH/USDT:USDT", reason="t", rr_ratio=2.0)
+        eth = ScanResult(symbol="ETH/USDT:USDT", direction="long", score=85.0, stage=4, qualified=True,
+                         price=50000.0, reason="t", signal=sig, checks={})
+
+        def _scan(df_4h, df_1h, df_15m, symbol, price, **kw):
+            return eth if symbol == "ETH/USDT:USDT" else _make_scan(qualified=False)
+
+        with patch("src.bot.load_config", return_value=cfg), \
+             patch("src.risk.risk_manager.load_config", return_value=cfg), \
+             patch("src.strategy.signal_engine.scan_symbol", side_effect=_scan):
+            from src.bot import run
+            run()
+        conn = sqlite3.connect(pe_module.DB_PATH)
+        rows = conn.execute("SELECT symbol FROM pending_orders").fetchall()
+        assert rows == [("BTC/USDT:USDT",)]          # ETH는 슬롯(1) 예약분 때문에 등록 안 됨
+        conn.close()
+        _run_env["notifier"].notify_entry.assert_not_called()
+
+    def test_candidate_exposure_blocks_placement(self, _run_env):
+        import sqlite3
+        scan = _make_scan(qualified=True, signal=_make_signal())
+        for mode in ("maker", "taker"):
+            cfg = dict(MOCK_CONFIG)
+            cfg["risk"] = dict(MOCK_CONFIG["risk"], max_exposure_pct=0.001)   # 자본 5000 → 5 USDT 상한
+            cfg["execution"] = {"mode": mode}
+            with patch("src.bot.load_config", return_value=cfg), \
+                 patch("src.risk.risk_manager.load_config", return_value=cfg), \
+                 patch("src.strategy.signal_engine.scan_symbol", return_value=scan):
+                from src.bot import run
+                run()
+        conn = sqlite3.connect(pe_module.DB_PATH)
+        assert conn.execute("SELECT COUNT(*) FROM pending_orders").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM open_positions").fetchone()[0] == 0
+        conn.close()
+        _run_env["notifier"].notify_entry.assert_not_called()
+
+    def test_held_cycle_alerts_with_culprit(self, _run_env):
+        """한 심볼의 Bybit 프레임 결손으로 전체 보류되면 원인 심볼을 담은 Discord 경보가 나간다."""
+        from datetime import datetime, timedelta, timezone
+        from src.paper_trading.paper_engine import PaperEngine
+        now = datetime.now(timezone.utc)
+        eng = PaperEngine(initial_balance=5000.0, db_path=pe_module.DB_PATH)
+        eng.open_position("ETH/USDT:USDT", "long", 50000.0, 0.01, 49000.0, 52000.0,
+                          entry_time=now - timedelta(minutes=75))
+        eng.conn.close()
+        good = _mock_ohlcv()
+
+        def _frames(symbol, timeframe="15m", limit=200, since=None):
+            if symbol == "ETH/USDT:USDT":
+                raise RuntimeError("delisted")
+            return good
+
+        _run_env["client"].fetch_ohlcv_bybit.side_effect = _frames
+        cfg = dict(MOCK_CONFIG)
+        cfg["exchange"] = {"symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"], "leverage": 5}
+        cfg["risk"] = dict(MOCK_CONFIG["risk"], max_positions=4)
+        cfg["execution"] = {"mode": "maker"}
+        with patch("src.bot.load_config", return_value=cfg), \
+             patch("src.risk.risk_manager.load_config", return_value=cfg), \
+             patch("src.strategy.signal_engine.scan_symbol", return_value=_make_scan(qualified=False)):
+            from src.bot import run
+            run()
+        notifier = _run_env["notifier"]
+        assert notifier.notify_error.called
+        msgs = " ".join(str(c.args[0]) for c in notifier.notify_error.call_args_list)
+        assert "ETH/USDT:USDT" in msgs and "보류" in msgs
