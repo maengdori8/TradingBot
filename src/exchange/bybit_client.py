@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import ccxt
@@ -174,6 +175,7 @@ class MarketDataClient:
                         df["timestamp"], unit="ms", utc=True
                     )
                     df = df.set_index("timestamp")
+                    df.attrs["source"] = name          # 출처 태그 (실행 판정은 bybit 출처만 허용)
                     if name != "bybit":
                         logger.info(
                             "[fallback] %s -> %s/%s (%d candles)",
@@ -187,6 +189,142 @@ class MarketDataClient:
 
         error_detail = "; ".join(errors) if errors else "클라이언트 없음"
         raise RuntimeError(f"모든 거래소 OHLCV 실패: {symbol} — {error_detail}")
+
+    # ------------------------------------------------------------------
+    # 실행 판정용 — 거래 대상 거래소(Bybit) 전용, 폴백 없음
+    # ------------------------------------------------------------------
+
+    def _bybit_config(self) -> tuple[str, type, dict[str, Any]] | None:
+        for name, cls, cfg, _futures_ok in self._exchange_configs:
+            if name == "bybit":
+                return name, cls, cfg
+        return None
+
+    def bybit_available(self) -> bool:
+        """Bybit 퍼블릭 API 사용 가능 여부 (지역 차단 403 등이면 False).
+
+        실행 판정(지정가 체결 / SL·TP)은 거래 대상 거래소의 가격만 써야 하므로, 봇은 이 값이 False면
+        신규 주문·진입·체결·청산 판정을 모두 보류하는 '관찰 전용' 모드로 돈다.
+        """
+        cfg = self._bybit_config()
+        if cfg is None:
+            return False
+        return self._ensure_client(*cfg) is not None
+
+    def fetch_ohlcv_bybit(
+        self, symbol: str, timeframe: str = "15m", limit: int = 200,
+        since: datetime | None = None,
+    ) -> pd.DataFrame:
+        """Bybit 전용 캔들 조회 (다른 거래소 폴백 없음). 실행 판정용.
+
+        Args:
+            symbol: 거래 심볼 (예: 'BTC/USDT:USDT')
+            timeframe: 캔들 주기
+            limit: 조회 봉 수 (Bybit 최대 1000)
+            since: 이 시각부터(포함) 오름차순 조회. None이면 최근 limit개
+
+        Returns:
+            OHLCV DataFrame (index=timestamp UTC, attrs['source']='bybit')
+
+        Raises:
+            RuntimeError: Bybit 클라이언트 초기화 불가 또는 조회 실패
+        """
+        cfg = self._bybit_config()
+        client = self._ensure_client(*cfg) if cfg else None
+        if client is None:
+            raise RuntimeError("Bybit 사용 불가 — 실행 판정용 캔들 조회 실패")
+        kwargs: dict[str, Any] = {"limit": limit}
+        if since is not None:
+            kwargs["since"] = int(since.timestamp() * 1000)
+        try:
+            raw = _retry_call(client.fetch_ohlcv, symbol, timeframe, **kwargs)
+        except Exception as e:  # noqa: BLE001 — 호출측이 보류 처리
+            raise RuntimeError(f"Bybit 캔들 조회 실패 {symbol} {timeframe}: {e}") from e
+        df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        df = df.set_index("timestamp")
+        df.attrs["source"] = "bybit"
+        return df
+
+    def fetch_current_price_bybit(self, symbol: str) -> float:
+        """Bybit 전용 현재가 (폴백 없음). 실행 판정/진입가 기준.
+
+        Raises:
+            RuntimeError: Bybit 사용 불가 또는 가격 없음
+        """
+        cfg = self._bybit_config()
+        client = self._ensure_client(*cfg) if cfg else None
+        if client is None:
+            raise RuntimeError("Bybit 사용 불가 — 현재가 조회 실패")
+        try:
+            ticker = _retry_call(client.fetch_ticker, symbol)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Bybit 현재가 조회 실패 {symbol}: {e}") from e
+        price = ticker.get("last") or ticker.get("close")
+        if not price:
+            raise RuntimeError(f"Bybit 현재가 없음 {symbol}")
+        return float(price)
+
+    def fetch_ohlcv_history(
+        self, symbol: str, timeframe: str, since: datetime, max_pages: int = 40,
+    ) -> pd.DataFrame:
+        """Bybit 전용, since부터 현재까지 1000봉씩 페이지네이션해 이어붙인다 (판정 백필용).
+
+        Args:
+            symbol: 거래 심볼
+            timeframe: 캔들 주기
+            since: 시작 시각(UTC-aware)
+            max_pages: 최대 페이지 수 (15m × 1000 × 40 ≈ 416일 상한)
+
+        Returns:
+            OHLCV DataFrame (중복 제거·오름차순, attrs['source']='bybit')
+        """
+        cfg = self._bybit_config()
+        client = self._ensure_client(*cfg) if cfg else None
+        if client is None:
+            raise RuntimeError("Bybit 사용 불가 — 히스토리 백필 조회 실패")
+        tf_ms = int(client.parse_timeframe(timeframe)) * 1000
+        tf_td = timedelta(milliseconds=tf_ms)
+        frames: list[pd.DataFrame] = []
+        cursor = since
+        now = datetime.now(timezone.utc)
+        horizon = now - tf_td                 # 이 시각 이상의 봉(=마지막 닫힌 봉 또는 형성 중 봉)을 받으면 따라잡은 것
+        prev_last: datetime | None = None
+        reached = False
+        for _ in range(max_pages):
+            df = self.fetch_ohlcv_bybit(symbol, timeframe, limit=1000, since=cursor)
+            if df.empty:
+                break
+            first = df.index[0].to_pydatetime()
+            last = df.index[-1].to_pydatetime()
+            if first < cursor - tf_td or first > cursor + tf_td:
+                # 요청 구간 근처에서 시작하지 않은 페이지(너무 이르거나 — since 무시 — 훨씬 늦음 — 최근 봉만 반환).
+                # 어느 쪽이든 "since부터 이어지는 관측"이 아니므로 신뢰하지 않고 중단한다(호출측 fail-closed).
+                logger.warning("[bybit] %s 히스토리 페이지 시작(%s)이 요청(%s)과 불일치 — 중단", symbol, first, cursor)
+                break
+            if prev_last is not None and last <= prev_last:
+                logger.warning("[bybit] %s 히스토리 페이지 진행 없음(last=%s) — 중단", symbol, last)
+                break
+            frames.append(df)
+            prev_last = last
+            if last >= horizon:
+                reached = True
+                break
+            cursor = last + tf_td
+        if not frames:
+            out = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            out.index = pd.DatetimeIndex([], tz="UTC", name="timestamp")
+        else:
+            out = pd.concat(frames)
+            out = out[~out.index.duplicated(keep="last")].sort_index()
+        out.attrs["source"] = "bybit"
+        out.attrs["reached_horizon"] = reached
+        if not reached:
+            logger.warning("[bybit] %s %s 히스토리 백필이 현재까지 닿지 않음 (%d봉, since=%s) — 호출측이 보류 처리",
+                           symbol, timeframe, len(out), since.isoformat())
+        else:
+            logger.info("[bybit] %s %s 히스토리 백필: %d봉 (since=%s)", symbol, timeframe, len(out), since.isoformat())
+        return out
 
     def fetch_ticker(self, symbol: str) -> dict[str, Any]:
         """현재 시세(ticker)를 조회한다 (fallback + 재시도 포함).

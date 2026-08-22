@@ -99,15 +99,18 @@ class RiskManager:
         positions: list[Position] | None = None,
         symbol: str | None = None,
         direction: str | None = None,
+        candidate: Position | None = None,
     ) -> tuple[bool, str]:
         """
         거래 허용 여부 확인.
 
         Args:
-            current_positions: 현재 보유 포지션 수
-            positions: 현재 보유 포지션 목록 (중복 체크용)
+            current_positions: 현재 보유 포지션 수 (미체결 예약분 포함 가능)
+            positions: 현재 보유 포지션 목록 (중복/방향/노출 체크용 — 미체결 예약분 포함 가능)
             symbol: 진입하려는 심볼
             direction: 진입하려는 방향
+            candidate: 진입하려는 후보 포지션(예상 margin/entry_price/qty). 주어지면 총 노출·명목노출
+                한도에 후보분을 **더해서** 판정한다(개수 한도에는 포함하지 않음).
 
         Returns:
             (allowed, reason) 튜플
@@ -133,9 +136,11 @@ class RiskManager:
             if same_dir >= self.max_same_direction:
                 return False, f"동일 방향 최대 초과: {direction} ({same_dir}/{self.max_same_direction})"
 
-        # 총 담보금 노출 한도 체크
-        if positions:
-            total_margin = sum(p.margin for p in positions)
+        # 총 담보금 노출 한도 체크 (후보분 포함)
+        cand_margin = candidate.margin if candidate is not None else 0.0
+        cand_notional = (candidate.entry_price * candidate.qty) if candidate is not None else 0.0
+        if positions or candidate is not None:
+            total_margin = sum(p.margin for p in (positions or [])) + cand_margin
             if total_margin / self.trading_capital >= self.max_exposure_pct:
                 return False, (
                     f"총 노출 한도 초과: "
@@ -143,8 +148,8 @@ class RiskManager:
                     f"({total_margin / self.trading_capital * 100:.0f}%)"
                 )
 
-            # 합산 명목노출 캡 (레버리지로 부푼 명목가치 — 워스트케이스 보험)
-            total_notional = sum(p.entry_price * p.qty for p in positions)
+            # 합산 명목노출 캡 (레버리지로 부푼 명목가치 — 워스트케이스 보험, 후보분 포함)
+            total_notional = sum(p.entry_price * p.qty for p in (positions or [])) + cand_notional
             if total_notional >= self.max_notional_mult * self.trading_capital:
                 return False, (
                     f"합산 명목노출 초과: {total_notional:.0f} USDT "

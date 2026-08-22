@@ -29,6 +29,10 @@ class Position:
     entry_checks: dict | None = None        # ICT 단계별 통과여부
     entry_rr: float | None = None           # 진입 시 목표 R:R
     risk_amount: float | None = None        # |entry-stop|*qty (R-multiple 산출용)
+    # 정직한 기록용 (2026-08 패치, 모두 옵셔널 = 하위호환)
+    entry_fee: float = 0.0                  # 진입 수수료 — 청산 시 기록 PnL/R에 포함
+    is_maker: bool = False                  # 지정가(메이커) 체결 여부
+    last_checked_bar: datetime | None = None  # SL/TP 판정을 마친 마지막 '닫힌' 봉의 시작시각
 
 
 class TradingEngine(ABC):

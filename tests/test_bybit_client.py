@@ -383,3 +383,96 @@ class TestFetchTopSymbols:
         client = MarketDataClient()
         with patch.object(client, "_ensure_client", return_value=None):
             assert client.fetch_top_symbols() == []
+
+
+
+class TestBybitOnlyHistory:
+    """Bybit 전용 조회 + 페이지네이션 백필 (가짜 ccxt 클라이언트)."""
+
+    class _FakeBybit:
+        def __init__(self, start_ms: int, n_bars: int, tf_ms: int = 900_000, page: int = 1000):
+            self.start_ms, self.n_bars, self.tf_ms, self.page = start_ms, n_bars, tf_ms, page
+            self.calls: list[tuple] = []
+
+        def parse_timeframe(self, tf: str) -> int:
+            return self.tf_ms // 1000
+
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=200):
+            self.calls.append((since, limit))
+            first = self.start_ms if since is None else max(self.start_ms, since)
+            i0 = (first - self.start_ms) // self.tf_ms
+            rows = []
+            for i in range(i0, min(i0 + min(limit, self.page), self.n_bars)):
+                ts = self.start_ms + i * self.tf_ms
+                rows.append([ts, 1.0, 2.0, 0.5, 1.5, 10.0])
+            return rows
+
+    def test_fetch_ohlcv_history_paginates_and_reaches_horizon(self):
+        import pandas as pd
+        from datetime import datetime, timedelta, timezone
+        from src.exchange.bybit_client import MarketDataClient
+        now = datetime.now(timezone.utc)
+        tf_ms = 900_000
+        start = now - timedelta(minutes=15 * 2500)
+        start_ms = int(start.timestamp() * 1000) // tf_ms * tf_ms
+        n_bars = (int(now.timestamp() * 1000) - start_ms) // tf_ms + 1     # 마지막 = 형성 중 봉
+        fake = self._FakeBybit(start_ms, n_bars)
+        mdc = MarketDataClient()
+        with patch.object(mdc, "_ensure_client", return_value=fake):
+            since = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc) + timedelta(minutes=15 * 100)
+            df = mdc.fetch_ohlcv_history("BTC/USDT:USDT", "15m", since=since)
+        assert len(fake.calls) >= 3                      # 2400봉 → 1000 + 1000 + 나머지
+        assert len(df) == n_bars - 100
+        assert df.index.is_monotonic_increasing and not df.index.has_duplicates
+        assert df.attrs["reached_horizon"] is True
+        assert df.index[0] == pd.Timestamp(since)
+
+    def test_fetch_ohlcv_history_stops_on_no_progress(self):
+        from datetime import datetime, timedelta, timezone
+        from src.exchange.bybit_client import MarketDataClient
+        now = datetime.now(timezone.utc)
+        tf_ms = 900_000
+        start_ms = int((now - timedelta(minutes=15 * 3000)).timestamp() * 1000) // tf_ms * tf_ms
+        fake = self._FakeBybit(start_ms, n_bars=1000)   # 1000봉만 존재 → 2페이지째 진행 없음/빈 페이지
+        mdc = MarketDataClient()
+        with patch.object(mdc, "_ensure_client", return_value=fake):
+            df = mdc.fetch_ohlcv_history("BTC/USDT:USDT", "15m",
+                                         since=datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc))
+        assert len(df) == 1000
+        assert df.attrs["reached_horizon"] is False     # 현재까지 못 닿음 → 호출측이 보류
+
+    def test_fetch_ohlcv_bybit_raises_when_unavailable(self):
+        from src.exchange.bybit_client import MarketDataClient
+        mdc = MarketDataClient()
+        with patch.object(mdc, "_ensure_client", return_value=None):
+            assert mdc.bybit_available() is False
+            with pytest.raises(RuntimeError):
+                mdc.fetch_ohlcv_bybit("BTC/USDT:USDT", "15m", limit=10)
+
+
+    def test_fetch_ohlcv_history_rejects_page_starting_far_after_since(self):
+        """since를 무시하고 최근 봉만 돌려주는 페이지는 신뢰하지 않는다 (reached_horizon=False, 빈 결과)."""
+        from datetime import datetime, timedelta, timezone
+        from src.exchange.bybit_client import MarketDataClient
+        now = datetime.now(timezone.utc)
+        tf_ms = 900_000
+        start_ms = int((now - timedelta(minutes=15 * 1200)).timestamp() * 1000) // tf_ms * tf_ms
+
+        class _IgnoresSince(self._FakeBybit):
+            def fetch_ohlcv(self, symbol, timeframe, since=None, limit=200):
+                # 항상 최근 limit개만 반환 (since 무시)
+                rows = []
+                n = min(limit, self.n_bars)
+                for i in range(self.n_bars - n, self.n_bars):
+                    ts = self.start_ms + i * self.tf_ms
+                    rows.append([ts, 1.0, 2.0, 0.5, 1.5, 10.0])
+                return rows
+
+        n_bars = (int(now.timestamp() * 1000) - start_ms) // tf_ms + 1
+        fake = _IgnoresSince(start_ms, n_bars)
+        mdc = MarketDataClient()
+        with patch.object(mdc, "_ensure_client", return_value=fake):
+            df = mdc.fetch_ohlcv_history("BTC/USDT:USDT", "15m",
+                                         since=datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc))
+        assert len(df) == 0
+        assert df.attrs["reached_horizon"] is False
