@@ -1,0 +1,13 @@
+{
+  "funding.parquet": "534642ee677424abb949492a7b8f21e43ea635bd0eb9f980e12f829f89a0a128",
+  "perp_1d.parquet": "8fb02856569644412022c4e1494f7af18cb2d81ede1cec95b4d2d1b7fc23c14a",
+  "perp_1h.parquet": "c06a3301457dfec8f68b184e1f8ac8797acc49874fa96c409a6a57e6743ebac0",
+  "spot_1d.parquet": "71e52bda6ea8d924a79c75af2203cdd6b3a962202cfde759a8755247a7419721",
+  "spot_1h.parquet": "71fe913fe0a82d3f7b5e7e96b4833c9a5c286565d81ec2885cd0ebb619e7a5ab",
+  "universe.parquet": "24ee70799b241f508d670f1ee0792fd0e7b40d1aabed9fb8383accb2ba06988c",
+  "_frozen_at": "2026-08-24T02:49:41.939183+00:00",
+  "_funding_shape": [
+    28049,
+    291
+  ]
+}
