@@ -144,3 +144,35 @@ class TestCarryPaperSerde:
         st2 = CarryPaperState.from_dict(st.to_dict())
         assert st2.equity == st.equity
         assert st2.positions["BTC"]["weight"] == 0.25
+
+
+class TestTraderRecorder:
+    """지속성 연구 기록기 — 코호트 필터와 스냅샷 추출."""
+
+    ROWS = [
+        dict(ethAddress="0xA", accountValue="50000",
+             windowPerformances=[["day", {"pnl": "1", "roi": "0.01", "vlm": "9"}],
+                                 ["month", {"pnl": "100", "roi": "0.05", "vlm": "2000000"}]],
+             displayName=None),
+        dict(ethAddress="0xB", accountValue="500",       # 계좌 미달
+             windowPerformances=[["month", {"pnl": "9", "roi": "5000", "vlm": "9000000"}]],
+             displayName=None),
+        dict(ethAddress="0xC", accountValue="20000",     # 거래대금 미달
+             windowPerformances=[["month", {"pnl": "1", "roi": "0.1", "vlm": "5"}]],
+             displayName=None),
+    ]
+
+    def test_활동_필터만_적용한다(self):
+        from carrybot.live.trader_recorder import build_cohort
+        c = build_cohort(self.ROWS)
+        assert list(c.address) == ["0xA"], "성과와 무관하게 활동 기준만"
+
+    def test_스냅샷은_코호트만_추출한다(self):
+        from carrybot.live.trader_recorder import snapshot_daily
+        s = snapshot_daily(self.ROWS, {"0xA"})
+        assert len(s) == 1 and s.iloc[0].month_roi == 0.05
+
+    def test_손상된_행은_건너뛴다(self):
+        from carrybot.live.trader_recorder import build_cohort
+        c = build_cohort([dict(ethAddress="0xZ")] + self.ROWS)
+        assert list(c.address) == ["0xA"]

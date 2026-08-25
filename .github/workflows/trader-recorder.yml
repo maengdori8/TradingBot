@@ -1,0 +1,37 @@
+name: trader-recorder
+
+# 트레이더 실력 지속성 연구 — Hyperliquid 코호트(5,790지갑) 일일 스냅샷.
+# 판정은 T+30/60/90에 1회. docs/TRADER_PERSISTENCE_STUDY.md 참조.
+on:
+  schedule:
+    - cron: "40 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trader-recorder
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 의존성 설치
+        run: pip install -q pandas
+      - name: 코호트 스냅샷
+        run: PYTHONPATH=. python -m carrybot.live.trader_recorder
+      - name: 관측 커밋
+        run: |
+          git config user.name  "trader-recorder"
+          git config user.email "noreply@github.com"
+          git add -f logs/trader_cohort.json.gz logs/trader_daily/
+          git diff --staged --quiet || git commit -m "[trader] $(date -u +%Y-%m-%d) 코호트 스냅샷"
+          git pull --rebase --autostash origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}
