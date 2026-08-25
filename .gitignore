@@ -14,3 +14,6 @@ build/
 # 연구 데이터/산출물
 research/data/
 research/out/
+
+# 연구 파생 데이터 (동결본 lab/frozen만 커밋)
+lab/data/
