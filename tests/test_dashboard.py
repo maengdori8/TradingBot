@@ -102,3 +102,39 @@ class TestPromoteStatus:
         assert "criteria" in result
         assert result["total_count"] == 6
         assert 0 <= result["passed_count"] <= 6
+
+
+# ------------------------------------------------------------------
+# 투 트랙 검증 차트 데이터
+# ------------------------------------------------------------------
+
+class TestLoadTrackCurves:
+    """_load_track_curves — Track A/B 이력 CSV 로더."""
+
+    def test_파일이_없으면_빈_시리즈를_반환한다(self, tmp_path):
+        from src.dashboard.app import _load_track_curves
+        t = _load_track_curves(logs_dir=tmp_path)
+        assert set(t.keys()) == {"a", "b"}
+        for tr in t.values():
+            assert tr["labels"] == [] and tr["pct"] == []
+            assert tr["equity"] is None
+
+    def test_이력을_누적수익률로_변환한다(self, tmp_path):
+        from src.dashboard.app import _load_track_curves
+        (tmp_path / "tracka_history.csv").write_text(
+            "day,equity,n_pos,events\n"
+            "2026-08-24,1.0,0,universe[]\n"
+            "2026-08-25,1.01,1,BTC:enter\n", encoding="utf-8")
+        t = _load_track_curves(logs_dir=tmp_path)
+        assert t["a"]["labels"] == ["2026-08-24", "2026-08-25"]
+        assert t["a"]["pct"][0] == 0.0
+        assert abs(t["a"]["pct"][1] - 1.0) < 1e-6
+        assert t["a"]["n_pos"] == 1
+
+    def test_손상된_행은_전체를_무너뜨리지_않는다(self, tmp_path):
+        from src.dashboard.app import _load_track_curves
+        (tmp_path / "trackb_history.csv").write_text(
+            "day,equity,cash,n_pos,fills\n"
+            "2026-08-24,깨진값,0.99,1,x\n", encoding="utf-8")
+        t = _load_track_curves(logs_dir=tmp_path)
+        assert t["b"]["labels"] == []          # fail-closed, 빈 시리즈

@@ -307,6 +307,42 @@
         </div>
     </div>
 
+    <!-- Row 2.2: 투 트랙 페이퍼 검증 -->
+    <div class="row g-3 mb-3">
+        <div class="col-lg-8">
+            <div class="card p-3">
+                <div class="section-title">투 트랙 검증 — 실코인 페이퍼 (누적 수익률 %)</div>
+                <canvas id="tracksChart" style="max-height: 260px;"></canvas>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            {% for key, icon in [('a', '&#9875;'), ('b', '&#128034;')] %}
+            {% set tr = tracks[key] %}
+            <div class="card p-3 {{ 'mb-3' if key == 'a' else '' }}">
+                <div class="section-title">{{ icon | safe }} {{ tr.label }}</div>
+                {% if tr.equity is not none %}
+                {% set ret = (tr.pct[-1] if tr.pct else 0) %}
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">누적 수익률</span>
+                    <span class="mono {{ 'positive' if ret >= 0 else 'negative' }}">{{ "%+.3f"|format(ret) }}%</span>
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">자본 (1.0 기준)</span>
+                    <span class="mono">{{ "%.5f"|format(tr.equity) }}</span>
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">포지션 / 기준일</span>
+                    <span class="mono">{{ tr.n_pos }}개 &middot; {{ tr.last_day }}</span>
+                </div>
+                <div class="text-muted mt-1" style="font-size: 0.78rem; word-break: break-all;">{{ tr.note }}</div>
+                {% else %}
+                <div class="text-muted" style="font-size: 0.85rem;">이력 없음 — 일일 워크플로가 실행되면 표시됩니다.</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
     <!-- Row 2.5: TradingView Chart + Watchlist -->
     <div class="row g-3 mb-3">
         <!-- Chart -->
@@ -719,6 +755,53 @@
         document.getElementById('equityChart').parentElement.innerHTML +=
             '<div class="text-center text-muted py-5">거래 데이터가 쌓이면 에쿼티 커브가 표시됩니다.</div>';
     }
+
+    // 투 트랙 검증 차트 (Track A 캐리 / Track B 터틀)
+    const tracksData = {{ tracks_json | safe }};
+    (function () {
+        const el = document.getElementById('tracksChart');
+        if (!el) return;
+        const a = tracksData.a, b = tracksData.b;
+        const allDays = [...new Set([...(a.labels || []), ...(b.labels || [])])].sort();
+        if (allDays.length < 2) {
+            el.parentElement.innerHTML +=
+                '<div class="text-center text-muted py-4">매일 UTC 00:15/00:25 자동 기록 — 이틀째부터 그래프가 그려집니다.<br>' +
+                'Track A: ' + ((a.labels || []).length) + '일 &middot; Track B: ' + ((b.labels || []).length) + '일 축적됨</div>';
+            return;
+        }
+        const align = t => allDays.map(d => {
+            const i = (t.labels || []).indexOf(d);
+            return i >= 0 ? t.pct[i] : null;
+        });
+        new Chart(el.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: allDays,
+                datasets: [
+                    { label: 'Track A 캐리', data: align(a), borderColor: '#00d68f',
+                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
+                    { label: 'Track B 터틀', data: align(b), borderColor: '#f0b429',
+                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#c9d1d9', font: { size: 11 } } },
+                    tooltip: {
+                        backgroundColor: '#1a1d23', borderColor: '#21262d', borderWidth: 1,
+                        titleColor: '#c9d1d9', bodyColor: '#c9d1d9',
+                        callbacks: { label: c => c.dataset.label + ': ' + (c.parsed.y === null ? '-' : c.parsed.y.toFixed(3) + '%') }
+                    }
+                },
+                scales: {
+                    x: { ticks: { color: '#8b949e', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: '#21262d' } },
+                    y: { ticks: { color: '#8b949e', font: { size: 11 }, callback: v => v.toFixed(2) + '%' }, grid: { color: '#21262d' } }
+                },
+                interaction: { intersect: false, mode: 'index' }
+            }
+        });
+    })();
 </script>
 
 </body>

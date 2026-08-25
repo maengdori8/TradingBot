@@ -278,6 +278,57 @@ def _fetch_circuit_breaker_status() -> dict:
         return {"daily_pnl": 0.0, "consecutive_losses": 0, "is_blocked": False}
 
 
+
+# ------------------------------------------------------------------
+# 투 트랙 페이퍼 검증 (Track A 캐리 / Track B 터틀)
+# ------------------------------------------------------------------
+
+def _load_track_curves(logs_dir: Path | None = None) -> dict:
+    """Track A/B 페이퍼 검증 이력 CSV를 차트 데이터로 변환한다.
+
+    Args:
+        logs_dir: 이력 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    Returns:
+        {"a": {...}, "b": {...}} — 각 트랙의 labels/pct/현재 상태.
+        파일이 없거나 비어 있으면 빈 시리즈를 반환한다 (대시보드는 항상 뜬다).
+    """
+    import csv as _csv
+
+    logs = logs_dir or (ROOT / "logs")
+    spec = {
+        "a": ("tracka_history.csv", "Track A — 캐리 (검증 트랙)", "events"),
+        "b": ("trackb_history.csv", "Track B — 터틀 (페이퍼 전용)", "fills"),
+    }
+    out: dict = {}
+    for key, (fname, label, note_col) in spec.items():
+        labels: list[str] = []
+        pct: list[float] = []
+        last: dict = {}
+        path = logs / fname
+        try:
+            with open(path, encoding="utf-8") as f:
+                rows = [r for r in _csv.DictReader(f) if r.get("equity")]
+            base = float(rows[0]["equity"]) if rows else 1.0
+            for r in rows:
+                labels.append(r["day"])
+                pct.append(round((float(r["equity"]) / base - 1.0) * 100.0, 4))
+            if rows:
+                last = rows[-1]
+        except (FileNotFoundError, ValueError, KeyError, IndexError):
+            pass
+        out[key] = {
+            "label": label,
+            "labels": labels,
+            "pct": pct,
+            "equity": float(last["equity"]) if last.get("equity") else None,
+            "n_pos": int(last["n_pos"]) if last.get("n_pos") else 0,
+            "note": (last.get(note_col) or "-")[:120],
+            "last_day": last.get("day", "-"),
+        }
+    return out
+
+
 def _promote_status(perf: dict, initial_balance: float = 1250.0) -> dict:
     """실전 전환 기준 충족 상태.
 
@@ -372,6 +423,7 @@ def index():
 
     # 관심종목(watchlist) 스캔 상태 로드
     scan = load_scan_state()
+    tracks = _load_track_curves()
 
     return render_template(
         "index.html",
@@ -386,6 +438,8 @@ def index():
         config=cfg,
         scan=scan,
         watchlist=scan.get("watchlist", []),
+        tracks=tracks,
+        tracks_json=json.dumps(tracks),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
 
@@ -394,6 +448,7 @@ def index():
 def api_status():
     """JSON API — 대시보드 데이터."""
     conn = _get_conn()
+    tracks = _load_track_curves()
 
     cfg = _load_config()
     cap = cfg.get("capital", {})
@@ -413,6 +468,7 @@ def api_status():
         p["tradingview"] = to_tradingview(p["symbol"])
 
     return jsonify({
+        "tracks": tracks,
         "balance": balance,
         "initial_balance": initial_balance,
         "performance": perf,
