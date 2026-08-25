@@ -1,0 +1,37 @@
+name: tracka-carry
+
+# Track A (등록 캐리 전략) 전향적 페이퍼 검증 — 매일 UTC 00:25, 실존 코인 데이터로
+# 사전등록 v2 알고리즘의 판단·손익을 기록한다.
+on:
+  schedule:
+    - cron: "25 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracka-carry
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 의존성 설치
+        run: pip install -q ccxt pandas numpy
+      - name: 일일 판단·정산
+        run: PYTHONPATH=. python -m carrybot.live.carry_paper
+      - name: 상태 커밋
+        run: |
+          git config user.name  "tracka-carry"
+          git config user.email "noreply@github.com"
+          git add -f logs/tracka_state.json logs/tracka_history.csv 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "[tracka] $(date -u +%Y-%m-%d) 일일 검증"
+          git pull --rebase --autostash origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}

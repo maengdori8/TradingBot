@@ -1,0 +1,39 @@
+name: carry-recorder
+
+# 전향적 관측 축적 — 역방향 캐리 검증의 필수 입력(시점보존 차입금리)은
+# 과거 이력이 없으므로 지금부터 기록해야만 검증 가능하다.
+on:
+  schedule:
+    - cron: "7 * * * *"        # 매시 7분
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: carry-recorder
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 의존성 설치
+        run: pip install -q ccxt pandas pyarrow
+      - name: 스냅샷 기록
+        run: PYTHONPATH=. python -m carrybot.live.recorder
+      - name: 현재 신호 출력
+        run: PYTHONPATH=. python -m carrybot.live.signal || true
+      - name: 관측 커밋
+        run: |
+          git config user.name  "carry-recorder"
+          git config user.email "noreply@github.com"
+          git add -f logs/carry_recorder.db
+          git diff --staged --quiet || git commit -m "[recorder] $(date -u +%Y-%m-%dT%H:%MZ) 관측 추가"
+          git pull --rebase --autostash origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}
