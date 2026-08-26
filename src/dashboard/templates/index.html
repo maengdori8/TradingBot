@@ -114,6 +114,38 @@
             color: var(--muted);
         }
         .mono { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+        /* 상단 요약 스트립 */
+        .now-strip {
+            display: flex; align-items: center; gap: 14px;
+            background: var(--bg-card); border: 1px solid #21262d;
+            border-radius: 12px; padding: 14px 18px;
+        }
+        .now-strip .now-label {
+            font-size: 0.68rem; font-weight: 700; letter-spacing: 1px;
+            color: var(--muted); text-transform: uppercase; flex-shrink: 0;
+        }
+        .now-strip .now-text { font-size: 0.95rem; color: #e6edf3; line-height: 1.5; }
+        .exp-card {
+            background: var(--bg-card); border: 1px solid #21262d;
+            border-radius: 12px; padding: 14px 16px; height: 100%;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .exp-card.active-gold { border-color: rgba(255, 215, 0, 0.5); }
+        .exp-card.active-green { border-color: rgba(0, 214, 143, 0.5); }
+        .exp-head { display: flex; justify-content: space-between; align-items: center; }
+        .exp-name { font-size: 0.76rem; font-weight: 600; color: var(--muted); }
+        .exp-badge {
+            font-size: 0.68rem; padding: 2px 9px; border-radius: 999px;
+            border: 1px solid rgba(139, 148, 158, 0.3);
+            background: rgba(139, 148, 158, 0.15); color: var(--muted);
+        }
+        .exp-badge.green { background: rgba(0, 214, 143, 0.15); color: var(--green); border-color: rgba(0, 214, 143, 0.3); }
+        .exp-badge.gold { background: rgba(255, 215, 0, 0.15); color: var(--gold); border-color: rgba(255, 215, 0, 0.3); }
+        .exp-badge.blue { background: rgba(77, 166, 255, 0.15); color: var(--blue); border-color: rgba(77, 166, 255, 0.3); }
+        .exp-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; color: #e6edf3; }
+        .exp-value.green { color: var(--green); } .exp-value.gold { color: var(--gold); } .exp-value.blue { color: var(--blue); }
+        .exp-unit { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
+        .exp-sub { font-size: 0.72rem; color: var(--muted); word-break: break-all; }
         #equityChart { max-height: 300px; }
         .watch-item {
             background: #161b22;
@@ -180,6 +212,26 @@
 </div>
 
 <div class="container-fluid px-4 py-3">
+
+    <!-- Row 0: 지금 한 줄 + 실험 4개 요약 -->
+    <div class="now-strip mb-3">
+        <span class="now-label">지금 한 줄</span>
+        <span class="now-text">{{ summary.headline }}</span>
+    </div>
+    <div class="row g-3 mb-3">
+        {% for c in summary.cards %}
+        <div class="col-md-3">
+            <div class="exp-card {{ 'active-' + c.color if c.active else '' }}">
+                <div class="exp-head">
+                    <span class="exp-name">{{ c.name }}</span>
+                    <span class="exp-badge {{ c.color if c.color != 'muted' else '' }}">{{ c.badge }}</span>
+                </div>
+                <div class="exp-value {{ c.color if c.color != 'muted' else '' }}">{{ c.value }}{% if c.unit %} <span class="exp-unit">{{ c.unit }}</span>{% endif %}</div>
+                <div class="exp-sub">{{ c.sub }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
 
     <!-- Row 1: Key Stats -->
     <div class="row g-3 mb-3">

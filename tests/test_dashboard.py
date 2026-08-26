@@ -186,3 +186,31 @@ class TestLoadTraderStudy:
         assert t["days"] == 1
         assert t["top"][0] > 0 > t["bottom"][0]
         assert abs(t["spread"] - (t["top"][0] - t["bottom"][0])) < 1e-9
+
+
+class TestBuildSummary:
+    """_build_summary — 상단 요약 스트립."""
+
+    def _mk(self, a_pos=0, b_pos=1):
+        from src.dashboard.app import _build_summary
+        tracks = {"a": dict(pct=[0.0, 0.011], n_pos=a_pos, note="universe[BTC]"),
+                  "b": dict(pct=[0.0, -0.189], n_pos=b_pos, note="BTC:enter@79559")}
+        study = dict(n=5790, days=1, verdicts=["2026-09-24"])
+        return _build_summary(1250.0, [], [], tracks, study)
+
+    def test_한_줄_요약이_상태를_반영한다(self):
+        s = self._mk()
+        assert "터틀 1포지션 보유" in s["headline"]
+        assert "캐리 현금 대기" in s["headline"]
+        assert "D-" in s["headline"]
+
+    def test_카드는_4개다(self):
+        s = self._mk()
+        assert len(s["cards"]) == 4
+        assert [c["key"] for c in s["cards"]] == ["ict", "carry", "turtle", "study"]
+
+    def test_트랙_이력이_없어도_뜬다(self):
+        from src.dashboard.app import _build_summary
+        s = _build_summary(1250.0, [], [], {}, {})
+        assert s["cards"][3]["value"] == "-"
+        assert "터틀 대기" in s["headline"]

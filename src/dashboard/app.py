@@ -429,6 +429,62 @@ def _load_trader_study(logs_dir: Path | None = None) -> dict:
     return out
 
 
+
+def _build_summary(balance: float, positions: list[dict], trades: list[dict],
+                   tracks: dict, trader_study: dict) -> dict:
+    """상단 요약 스트립 데이터 — '지금 한 줄' + 실험 4개 카드.
+
+    모든 값은 이미 로드된 데이터에서 조립한다 (외부 호출 없음 → 페이지 항상 뜬다).
+    """
+    a, b = tracks.get("a", {}), tracks.get("b", {})
+    a_pct = (a.get("pct") or [0.0])[-1] if a.get("pct") else 0.0
+    b_pct = (b.get("pct") or [0.0])[-1] if b.get("pct") else 0.0
+    a_pos, b_pos = int(a.get("n_pos") or 0), int(b.get("n_pos") or 0)
+
+    dday = None
+    try:
+        verdict = trader_study.get("verdicts", [None])[0]
+        if verdict:
+            dday = (datetime.strptime(verdict, "%Y-%m-%d").date()
+                    - datetime.now(timezone.utc).date()).days
+    except (ValueError, TypeError):
+        pass
+
+    parts = []
+    parts.append(f"터틀 {b_pos}포지션 보유" if b_pos else "터틀 대기")
+    parts.append(f"캐리 {a_pos}종목 진입 중" if a_pos else "캐리 현금 대기(펀딩 허들 미달)")
+    if dday is not None:
+        parts.append(f"트레이더 연구 판정 D-{dday}")
+    headline = " · ".join(parts)
+
+    return dict(
+        headline=headline,
+        dday=dday,
+        cards=[
+            dict(key="ict", name="ICT 봇 (15분)", color="muted",
+                 value=f"{balance:,.0f}", unit="USDT",
+                 badge=(f"포지션 {len(positions)}" if positions else "관망"),
+                 active=bool(positions),
+                 sub=f"거래 {len(trades)}건 · 신호 스캔 중"),
+            dict(key="carry", name="Track A · 캐리", color="green",
+                 value=f"{a_pct:+.3f}%", unit="",
+                 badge=(f"보유 {a_pos}종목" if a_pos else "현금 대기"),
+                 active=bool(a_pos),
+                 sub=(a.get("note") or "-")[:60]),
+            dict(key="turtle", name="Track B · 터틀", color="gold",
+                 value=f"{b_pct:+.3f}%", unit="",
+                 badge=(f"포지션 {b_pos}" if b_pos else "대기"),
+                 active=bool(b_pos),
+                 sub=(b.get("note") or "-")[:60]),
+            dict(key="study", name="트레이더 지속성", color="blue",
+                 value=(f"D-{dday}" if dday is not None else "-"), unit="",
+                 badge=f"축적 {trader_study.get('days', 0)}일",
+                 active=False,
+                 sub=f"코호트 {trader_study.get('n', 0):,} 지갑 · 판정 {trader_study.get('verdicts', ['-'])[0]}"),
+        ],
+    )
+
+
 def _promote_status(perf: dict, initial_balance: float = 1250.0) -> dict:
     """실전 전환 기준 충족 상태.
 
@@ -525,6 +581,7 @@ def index():
     scan = load_scan_state()
     tracks = _load_track_curves()
     trader_study = _load_trader_study()
+    summary = _build_summary(balance, positions, trades, tracks, trader_study)
 
     return render_template(
         "index.html",
@@ -543,6 +600,7 @@ def index():
         tracks_json=json.dumps(tracks),
         trader_study=trader_study,
         trader_study_json=json.dumps(trader_study),
+        summary=summary,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
 
