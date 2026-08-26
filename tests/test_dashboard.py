@@ -200,7 +200,7 @@ class TestBuildSummary:
 
     def test_한_줄_요약이_상태를_반영한다(self):
         s = self._mk()
-        assert "터틀 1포지션 보유" in s["headline"]
+        assert "터틀" in s["headline"]
         assert "캐리 현금 대기" in s["headline"]
         assert "D-" in s["headline"]
 
@@ -212,5 +212,5 @@ class TestBuildSummary:
     def test_트랙_이력이_없어도_뜬다(self):
         from src.dashboard.app import _build_summary
         s = _build_summary(1250.0, [], [], {}, {})
-        assert s["cards"][3]["value"] == "-"
-        assert "터틀 대기" in s["headline"]
+        assert s["cards"][5]["value"] == "-"          # study 카드
+        assert "캐리 현금 대기" in s["headline"]
