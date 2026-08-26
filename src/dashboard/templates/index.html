@@ -343,6 +343,49 @@
         </div>
     </div>
 
+    <!-- Row 2.3: 트레이더 실력 지속성 연구 -->
+    <div class="row g-3 mb-3">
+        <div class="col-lg-8">
+            <div class="card p-3">
+                <div class="section-title">트레이더 실력 지속성 — Hyperliquid 코호트 (십분위 중앙값 누적 %)</div>
+                <canvas id="traderChart" style="max-height: 260px;"></canvas>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card p-3">
+                <div class="section-title">&#128300; 연구 상태</div>
+                {% if trader_study.available %}
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">코호트 (활동 필터만)</span>
+                    <span class="mono">{{ "{:,}".format(trader_study.n) }}개 지갑</span>
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">잠금일 / 축적</span>
+                    <span class="mono">{{ trader_study.locked_at }} &middot; {{ trader_study.days }}일</span>
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">1차 판정 (T+30)</span>
+                    <span class="mono">{{ trader_study.verdicts[0] }}</span>
+                </div>
+                {% if trader_study.spread is not none %}
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">상위−하위 십분위 스프레드</span>
+                    <span class="mono {{ 'positive' if trader_study.spread > 0 else 'negative' }}">{{ "%+.2f"|format(trader_study.spread) }}%p</span>
+                </div>
+                {% endif %}
+                <div class="text-muted mt-2" style="font-size: 0.78rem;">
+                    질문: 과거 상위 트레이더가 미래에도 상위인가?<br>
+                    상위(초록)·하위(빨강) 곡선이 벌어지면 지속성 신호.
+                    겹치면 &quot;상위 = 로또&quot; &rarr; 카피 가설 폐기.<br>
+                    <strong>판정은 T+30/60/90 사전등록 기준만 사용</strong> (차트는 참고용).
+                </div>
+                {% else %}
+                <div class="text-muted" style="font-size: 0.85rem;">코호트 데이터 없음 — trader-recorder 워크플로 실행 후 표시됩니다.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
     <!-- Row 2.5: TradingView Chart + Watchlist -->
     <div class="row g-3 mb-3">
         <!-- Chart -->
@@ -797,6 +840,50 @@
                 scales: {
                     x: { ticks: { color: '#8b949e', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: '#21262d' } },
                     y: { ticks: { color: '#8b949e', font: { size: 11 }, callback: v => v.toFixed(2) + '%' }, grid: { color: '#21262d' } }
+                },
+                interaction: { intersect: false, mode: 'index' }
+            }
+        });
+    })();
+
+    // 트레이더 지속성 차트 (상위/하위 십분위 전방 누적수익)
+    const traderData = {{ trader_study_json | safe }};
+    (function () {
+        const el = document.getElementById('traderChart');
+        if (!el) return;
+        if (!traderData.available || traderData.labels.length < 2) {
+            el.parentElement.innerHTML +=
+                '<div class="text-center text-muted py-4">잠금일(' + (traderData.locked_at || '-') +
+                ') 이후 전방 데이터 ' + (traderData.days || 0) + '일 축적 &mdash; 이틀째부터 곡선이 그려집니다.<br>' +
+                '1차 판정: ' + (traderData.verdicts ? traderData.verdicts[0] : '-') + ' (T+30)</div>';
+            return;
+        }
+        new Chart(el.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: traderData.labels,
+                datasets: [
+                    { label: '상위 10% (T0 월ROI)', data: traderData.top, borderColor: '#00d68f',
+                      borderWidth: 2, tension: 0.25, pointRadius: traderData.labels.length > 30 ? 0 : 3 },
+                    { label: '전체 중앙값', data: traderData.mid, borderColor: '#8b949e',
+                      borderWidth: 1.5, borderDash: [5, 4], tension: 0.25, pointRadius: 0 },
+                    { label: '하위 10%', data: traderData.bottom, borderColor: '#ff4d4d',
+                      borderWidth: 2, tension: 0.25, pointRadius: traderData.labels.length > 30 ? 0 : 3 },
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#c9d1d9', font: { size: 11 } } },
+                    tooltip: {
+                        backgroundColor: '#1a1d23', borderColor: '#21262d', borderWidth: 1,
+                        titleColor: '#c9d1d9', bodyColor: '#c9d1d9',
+                        callbacks: { label: c => c.dataset.label + ': ' + c.parsed.y.toFixed(3) + '%' }
+                    }
+                },
+                scales: {
+                    x: { ticks: { color: '#8b949e', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: '#21262d' } },
+                    y: { ticks: { color: '#8b949e', font: { size: 11 }, callback: v => v.toFixed(1) + '%' }, grid: { color: '#21262d' } }
                 },
                 interaction: { intersect: false, mode: 'index' }
             }

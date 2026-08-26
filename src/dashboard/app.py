@@ -329,6 +329,106 @@ def _load_track_curves(logs_dir: Path | None = None) -> dict:
     return out
 
 
+
+# ------------------------------------------------------------------
+# 트레이더 실력 지속성 연구 (Hyperliquid 코호트)
+# ------------------------------------------------------------------
+
+_TRADER_CACHE: dict = {}
+
+
+def _load_trader_study(logs_dir: Path | None = None) -> dict:
+    """지속성 연구 데이터를 차트용으로 변환한다.
+
+    코호트 잠금 시점의 월 ROI로 십분위를 나누고, 잠금 '이후' 일별 손익의
+    누적(잠금 시점 계좌 대비 %)을 십분위별 중앙값으로 집계한다.
+    상위·하위 십분위 곡선이 벌어지면 지속성 존재의 시각적 신호다.
+    판정은 T+30/60/90 사전등록 기준으로만 한다 (이 차트는 참고용).
+
+    Args:
+        logs_dir: 이력 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    Returns:
+        코호트 메타 + labels/top/bottom/mid 누적 % 시리즈. 데이터 없으면 빈 구조.
+    """
+    import gzip as _gzip
+    import json as _json
+    import csv as _csv
+
+    logs = logs_dir or (ROOT / "logs")
+    empty = {"available": False, "n": 0, "locked_at": "-", "days": 0,
+             "labels": [], "top": [], "bottom": [], "mid": [], "spread": None,
+             "verdicts": ["2026-09-24", "2026-10-24", "2026-11-23"]}
+    cohort_path = logs / "trader_cohort.json.gz"
+    daily_dir = logs / "trader_daily"
+    if not cohort_path.exists() or not daily_dir.is_dir():
+        return empty
+
+    files = tuple(sorted(daily_dir.glob("*.csv.gz")))
+    cache_key = (str(cohort_path), files)
+    if _TRADER_CACHE.get("key") == cache_key:
+        return _TRADER_CACHE["value"]
+
+    try:
+        with _gzip.open(cohort_path, "rt", encoding="utf-8") as f:
+            cohort = _json.load(f)
+        locked_at = cohort.get("locked_at", "-")
+        t0_account: dict[str, float] = {}
+        t0_roi: dict[str, float] = {}
+        for w in cohort.get("wallets", []):
+            acct = float(w.get("t0_account") or 0)
+            roi = w.get("t0_month_roi")
+            if acct > 0 and roi is not None and roi == roi:
+                t0_account[w["address"]] = acct
+                t0_roi[w["address"]] = min(max(float(roi), -0.95), 5.0)   # 입출금 왜곡 클리핑
+        if len(t0_roi) < 100:
+            return empty
+
+        # 십분위 경계 (T0 월 ROI 순위)
+        addrs = sorted(t0_roi, key=lambda a: t0_roi[a])
+        n = len(addrs)
+        bottom_set = set(addrs[: n // 10])
+        top_set = set(addrs[-(n // 10):])
+
+        labels: list[str] = []
+        top_c: list[float] = []
+        bot_c: list[float] = []
+        mid_c: list[float] = []
+        cum: dict[str, float] = {a: 0.0 for a in t0_roi}
+        for fp in files:
+            day = fp.name.replace(".csv.gz", "")
+            if day <= locked_at:          # 잠금일 스냅샷의 day_pnl은 잠금 이전분 → 제외
+                continue
+            with _gzip.open(fp, "rt", encoding="utf-8") as f:
+                for r in _csv.DictReader(f):
+                    a = r.get("address")
+                    if a not in cum:
+                        continue
+                    try:
+                        d_ret = float(r["day_pnl"]) / t0_account[a]
+                    except (KeyError, ValueError, ZeroDivisionError):
+                        continue
+                    cum[a] += min(max(d_ret, -1.0), 1.0)   # 일 ±100% 클리핑 (강건성)
+            def _median(vals: list[float]) -> float:
+                vals = sorted(vals)
+                m = len(vals)
+                return vals[m // 2] if m % 2 else (vals[m // 2 - 1] + vals[m // 2]) / 2
+            labels.append(day)
+            top_c.append(round(_median([cum[a] for a in top_set]) * 100, 4))
+            bot_c.append(round(_median([cum[a] for a in bottom_set]) * 100, 4))
+            mid_c.append(round(_median(list(cum.values())) * 100, 4))
+        out = {"available": True, "n": n, "locked_at": locked_at, "days": len(labels),
+               "labels": labels, "top": top_c, "bottom": bot_c, "mid": mid_c,
+               "spread": round(top_c[-1] - bot_c[-1], 3) if labels else None,
+               "verdicts": ["2026-09-24", "2026-10-24", "2026-11-23"]}
+    except (OSError, ValueError, KeyError):
+        return empty
+
+    _TRADER_CACHE["key"] = cache_key
+    _TRADER_CACHE["value"] = out
+    return out
+
+
 def _promote_status(perf: dict, initial_balance: float = 1250.0) -> dict:
     """실전 전환 기준 충족 상태.
 
@@ -424,6 +524,7 @@ def index():
     # 관심종목(watchlist) 스캔 상태 로드
     scan = load_scan_state()
     tracks = _load_track_curves()
+    trader_study = _load_trader_study()
 
     return render_template(
         "index.html",
@@ -440,6 +541,8 @@ def index():
         watchlist=scan.get("watchlist", []),
         tracks=tracks,
         tracks_json=json.dumps(tracks),
+        trader_study=trader_study,
+        trader_study_json=json.dumps(trader_study),
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
 
@@ -449,6 +552,7 @@ def api_status():
     """JSON API — 대시보드 데이터."""
     conn = _get_conn()
     tracks = _load_track_curves()
+    trader_study = _load_trader_study()
 
     cfg = _load_config()
     cap = cfg.get("capital", {})
@@ -469,6 +573,7 @@ def api_status():
 
     return jsonify({
         "tracks": tracks,
+        "trader_study": trader_study,
         "balance": balance,
         "initial_balance": initial_balance,
         "performance": perf,

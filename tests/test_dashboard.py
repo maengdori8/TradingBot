@@ -138,3 +138,51 @@ class TestLoadTrackCurves:
             "2026-08-24,깨진값,0.99,1,x\n", encoding="utf-8")
         t = _load_track_curves(logs_dir=tmp_path)
         assert t["b"]["labels"] == []          # fail-closed, 빈 시리즈
+
+
+class TestLoadTraderStudy:
+    """_load_trader_study — 지속성 연구 데이터 로더."""
+
+    def _cohort(self, tmp_path, wallets):
+        import gzip, json
+        with gzip.open(tmp_path / "trader_cohort.json.gz", "wt", encoding="utf-8") as f:
+            json.dump(dict(locked_at="2026-08-25", n=len(wallets), wallets=wallets), f)
+
+    def _daily(self, tmp_path, day, rows):
+        import gzip, csv
+        d = tmp_path / "trader_daily"; d.mkdir(exist_ok=True)
+        with gzip.open(d / f"{day}.csv.gz", "wt", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["address", "day_pnl"])
+            w.writeheader()
+            for r in rows: w.writerow(r)
+
+    def test_데이터_없으면_빈_구조(self, tmp_path):
+        from src.dashboard.app import _load_trader_study
+        t = _load_trader_study(logs_dir=tmp_path)
+        assert t["available"] is False and t["labels"] == []
+
+    def test_잠금일_스냅샷은_전방수익에서_제외된다(self, tmp_path):
+        from src.dashboard.app import _load_trader_study, _TRADER_CACHE
+        _TRADER_CACHE.clear()
+        wallets = [dict(address=f"0x{i}", t0_account=10000.0, t0_month_roi=i / 100)
+                   for i in range(200)]
+        self._cohort(tmp_path, wallets)
+        self._daily(tmp_path, "2026-08-25",  # 잠금일 — 제외돼야 함
+                    [dict(address="0x0", day_pnl=99999)])
+        t = _load_trader_study(logs_dir=tmp_path)
+        assert t["available"] and t["days"] == 0
+
+    def test_십분위_곡선이_계산된다(self, tmp_path):
+        from src.dashboard.app import _load_trader_study, _TRADER_CACHE
+        _TRADER_CACHE.clear()
+        wallets = [dict(address=f"0x{i}", t0_account=10000.0, t0_month_roi=i / 100)
+                   for i in range(200)]
+        self._cohort(tmp_path, wallets)
+        # 상위 십분위(월ROI 높은 지갑)가 전방에서도 +100 USD, 하위는 -100 USD
+        rows = [dict(address=f"0x{i}", day_pnl=(100 if i >= 180 else (-100 if i < 20 else 0)))
+                for i in range(200)]
+        self._daily(tmp_path, "2026-08-26", rows)
+        t = _load_trader_study(logs_dir=tmp_path)
+        assert t["days"] == 1
+        assert t["top"][0] > 0 > t["bottom"][0]
+        assert abs(t["spread"] - (t["top"][0] - t["bottom"][0])) < 1e-9
