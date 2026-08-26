@@ -432,6 +432,19 @@ def _load_trader_study(logs_dir: Path | None = None) -> dict:
 
 
 
+def _read_track_positions(fname: str) -> list[str]:
+    """트랙 상태 파일에서 보유 심볼·방향을 읽는다 (없으면 빈 목록)."""
+    try:
+        d = json.loads((ROOT / "logs" / fname).read_text())
+        out = []
+        for sym, p in d.get("positions", {}).items():
+            dr = p.get("direction", p.get("d", 0))
+            out.append(f"{sym} {'롱' if dr > 0 else '숏'}")
+        return out
+    except (OSError, ValueError, KeyError):
+        return []
+
+
 def _build_summary(balance: float, positions: list[dict], trades: list[dict],
                    tracks: dict, trader_study: dict) -> dict:
     """상단 요약 스트립 데이터 — '지금 한 줄' + 실험 4개 카드.
@@ -439,9 +452,13 @@ def _build_summary(balance: float, positions: list[dict], trades: list[dict],
     모든 값은 이미 로드된 데이터에서 조립한다 (외부 호출 없음 → 페이지 항상 뜬다).
     """
     a, b = tracks.get("a", {}), tracks.get("b", {})
-    a_pct = (a.get("pct") or [0.0])[-1] if a.get("pct") else 0.0
-    b_pct = (b.get("pct") or [0.0])[-1] if b.get("pct") else 0.0
+    c, dd_ = tracks.get("c", {}), tracks.get("d", {})
+    def _pct(tr):
+        return (tr.get("pct") or [0.0])[-1] if tr.get("pct") else 0.0
+    a_pct, b_pct, c_pct, d_pct = _pct(a), _pct(b), _pct(c), _pct(dd_)
     a_pos, b_pos = int(a.get("n_pos") or 0), int(b.get("n_pos") or 0)
+    b_syms = _read_track_positions("trackb_state.json")
+    d_syms = _read_track_positions("trackd_state.json")
 
     dday = None
     try:
@@ -453,10 +470,12 @@ def _build_summary(balance: float, positions: list[dict], trades: list[dict],
         pass
 
     parts = []
-    parts.append(f"터틀 {b_pos}포지션 보유" if b_pos else "터틀 대기")
-    parts.append(f"캐리 {a_pos}종목 진입 중" if a_pos else "캐리 현금 대기(펀딩 허들 미달)")
+    parts.append("터틀 " + "·".join(b_syms) if b_syms else "터틀 대기")
+    parts.append("스윙 " + "·".join(d_syms) if d_syms else "스윙 대기")
+    parts.append(f"캐리 {a_pos}종목" if a_pos else "캐리 현금 대기")
+    parts.append("차익 수취 중" if c.get("labels") else "차익 준비")
     if dday is not None:
-        parts.append(f"트레이더 연구 판정 D-{dday}")
+        parts.append(f"연구 D-{dday}")
     headline = " · ".join(parts)
 
     return dict(
@@ -478,6 +497,16 @@ def _build_summary(balance: float, positions: list[dict], trades: list[dict],
                  badge=(f"포지션 {b_pos}" if b_pos else "대기"),
                  active=bool(b_pos),
                  sub=(b.get("note") or "-")[:60]),
+            dict(key="xvenue", name="Track C · 차익", color="blue",
+                 value=f"{c_pct:+.3f}%", unit="",
+                 badge=("수취 중" if c.get("labels") else "준비"),
+                 active=bool(c.get("labels")),
+                 sub="교차거래소 펀딩 · ROE는 표시값 ÷2"),
+            dict(key="swing", name="Track D · 스윙", color="red",
+                 value=f"{d_pct:+.3f}%", unit="",
+                 badge=("·".join(d_syms) if d_syms else "대기"),
+                 active=bool(d_syms),
+                 sub="1h 돌파 · 고위험 (MDD 49% 프로파일)"),
             dict(key="study", name="트레이더 지속성", color="blue",
                  value=(f"D-{dday}" if dday is not None else "-"), unit="",
                  badge=f"축적 {trader_study.get('days', 0)}일",

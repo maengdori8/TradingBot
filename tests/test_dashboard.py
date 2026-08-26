@@ -204,10 +204,10 @@ class TestBuildSummary:
         assert "캐리 현금 대기" in s["headline"]
         assert "D-" in s["headline"]
 
-    def test_카드는_4개다(self):
+    def test_카드는_6개다(self):
         s = self._mk()
-        assert len(s["cards"]) == 4
-        assert [c["key"] for c in s["cards"]] == ["ict", "carry", "turtle", "study"]
+        assert len(s["cards"]) == 6
+        assert [c["key"] for c in s["cards"]] == ["ict", "carry", "turtle", "xvenue", "swing", "study"]
 
     def test_트랙_이력이_없어도_뜬다(self):
         from src.dashboard.app import _build_summary

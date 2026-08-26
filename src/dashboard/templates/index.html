@@ -142,8 +142,10 @@
         .exp-badge.green { background: rgba(0, 214, 143, 0.15); color: var(--green); border-color: rgba(0, 214, 143, 0.3); }
         .exp-badge.gold { background: rgba(255, 215, 0, 0.15); color: var(--gold); border-color: rgba(255, 215, 0, 0.3); }
         .exp-badge.blue { background: rgba(77, 166, 255, 0.15); color: var(--blue); border-color: rgba(77, 166, 255, 0.3); }
+        .exp-badge.red { background: rgba(255, 77, 77, 0.15); color: var(--red); border-color: rgba(255, 77, 77, 0.3); }
+        .exp-card.active-red { border-color: rgba(255, 77, 77, 0.5); }
         .exp-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; color: #e6edf3; }
-        .exp-value.green { color: var(--green); } .exp-value.gold { color: var(--gold); } .exp-value.blue { color: var(--blue); }
+        .exp-value.green { color: var(--green); } .exp-value.gold { color: var(--gold); } .exp-value.blue { color: var(--blue); } .exp-value.red { color: var(--red); }
         .exp-unit { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
         .exp-sub { font-size: 0.72rem; color: var(--muted); word-break: break-all; }
         .section-divider {
@@ -236,7 +238,7 @@
     </div>
     <div class="row g-3 mb-3">
         {% for c in summary.cards %}
-        <div class="col-md-3">
+        <div class="col-6 col-md-4 col-xl-2">
             <div class="exp-card {{ 'active-' + c.color if c.active else '' }}">
                 <div class="exp-head">
                     <span class="exp-name">{{ c.name }}</span>
