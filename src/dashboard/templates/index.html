@@ -244,7 +244,7 @@
                     <span class="exp-name">{{ c.name }}</span>
                     <span class="exp-badge {{ c.color if c.color != 'muted' else '' }}">{{ c.badge }}</span>
                 </div>
-                <div class="exp-value {{ c.color if c.color != 'muted' else '' }}">{{ c.value }}{% if c.unit %} <span class="exp-unit">{{ c.unit }}</span>{% endif %}</div>
+                <div class="exp-value {{ c.color if c.color != 'muted' else '' }}" id="expVal-{{ c.key }}" data-static="{{ c.value }}">{{ c.value }}{% if c.unit %} <span class="exp-unit">{{ c.unit }}</span>{% endif %}</div>
                 <div class="exp-sub">{{ c.sub }}</div>
             </div>
         </div>
@@ -745,6 +745,16 @@
                         <td class="mono positive">${Number(p.take_profit).toFixed(2)}</td>
                     </tr>`;
                 }).join('');
+            }
+            // 트랙 카드 실시간 수익률
+            if (d.tracks_live) {
+                const map = {a: 'carry', b: 'turtle', c: 'xvenue', d: 'swing'};
+                for (const [k, key] of Object.entries(map)) {
+                    const tl = d.tracks_live[k];
+                    const el = document.getElementById('expVal-' + key);
+                    if (!tl || !el) continue;
+                    el.textContent = (tl.pct >= 0 ? '+' : '') + tl.pct.toFixed(3) + '%';
+                }
             }
             if (dot) dot.style.color = 'var(--green)';
         } catch (e) {

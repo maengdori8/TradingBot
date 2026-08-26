@@ -214,3 +214,31 @@ class TestBuildSummary:
         s = _build_summary(1250.0, [], [], {}, {})
         assert s["cards"][5]["value"] == "-"          # study 카드
         assert "캐리 현금 대기" in s["headline"]
+
+
+class TestTracksLive:
+    """_tracks_live — 초단위 트랙 시가평가."""
+
+    def test_상태파일이_없으면_빈_딕셔너리(self, tmp_path):
+        from src.dashboard.app import _tracks_live
+        assert _tracks_live(logs_dir=tmp_path) == {}
+
+    def test_포지션_미실현이_시가평가에_반영된다(self, tmp_path, monkeypatch):
+        import json
+        import src.dashboard.app as dash
+        (tmp_path / "trackb_state.json").write_text(json.dumps(dict(
+            equity=1.0, positions={"BTC": dict(direction=1, units=0.00001,
+                                               entry=100000.0, stop=90000.0)})))
+        monkeypatch.setattr(dash, "_live_price", lambda s: 110000.0)
+        t = dash._tracks_live(logs_dir=tmp_path)
+        assert t["b"]["pct"] == pytest.approx(10.0)          # 0.00001×10000 = +0.1 → +10%
+        assert t["b"]["positions"][0]["direction"] == "long"
+
+    def test_가격조회_실패시_진입가로_평가한다(self, tmp_path, monkeypatch):
+        import json
+        import src.dashboard.app as dash
+        (tmp_path / "trackd_state.json").write_text(json.dumps(dict(
+            equity=0.98, positions={"SOL": dict(d=1, u=0.001, e=100.0, stop=90.0)})))
+        monkeypatch.setattr(dash, "_live_price", lambda s: None)
+        t = dash._tracks_live(logs_dir=tmp_path)
+        assert t["d"]["pct"] == pytest.approx(-2.0)

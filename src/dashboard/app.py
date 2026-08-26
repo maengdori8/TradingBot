@@ -708,6 +708,47 @@ def _live_price(symbol: str) -> float | None:
         return cached[0] if cached else None
 
 
+
+def _tracks_live(logs_dir: Path | None = None) -> dict:
+    """트랙별 실시간 시가평가 — 초단위 폴링용.
+
+    B/D는 보유 포지션을 실시간 가격으로 평가하고, A/C는 상태 자본(펀딩형이라
+    가격 틱 없음)을 그대로 반환한다. 표시값 = (시가평가자본 − 1) × 100 (%).
+    """
+    logs = logs_dir or (ROOT / "logs")
+    out: dict = {}
+    spec = {
+        "a": ("tracka_state.json", None),
+        "b": ("trackb_state.json", ("direction", "units", "entry")),
+        "c": ("trackc_state.json", None),
+        "d": ("trackd_state.json", ("d", "u", "e")),
+    }
+    for key, (fname, poskeys) in spec.items():
+        try:
+            st = json.loads((logs / fname).read_text())
+        except (OSError, ValueError):
+            continue
+        mtm = float(st.get("equity", 1.0))
+        details = []
+        if poskeys:
+            kd, ku, ke = poskeys
+            for sym, pp in st.get("positions", {}).items():
+                try:
+                    d_, u_, e_ = int(pp[kd]), float(pp[ku]), float(pp[ke])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                px = _live_price(f"{sym}/USDT:USDT")
+                if px is None:
+                    px = e_
+                upnl = u_ * (px - e_) * d_
+                mtm += upnl
+                details.append(dict(sym=sym, direction=("long" if d_ > 0 else "short"),
+                                    entry=e_, price=round(px, 6),
+                                    upnl_pct=round(upnl * 100, 4)))
+        out[key] = dict(pct=round((mtm - 1.0) * 100, 4), positions=details)
+    return out
+
+
 @app.route("/api/live")
 def api_live():
     """초단위 폴링용 — 잔고 + 보유 포지션 실시간 평가손익."""
@@ -745,6 +786,7 @@ def api_live():
         })
 
     return jsonify({
+        "tracks_live": _tracks_live(),
         "balance": round(balance, 2),
         "total_unrealized": round(total_upnl, 4),
         "equity": round(balance + total_upnl, 2),
