@@ -146,6 +146,22 @@
         .exp-value.green { color: var(--green); } .exp-value.gold { color: var(--gold); } .exp-value.blue { color: var(--blue); }
         .exp-unit { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
         .exp-sub { font-size: 0.72rem; color: var(--muted); word-break: break-all; }
+        .section-divider {
+            display: flex; align-items: center; gap: 12px;
+            margin: 1.4rem 0 0.9rem 0;
+        }
+        .section-divider .sd-label {
+            font-size: 0.72rem; font-weight: 700; letter-spacing: 1.5px;
+            color: var(--muted); text-transform: uppercase; white-space: nowrap;
+        }
+        .section-divider .sd-line { flex-grow: 1; height: 1px; background: #21262d; }
+        .schedule-strip {
+            display: flex; flex-wrap: wrap; gap: 8px 26px; align-items: center;
+            background: var(--bg-card); border: 1px solid #21262d;
+            border-radius: 12px; padding: 11px 18px; font-size: 0.8rem; color: var(--muted);
+        }
+        .schedule-strip .sch-item strong { color: #c9d1d9; font-weight: 600; }
+        .schedule-strip .sch-key { color: var(--blue); font-weight: 700; margin-right: 6px; }
         #equityChart { max-height: 300px; }
         .watch-item {
             background: #161b22;
@@ -233,132 +249,17 @@
         {% endfor %}
     </div>
 
-    <!-- Row 1: Key Stats -->
-    <div class="row g-3 mb-3">
-        <div class="col-6 col-md-3 col-lg-2">
-            <div class="card stat-card">
-                <div class="stat-value mono">{{ "%.2f"|format(balance) }}</div>
-                <div class="stat-label">잔고 (USDT)</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-lg-2">
-            <div class="card stat-card">
-                {% set pnl_val = balance - initial_balance %}
-                <div class="stat-value mono {{ 'positive' if pnl_val >= 0 else 'negative' }}">
-                    {{ "%+.2f"|format(pnl_val) }}
-                </div>
-                <div class="stat-label">총 손익 (USDT)</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-lg-2">
-            <div class="card stat-card">
-                {# 승률 색상: 고정 50%가 아닌 손익분기 승률(1/(1+RR)) 기준 — RR2.5면 28.6% #}
-                {% set breakeven = 1 / (1 + config.get('risk', {}).get('min_rr_ratio', 2.5)) %}
-                <div class="stat-value mono {{ 'positive' if perf.win_rate >= breakeven else 'negative' }}">
-                    {{ "%.1f"|format(perf.win_rate * 100) }}%
-                </div>
-                <div class="stat-label">승률 ({{ perf.total_trades }}건 · 분기 {{ "%.0f"|format(breakeven*100) }}%)</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-lg-2">
-            <div class="card stat-card">
-                <div class="stat-value mono {{ 'positive' if perf.profit_factor >= 1.5 else ('negative' if perf.profit_factor < 1.0 else '') }}">
-                    {{ "%.2f"|format(perf.profit_factor) }}
-                </div>
-                <div class="stat-label">Profit Factor</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-lg-2">
-            <div class="card stat-card">
-                <div class="stat-value mono">{{ "%.2f"|format(perf.mdd * 100) }}%</div>
-                <div class="stat-label">최대 낙폭 (MDD)</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-lg-2">
-            <div class="card stat-card">
-                <div class="stat-value mono {{ 'positive' if perf.sharpe >= 1.0 else '' }}">
-                    {{ "%.2f"|format(perf.sharpe) }}
-                </div>
-                <div class="stat-label">Sharpe Ratio</div>
-            </div>
-        </div>
+    <div class="schedule-strip mb-3">
+        <span class="sch-item"><span class="sch-key">매일</span><strong>09:15</strong> 터틀 · <strong>09:25</strong> 캐리 · <strong>09:40</strong> 연구 기록 (KST)</span>
+        <span class="sch-item"><span class="sch-key">{{ trader_study.verdicts[0] if trader_study.available else '9/24' }}</span>지속성 1차 판정 (T+30)</span>
+        <span class="sch-item"><span class="sch-key">{{ trader_study.verdicts[1] if trader_study.available else '10/24' }}</span>2차 판정 (T+60)</span>
+        <span class="sch-item" style="margin-left:auto;">페이퍼 트레이딩 — 실자금 아님</span>
     </div>
 
-    <!-- Row 2: Chart + Sidebar -->
-    <div class="row g-3 mb-3">
-        <!-- Equity Curve -->
-        <div class="col-lg-8">
-            <div class="card p-3">
-                <div class="section-title">에쿼티 커브</div>
-                <canvas id="equityChart"></canvas>
-            </div>
-        </div>
-
-        <!-- Sidebar: CB + Promote -->
-        <div class="col-lg-4">
-            <!-- Circuit Breaker -->
-            <div class="card p-3 mb-3">
-                <div class="section-title">서킷브레이커</div>
-                {% if cb_status.is_blocked %}
-                <div class="cb-blocked">
-                    <strong class="negative">BLOCKED</strong>
-                    <div class="mt-1" style="font-size: 0.85rem;">
-                        일일 PnL: <span class="mono negative">{{ "%.2f"|format(cb_status.daily_pnl) }}</span> USDT
-                        &middot; 연패: <span class="mono negative">{{ cb_status.consecutive_losses }}연패</span>
-                    </div>
-                </div>
-                {% else %}
-                <div class="cb-ok">
-                    <strong class="positive">ACTIVE</strong>
-                    <div class="mt-1" style="font-size: 0.85rem;">
-                        일일 PnL: <span class="mono">{{ "%+.2f"|format(cb_status.daily_pnl) }}</span> USDT
-                        &middot; 연패: <span class="mono">{{ cb_status.consecutive_losses }}회</span>
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- Promote Checker -->
-            <div class="card p-3">
-                <div class="section-title">
-                    실전 전환 기준
-                    <span class="float-end badge {{ 'badge-pass' if promote.eligible else 'badge-fail' }}">
-                        {{ promote.passed_count }}/{{ promote.total_count }}
-                    </span>
-                </div>
-                <div class="promote-progress mb-3">
-                    {% set pct = (promote.passed_count / promote.total_count * 100) if promote.total_count > 0 else 0 %}
-                    <div class="promote-fill" style="width: {{ pct }}%; background: {{ 'var(--green)' if promote.eligible else 'var(--gold)' if pct >= 50 else 'var(--red)' }};"></div>
-                </div>
-                <table class="table table-sm mb-0">
-                    <tbody>
-                    {% for name, c in promote.criteria.items() %}
-                    <tr>
-                        <td style="width: 25px;">{{ '&#10003;' if c.passed else '&#10007;' }}</td>
-                        <td>{{ name }}</td>
-                        <td class="text-end mono {{ 'positive' if c.passed else 'negative' }}">
-                            {% if c.format == 'd' %}
-                                {{ c.value | int }}
-                            {% else %}
-                                {{ ("{0:" + c.format + "}").format(c.value) }}{{ c.get('suffix', '') }}
-                            {% endif %}
-                        </td>
-                        <td class="text-end text-muted mono" style="font-size: 0.78rem;">
-                            {% if c.get('lower_better') %}&le;{% else %}&ge;{% endif %}
-                            {% if c.format == 'd' %}
-                                {{ c.threshold | int }}
-                            {% else %}
-                                {{ ("{0:" + c.format + "}").format(c.threshold) }}{{ c.get('suffix', '') }}
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+    <div class="section-divider">
+        <span class="sd-label">자동 실험 — 리서치 트랙 (일 1회)</span>
+        <div class="sd-line"></div>
     </div>
-
     <!-- Row 2.2: 투 트랙 페이퍼 검증 -->
     <div class="row g-3 mb-3">
         <div class="col-lg-8">
@@ -434,6 +335,162 @@
                 {% else %}
                 <div class="text-muted" style="font-size: 0.85rem;">코호트 데이터 없음 — trader-recorder 워크플로 실행 후 표시됩니다.</div>
                 {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="section-divider">
+        <span class="sd-label">ICT 봇 — 기존 트랙 (15분)</span>
+        <div class="sd-line"></div>
+    </div>
+    <!-- Row 1: Key Stats -->
+    <div class="row g-3 mb-3">
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono">{{ "%.2f"|format(balance) }}</div>
+                <div class="stat-label">잔고 (USDT)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                {% set pnl_val = balance - initial_balance %}
+                <div class="stat-value mono {{ 'positive' if pnl_val >= 0 else 'negative' }}">
+                    {{ "%+.2f"|format(pnl_val) }}
+                </div>
+                <div class="stat-label">총 손익 (USDT)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                {# 승률 색상: 고정 50%가 아닌 손익분기 승률(1/(1+RR)) 기준 — RR2.5면 28.6% #}
+                {% set breakeven = 1 / (1 + config.get('risk', {}).get('min_rr_ratio', 2.5)) %}
+                <div class="stat-value mono {{ 'positive' if perf.win_rate >= breakeven else 'negative' }}">
+                    {{ "%.1f"|format(perf.win_rate * 100) }}%
+                </div>
+                <div class="stat-label">승률 ({{ perf.total_trades }}건 · 분기 {{ "%.0f"|format(breakeven*100) }}%)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono {{ 'positive' if perf.profit_factor >= 1.5 else ('negative' if perf.profit_factor < 1.0 else '') }}">
+                    {{ "%.2f"|format(perf.profit_factor) }}
+                </div>
+                <div class="stat-label">Profit Factor</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono">{{ "%.2f"|format(perf.mdd * 100) }}%</div>
+                <div class="stat-label">최대 낙폭 (MDD)</div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3 col-lg-2">
+            <div class="card stat-card">
+                <div class="stat-value mono {{ 'positive' if perf.sharpe >= 1.0 else '' }}">
+                    {{ "%.2f"|format(perf.sharpe) }}
+                </div>
+                <div class="stat-label">Sharpe Ratio</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 3: Open Positions (실시간 갱신) -->
+    <div class="row g-3 mb-3">
+        <div class="col-12">
+            <div class="card p-3">
+                <div class="section-title">
+                    오픈 포지션 <span id="posCount" class="text-muted">({{ positions | length }})</span>
+                    <span class="text-muted float-end" style="font-weight:400; font-size:0.75rem;">매초 실시간</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                        <tr>
+                            <th>심볼</th><th>방향</th><th>진입가</th><th>현재가</th>
+                            <th>평가손익</th><th>수익률</th><th>수량</th>
+                            <th>손절가</th><th>목표가</th>
+                        </tr>
+                        </thead>
+                        <tbody id="livePositions">
+                        <tr><td colspan="9" class="text-center text-muted py-3">불러오는 중…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 2: Chart + Sidebar -->
+    <div class="row g-3 mb-3">
+        <!-- Equity Curve -->
+        <div class="col-lg-8">
+            <div class="card p-3">
+                <div class="section-title">에쿼티 커브</div>
+                <canvas id="equityChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Sidebar: CB + Promote -->
+        <div class="col-lg-4">
+            <!-- Circuit Breaker -->
+            <div class="card p-3 mb-3">
+                <div class="section-title">서킷브레이커</div>
+                {% if cb_status.is_blocked %}
+                <div class="cb-blocked">
+                    <strong class="negative">BLOCKED</strong>
+                    <div class="mt-1" style="font-size: 0.85rem;">
+                        일일 PnL: <span class="mono negative">{{ "%.2f"|format(cb_status.daily_pnl) }}</span> USDT
+                        &middot; 연패: <span class="mono negative">{{ cb_status.consecutive_losses }}연패</span>
+                    </div>
+                </div>
+                {% else %}
+                <div class="cb-ok">
+                    <strong class="positive">ACTIVE</strong>
+                    <div class="mt-1" style="font-size: 0.85rem;">
+                        일일 PnL: <span class="mono">{{ "%+.2f"|format(cb_status.daily_pnl) }}</span> USDT
+                        &middot; 연패: <span class="mono">{{ cb_status.consecutive_losses }}회</span>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Promote Checker -->
+            <div class="card p-3">
+                <div class="section-title">
+                    실전 전환 기준
+                    <span class="float-end badge {{ 'badge-pass' if promote.eligible else 'badge-fail' }}">
+                        {{ promote.passed_count }}/{{ promote.total_count }}
+                    </span>
+                </div>
+                <div class="promote-progress mb-3">
+                    {% set pct = (promote.passed_count / promote.total_count * 100) if promote.total_count > 0 else 0 %}
+                    <div class="promote-fill" style="width: {{ pct }}%; background: {{ 'var(--green)' if promote.eligible else 'var(--gold)' if pct >= 50 else 'var(--red)' }};"></div>
+                </div>
+                <table class="table table-sm mb-0">
+                    <tbody>
+                    {% for name, c in promote.criteria.items() %}
+                    <tr>
+                        <td style="width: 25px;">{{ '&#10003;' if c.passed else '&#10007;' }}</td>
+                        <td>{{ name }}</td>
+                        <td class="text-end mono {{ 'positive' if c.passed else 'negative' }}">
+                            {% if c.format == 'd' %}
+                                {{ c.value | int }}
+                            {% else %}
+                                {{ ("{0:" + c.format + "}").format(c.value) }}{{ c.get('suffix', '') }}
+                            {% endif %}
+                        </td>
+                        <td class="text-end text-muted mono" style="font-size: 0.78rem;">
+                            {% if c.get('lower_better') %}&le;{% else %}&ge;{% endif %}
+                            {% if c.format == 'd' %}
+                                {{ c.threshold | int }}
+                            {% else %}
+                                {{ ("{0:" + c.format + "}").format(c.threshold) }}{{ c.get('suffix', '') }}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -514,32 +571,6 @@
                     봇이 스캔하면 여기에 표시됩니다.
                 </div>
                 {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- Row 3: Open Positions (실시간 갱신) -->
-    <div class="row g-3 mb-3">
-        <div class="col-12">
-            <div class="card p-3">
-                <div class="section-title">
-                    오픈 포지션 <span id="posCount" class="text-muted">({{ positions | length }})</span>
-                    <span class="text-muted float-end" style="font-weight:400; font-size:0.75rem;">매초 실시간</span>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-sm mb-0">
-                        <thead>
-                        <tr>
-                            <th>심볼</th><th>방향</th><th>진입가</th><th>현재가</th>
-                            <th>평가손익</th><th>수익률</th><th>수량</th>
-                            <th>손절가</th><th>목표가</th>
-                        </tr>
-                        </thead>
-                        <tbody id="livePositions">
-                        <tr><td colspan="9" class="text-center text-muted py-3">불러오는 중…</td></tr>
-                        </tbody>
-                    </table>
-                </div>
             </div>
         </div>
     </div>
