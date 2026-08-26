@@ -176,3 +176,62 @@ class TestTraderRecorder:
         from carrybot.live.trader_recorder import build_cohort
         c = build_cohort([dict(ethAddress="0xZ")] + self.ROWS)
         assert list(c.address) == ["0xA"]
+
+
+class TestSwingStep:
+    """Track D 스윙 엔진 — 핵심 동작."""
+
+    def _bar(self, **kw):
+        from carrybot.aggressive.swing import Bar1h
+        base = dict(ts=1, open=100.0, high=100.0, low=100.0, close=100.0,
+                    ehi=110.0, elo=90.0, xhi=105.0, xlo=95.0, funding=0.0)
+        base.update(kw)
+        return Bar1h(**base)
+
+    def _st(self, atr=1.0):
+        from carrybot.aggressive.swing import SwingState
+        st = SwingState()
+        st.atr["BTC"] = atr
+        return st
+
+    def test_돌파_스탑주문_체결(self):
+        from carrybot.aggressive.swing import step_bar
+        st = self._st()
+        fills = step_bar(st, {"BTC": self._bar(high=112, low=108, open=108, close=111)}, "d1")
+        assert st.positions["BTC"].e == 110.0      # max(open, 채널)
+
+    def test_같은봉_스탑은_비관_처리(self):
+        from carrybot.aggressive.swing import step_bar
+        st = self._st(atr=1.0)
+        fills = step_bar(st, {"BTC": self._bar(high=112, low=100, open=108, close=111)}, "d1")
+        assert "BTC" not in st.positions
+        assert fills[0]["action"] == "same_bar_stop"
+
+    def test_갭_청산은_시가로_악화(self):
+        from carrybot.aggressive.swing import step_bar, SwingPos
+        st = self._st()
+        st.positions["BTC"] = SwingPos(1, 0.01, 100.0, 98.0)
+        fills = step_bar(st, {"BTC": self._bar(open=95, high=96, low=94, close=95,
+                                               ehi=200, elo=1, xlo=97)}, "d1")
+        assert fills[0]["price"] == 95.0            # 스탑 98 아닌 시가 95
+
+    def test_일손실_정지_래치(self):
+        from carrybot.aggressive.swing import step_bar, SwingPos
+        st = self._st()
+        st.equity = 1.0
+        st.positions["BTC"] = SwingPos(1, 0.02, 100.0, 80.0)   # 큰 포지션
+        # 1봉: 같은 날 기준가 설정 (종가 100)
+        step_bar(st, {"BTC": self._bar(open=100, high=100.5, low=99.5, close=100,
+                                       ehi=200, elo=1, xlo=1)}, "d1")
+        # 2봉: 같은 날 급락 → 일 MTM -6% → 정지·전량청산
+        step_bar(st, {"BTC": self._bar(open=97, high=97, low=96.8, close=97,
+                                       ehi=200, elo=1, xlo=1)}, "d1")
+        assert st.halted and not st.positions
+
+    def test_상태_직렬화_왕복(self):
+        from carrybot.aggressive.swing import SwingState, SwingPos
+        import json
+        st = self._st()
+        st.positions["BTC"] = SwingPos(-1, 0.005, 100.0, 106.0)
+        st2 = SwingState.from_dict(json.loads(json.dumps(st.to_dict(), default=float)))
+        assert st2.positions["BTC"].stop == 106.0

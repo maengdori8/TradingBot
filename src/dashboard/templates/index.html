@@ -887,8 +887,8 @@
     (function () {
         const el = document.getElementById('tracksChart');
         if (!el) return;
-        const a = tracksData.a, b = tracksData.b, cc = tracksData.c || {labels: [], pct: []};
-        const allDays = [...new Set([...(a.labels || []), ...(b.labels || []), ...(cc.labels || [])])].sort();
+        const a = tracksData.a, b = tracksData.b, cc = tracksData.c || {labels: [], pct: []}, dd = tracksData.d || {labels: [], pct: []};
+        const allDays = [...new Set([...(a.labels || []), ...(b.labels || []), ...(cc.labels || []), ...(dd.labels || [])])].sort();
         if (allDays.length < 2) {
             el.parentElement.innerHTML +=
                 '<div class="text-center text-muted py-4">매일 UTC 00:15/00:25 자동 기록 — 이틀째부터 그래프가 그려집니다.<br>' +
@@ -909,6 +909,8 @@
                     { label: 'Track B 터틀', data: align(b), borderColor: '#f0b429',
                       borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
                     { label: 'Track C 차익', data: align(cc), borderColor: '#4da6ff',
+                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
+                    { label: 'Track D 스윙', data: align(dd), borderColor: '#ff4d4d',
                       borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
                 ]
             },

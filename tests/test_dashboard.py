@@ -114,7 +114,7 @@ class TestLoadTrackCurves:
     def test_파일이_없으면_빈_시리즈를_반환한다(self, tmp_path):
         from src.dashboard.app import _load_track_curves
         t = _load_track_curves(logs_dir=tmp_path)
-        assert set(t.keys()) == {"a", "b", "c"}
+        assert set(t.keys()) == {"a", "b", "c", "d"}
         for tr in t.values():
             assert tr["labels"] == [] and tr["pct"] == []
             assert tr["equity"] is None

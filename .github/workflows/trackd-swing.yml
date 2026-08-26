@@ -1,0 +1,37 @@
+name: trackd-swing
+
+# Track D (1h 스윙 돌파 BRK96, 페이퍼 전용) — 4시간마다 닫힌 1h 봉 재생.
+# 경고: 격자 유일 생존(선택 할인), MDD 49% 프로파일. 승급 금지.
+on:
+  schedule:
+    - cron: "10 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trackd-swing
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 의존성 설치
+        run: pip install -q ccxt pandas numpy
+      - name: 새 봉 재생
+        run: PYTHONPATH=. python -m carrybot.aggressive.swing_runner
+      - name: 상태 커밋
+        run: |
+          git config user.name  "trackd-swing"
+          git config user.email "noreply@github.com"
+          git add -f logs/trackd_state.json logs/trackd_history.csv 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "[trackd] $(date -u +%Y-%m-%dT%H:%MZ) 스윙 처리"
+          git pull --rebase --autostash origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}
