@@ -1,0 +1,37 @@
+name: trackc-xvenue
+
+# Track C (교차 거래소 펀딩 차익, 페이퍼 전용) — 매일 UTC 00:30 실현 펀딩 차이 기록.
+# 사양: docs/XVENUE_ARBITRAGE_2026-08.md (사전 등록). 판정: 전향 90일.
+on:
+  schedule:
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trackc-xvenue
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 의존성 설치
+        run: pip install -q pandas
+      - name: 일일 기록
+        run: PYTHONPATH=. python -m carrybot.live.xvenue_paper
+      - name: 상태 커밋
+        run: |
+          git config user.name  "trackc-xvenue"
+          git config user.email "noreply@github.com"
+          git add -f logs/trackc_state.json logs/trackc_history.csv logs/trackc_universe.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "[trackc] $(date -u +%Y-%m-%d) 일일 기록"
+          git pull --rebase --autostash origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}

@@ -1,0 +1,64 @@
+{
+  "updated_at": "2026-06-05T15:43:27.648837+00:00",
+  "scanned_count": 40,
+  "qualified_count": 0,
+  "watchlist": [
+    {
+      "symbol": "ZEC/USDT:USDT",
+      "direction": "short",
+      "score": 73.5,
+      "stage": 2,
+      "qualified": false,
+      "price": 331.58,
+      "reason": "4H bearish(BOS) · 1H FVG · KZ✗ · OTE✓ · 거래량부족",
+      "checks": {
+        "trend": true,
+        "zone": true,
+        "kill_zone": false,
+        "ote": true,
+        "volume": false,
+        "rr": false
+      },
+      "signal": null,
+      "tradingview": "BYBIT:ZECUSDT.P"
+    },
+    {
+      "symbol": "INJ/USDT:USDT",
+      "direction": "short",
+      "score": 50.0,
+      "stage": 2,
+      "qualified": false,
+      "price": 4.998,
+      "reason": "4H bearish(BOS) · 1H FVG · KZ✗ · OTE대기 · 거래량부족",
+      "checks": {
+        "trend": true,
+        "zone": true,
+        "kill_zone": false,
+        "ote": false,
+        "volume": false,
+        "rr": false
+      },
+      "signal": null,
+      "tradingview": "BYBIT:INJUSDT.P"
+    },
+    {
+      "symbol": "OPN/USDT:USDT",
+      "direction": "long",
+      "score": 42.0,
+      "stage": 2,
+      "qualified": false,
+      "price": 0.2064,
+      "reason": "4H bullish(CHoCH) · 1H OB · KZ✗ · OTE대기 · 거래량✓",
+      "checks": {
+        "trend": true,
+        "zone": true,
+        "kill_zone": false,
+        "ote": false,
+        "volume": true,
+        "rr": false
+      },
+      "signal": null,
+      "tradingview": "BYBIT:OPNUSDT.P"
+    }
+  ]
+}

@@ -299,6 +299,7 @@ def _load_track_curves(logs_dir: Path | None = None) -> dict:
     spec = {
         "a": ("tracka_history.csv", "Track A — 캐리 (검증 트랙)", "events"),
         "b": ("trackb_history.csv", "Track B — 터틀 (페이퍼 전용)", "fills"),
+        "c": ("trackc_history.csv", "Track C — 교차거래소 차익 (ROE는 ÷2)", "day_diff"),
     }
     out: dict = {}
     for key, (fname, label, note_col) in spec.items():
