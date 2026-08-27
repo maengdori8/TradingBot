@@ -333,6 +333,262 @@ def _load_track_curves(logs_dir: Path | None = None) -> dict:
 
 
 # ------------------------------------------------------------------
+# Track E — 단타 팜 (페이퍼 전용 · 사후선택 시연, 2026-08-27 사전등록)
+# ------------------------------------------------------------------
+# 표시 전용 로더다. Track E 상태·이력은 승급/실거래 게이트(_promote_status,
+# src/risk/promote_checker)나 /api/live 경로에 절대 입력하지 않는다 (방화벽).
+
+# 셀 구성 (명세 동결 — 고정 순서·고정 라벨, 성과순 정렬 금지)
+TRACKE_CELLS: tuple[tuple[str, str, str, str], ...] = (
+    ("E01", "BRK24", "A", "역사적 탈락"),
+    ("E02", "BRK24", "B", "역사적 탈락"),
+    ("E03", "BRK48", "A", "역사적 탈락"),
+    ("E04", "BRK48", "B", "역사적 탈락"),
+    ("E05", "BRK96", "A", "격자 1/8 선택 · Track D 중복 · 선택할인"),
+    ("E06", "BRK96", "B", "격자 1/8 선택 · Track D 중복 · 선택할인"),
+    ("E07", "MR", "A", "역사적 탈락"),
+    ("E08", "MR", "B", "역사적 탈락"),
+    ("E09", "RSI-DIV 4h", "A", "미검증 가설 U1"),
+    ("E10", "RSI-DIV 4h", "B", "미검증 가설 U1"),
+)
+TRACKE_CELL_IDS: tuple[str, ...] = tuple(c[0] for c in TRACKE_CELLS)
+TRACKE_BASKET_LABELS: dict[str, str] = {
+    "A": "BTC·ETH·SOL", "B": "OOD·미검증 코인셋"}
+TRACKE_VERDICT_DATES: tuple[str, ...] = (
+    "2026-09-26", "2026-11-25", "2027-02-23")
+TRACKE_CELL_CAPITAL: float = 10_000.0        # 셀당 가상 자본 (USD)
+
+
+def _tracke_metric(cell_state: dict, names: tuple[str, ...]) -> float | None:
+    """셀 상태 dict에서 후보 키 중 첫 유효 수치를 읽는다 (없으면 None)."""
+    for n in names:
+        v = cell_state.get(n)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+            return float(v)
+    return None
+
+
+def _tracke_ts_sort_key(raw: str) -> tuple:
+    """원시 시각 키 정렬 키 — 숫자(epoch)는 수치로, 그 외는 문자열로 비교."""
+    v = (raw or "").strip()
+    try:
+        return (0, float(v), v)
+    except ValueError:
+        return (1, 0.0, v)
+
+
+def _tracke_ts_label(raw: str) -> str:
+    """원시 시각 키를 표시용 라벨로 변환 (표시 직전에만 호출).
+
+    epoch ms 는 연도 포함 "%y-%m-%d %H:%M" 로 포맷해 연도 경계에서도
+    라벨이 충돌하지 않게 한다. 그 외 형식은 원문 그대로 반환한다.
+    """
+    raw = (raw or "").strip()
+    try:
+        num = float(raw)
+        if num > 1e11:
+            return datetime.fromtimestamp(
+                num / 1000.0, tz=timezone.utc).strftime("%y-%m-%d %H:%M")
+    except ValueError:
+        pass
+    return raw
+
+
+def _tracke_history_series(path: Path) -> dict[str, tuple[list[str], list[float]]]:
+    """tracke_history.csv 를 셀별 (원시 시각 키, 자본) 시리즈로 읽는다.
+
+    두 형식을 허용한다 (엔진 스키마 관용, 손상 행은 개별 스킵):
+    - wide: 시각 열(ts|day|bar_close|time) + 셀 열 E01~E10 (셀별 자본)
+    - long: 시각 열 + cell + equity
+
+    시각 키는 포맷하지 않은 원시 문자열(epoch ms 그대로)로 반환한다 —
+    집계·정렬은 원시 키로 하고, 표시 라벨은 _tracke_ts_label 로
+    표시 직전에만 만든다 (연도 경계 정렬·라벨 충돌 방지).
+
+    Args:
+        path: 이력 CSV 경로.
+
+    Returns:
+        {셀 id: (원시 시각 키 리스트, 자본 리스트)} — 파일 없음/손상 시 빈 dict.
+    """
+    import csv as _csv
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = _csv.DictReader(f)
+            fields = [fn for fn in (reader.fieldnames or []) if fn]
+            rows = [r for r in reader if r]
+    except (OSError, _csv.Error):
+        return {}
+    if not rows or not fields:
+        return {}
+
+    lower = {fn.lower().strip(): fn for fn in fields}
+    tkey = next((lower[k] for k in ("ts", "day", "bar_close", "time", "date")
+                 if k in lower), None)
+    if tkey is None:
+        return {}
+
+    rows.sort(key=lambda r: _tracke_ts_sort_key(r.get(tkey) or ""))
+
+    out: dict[str, tuple[list[str], list[float]]] = {}
+    cell_cols = {fn.upper().strip(): fn for fn in fields
+                 if fn.upper().strip() in TRACKE_CELL_IDS}
+    if cell_cols:                               # wide 형식
+        for r in rows:
+            ts_key = (r.get(tkey) or "").strip()
+            for cid, col in cell_cols.items():
+                try:
+                    eq = float(r[col])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                keys, eqs = out.setdefault(cid, ([], []))
+                keys.append(ts_key)
+                eqs.append(eq)
+    elif "cell" in lower and "equity" in lower:  # long 형식
+        ckey, ekey = lower["cell"], lower["equity"]
+        for r in rows:
+            cid = (r.get(ckey) or "").upper().strip()
+            if cid not in TRACKE_CELL_IDS:
+                continue
+            try:
+                eq = float(r[ekey])
+            except (TypeError, ValueError):
+                continue
+            keys, eqs = out.setdefault(cid, ([], []))
+            keys.append((r.get(tkey) or "").strip())
+            eqs.append(eq)
+    return out
+
+
+def _load_tracke(logs_dir: Path | None = None) -> dict:
+    """Track E 단타 팜 표시 데이터를 조립한다 (표시 전용 — 게이트 입력 금지).
+
+    E01~E10 고정 순서를 항상 유지하고(성과순 정렬 금지), 셀별 고정 라벨·
+    동일가중 팜 곡선·중앙값/IQR·지표를 만든다. 현재 최대 셀에는 상시
+    "사후 최대값 — 선택 금지" 태그용 is_max 플래그만 단다 (강조 없음).
+    데이터가 하나도 없으면 available=False ("T0 대기" 표시, 크래시 금지).
+
+    Args:
+        logs_dir: 이력 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    Returns:
+        available/t0/cells(고정 순서)/farm(labels·mean·median·q1·q3)/
+        max_cell/verdicts 를 담은 dict (JSON 직렬화 가능).
+    """
+    logs = logs_dir or (ROOT / "logs")
+    series = _tracke_history_series(logs / "tracke_history.csv")
+
+    try:
+        st = json.loads((logs / "tracke_state.json").read_text(encoding="utf-8"))
+        if not isinstance(st, dict):
+            st = {}
+    except (OSError, ValueError):
+        st = {}
+    raw_cells = st.get("cells")
+    if not isinstance(raw_cells, dict):
+        raw_cells = {k: v for k, v in st.items()
+                     if isinstance(v, dict) and k.upper() in TRACKE_CELL_IDS}
+    cells_state = {k.upper(): v for k, v in raw_cells.items()
+                   if isinstance(v, dict)}
+
+    t0 = st.get("t0") or st.get("t0_ts")
+    if t0 is not None:
+        try:                                    # 엔진은 epoch ms 로 기록
+            num = float(t0)
+            if num > 1e11:
+                t0 = datetime.fromtimestamp(
+                    num / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        except (TypeError, ValueError):
+            pass
+    if t0 is None:
+        for keys, _ in series.values():
+            if keys:
+                t0 = _tracke_ts_label(keys[0])
+                break
+
+    cells: list[dict] = []
+    for cid, strat, basket, label in TRACKE_CELLS:
+        s = cells_state.get(cid, {})
+        _, eqs = series.get(cid, ([], []))
+        pct: float | None = None
+        mdd: float | None = None
+        if eqs and eqs[0] > 0:
+            base = eqs[0]
+            pct = round((eqs[-1] / base - 1.0) * 100.0, 4)
+            peak, worst = float("-inf"), 0.0
+            for eq in eqs:
+                peak = max(peak, eq)
+                if peak > 0:
+                    worst = max(worst, (peak - eq) / peak)
+            mdd = round(worst * 100.0, 4)
+        else:
+            eq = _tracke_metric(s, ("equity", "eq"))
+            if eq is not None:
+                # 1.0 기준 정규화 자본과 USD($10,000 기준) 둘 다 허용
+                pct = (round((eq - 1.0) * 100.0, 4) if eq < 100.0
+                       else round((eq / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4))
+        halts = _tracke_metric(s, ("halts", "n_halts", "halt_count", "halt_days"))
+        cells.append(dict(
+            id=cid, strategy=strat, basket=basket,
+            basket_label=TRACKE_BASKET_LABELS[basket], label=label,
+            pct=pct, mdd=mdd,
+            cost=_tracke_metric(s, ("cost_cum", "costs", "cost", "fees")),
+            funding=_tracke_metric(s, ("funding_cum", "funding", "fund")),
+            turnover=_tracke_metric(s, ("turnover", "turnover_cum")),
+            gross=_tracke_metric(s, ("gross", "gross_exposure")),
+            halts=int(halts) if halts is not None else None,
+            is_max=False,
+        ))
+
+    max_cell = None
+    with_pct = [c for c in cells if c["pct"] is not None]
+    if with_pct:
+        best = max(with_pct, key=lambda c: c["pct"])   # 동률 → 고정 순서 앞 셀
+        best["is_max"] = True
+        max_cell = best["id"]
+
+    # 동일가중 팜 곡선 + 셀 간 중앙값/IQR (누적 %)
+    # 집계·정렬은 원시 시각 키(epoch ms 등)로 하고 표시 라벨은 마지막에만
+    # 포맷한다 — 연도 경계(2026-12→2027-01) 순서 붕괴·라벨 충돌 방지.
+    pct_series: dict[str, dict[str, float]] = {}
+    all_keys: list[str] = []
+    seen: set[str] = set()
+    for cid in TRACKE_CELL_IDS:                        # 고정 순서 순회
+        keys, eqs = series.get(cid, ([], []))
+        if not eqs or eqs[0] <= 0:
+            continue
+        base = eqs[0]
+        m = pct_series.setdefault(cid, {})
+        for k, eq in zip(keys, eqs):
+            m[k] = (eq / base - 1.0) * 100.0
+            if k not in seen:
+                seen.add(k)
+                all_keys.append(k)
+    all_keys.sort(key=_tracke_ts_sort_key)
+    farm = {"labels": [], "mean": [], "median": [], "q1": [], "q3": []}
+    for k in all_keys:
+        vals = [m[k] for m in pct_series.values() if k in m]
+        if not vals:
+            continue
+        arr = np.asarray(vals, dtype=float)
+        farm["labels"].append(_tracke_ts_label(k))
+        farm["mean"].append(round(float(arr.mean()), 4))
+        farm["median"].append(round(float(np.median(arr)), 4))
+        farm["q1"].append(round(float(np.percentile(arr, 25)), 4))
+        farm["q3"].append(round(float(np.percentile(arr, 75)), 4))
+
+    return {
+        "available": bool(series) or bool(cells_state),
+        "t0": t0,
+        "cells": cells,
+        "farm": farm,
+        "max_cell": max_cell,
+        "verdicts": list(TRACKE_VERDICT_DATES),
+    }
+
+
+# ------------------------------------------------------------------
 # 트레이더 실력 지속성 연구 (Hyperliquid 코호트)
 # ------------------------------------------------------------------
 
@@ -776,6 +1032,7 @@ def index():
     tracks = _load_track_curves()
     trader_study = _load_trader_study()
     h2_study = _load_h2_study()
+    tracke = _load_tracke()
     summary = _build_summary(balance, positions, trades, tracks, trader_study)
 
     return render_template(
@@ -796,6 +1053,8 @@ def index():
         trader_study=trader_study,
         trader_study_json=json.dumps(trader_study),
         h2=h2_study,
+        tracke=tracke,
+        tracke_json=json.dumps(tracke),
         summary=summary,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
@@ -829,6 +1088,7 @@ def api_status():
         "tracks": tracks,
         "trader_study": trader_study,
         "h2_study": _load_h2_study(),
+        "tracke": _load_tracke(),     # 표시 전용 — 게이트/승급 입력 아님
         "balance": balance,
         "initial_balance": initial_balance,
         "performance": perf,

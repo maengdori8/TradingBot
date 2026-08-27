@@ -334,3 +334,273 @@ class TestTracksLive:
         monkeypatch.setattr(dash, "_live_price", lambda s: None)
         t = dash._tracks_live(logs_dir=tmp_path)
         assert t["d"]["pct"] == pytest.approx(-2.0)
+
+
+# ------------------------------------------------------------------
+# Track E — 단타 팜 (표시 전용 로더 + 구조적 방화벽)
+# ------------------------------------------------------------------
+
+class TestLoadTracke:
+    """_load_tracke — Track E 표시 데이터 로더 (고정 순서·고정 라벨)."""
+
+    FIXED_ORDER = [f"E{i:02d}" for i in range(1, 11)]
+
+    def _hist_wide(self, tmp_path, rows):
+        cols = ["ts"] + self.FIXED_ORDER
+        lines = [",".join(cols)]
+        for r in rows:
+            lines.append(",".join(str(r[c]) for c in cols))
+        (tmp_path / "tracke_history.csv").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_파일이_없으면_T0_대기_구조(self, tmp_path):
+        from src.dashboard.app import _load_tracke
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["available"] is False
+        assert t["max_cell"] is None
+        assert [c["id"] for c in t["cells"]] == self.FIXED_ORDER
+        assert all(c["pct"] is None for c in t["cells"])
+        assert t["farm"]["labels"] == []
+        assert t["verdicts"] == ["2026-09-26", "2026-11-25", "2027-02-23"]
+
+    def test_고정_라벨이_명세대로_붙는다(self, tmp_path):
+        from src.dashboard.app import _load_tracke
+        t = _load_tracke(logs_dir=tmp_path)
+        by_id = {c["id"]: c for c in t["cells"]}
+        assert by_id["E01"]["label"] == "역사적 탈락"
+        assert "선택할인" in by_id["E05"]["label"]
+        assert "Track D 중복" in by_id["E06"]["label"]
+        assert by_id["E09"]["label"] == "미검증 가설 U1"
+        assert by_id["E02"]["basket_label"] == "OOD·미검증 코인셋"
+
+    def test_이력을_수익률과_팜_통계로_변환한다(self, tmp_path):
+        from src.dashboard.app import _load_tracke
+        base = {c: 10000.0 for c in self.FIXED_ORDER}
+        row2 = dict(base)
+        row2.update(E01=10100.0, E02=9900.0)          # +1% / -1%, 나머지 0%
+        self._hist_wide(tmp_path, [dict(ts="2026-09-01T00:00:00Z", **base),
+                                   dict(ts="2026-09-01T01:00:00Z", **row2)])
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["available"] is True
+        by_id = {c["id"]: c for c in t["cells"]}
+        assert by_id["E01"]["pct"] == pytest.approx(1.0)
+        assert by_id["E02"]["pct"] == pytest.approx(-1.0)
+        assert by_id["E02"]["mdd"] == pytest.approx(1.0)
+        assert len(t["farm"]["labels"]) == 2
+        assert t["farm"]["mean"][-1] == pytest.approx(0.0)      # 동일가중 (+1-1)/10
+        assert t["farm"]["median"][-1] == pytest.approx(0.0)
+        assert t["farm"]["q1"][-1] <= t["farm"]["median"][-1] <= t["farm"]["q3"][-1]
+
+    def test_고정_순서는_성과와_무관하고_최대셀은_태그만_단다(self, tmp_path):
+        from src.dashboard.app import _load_tracke
+        base = {c: 10000.0 for c in self.FIXED_ORDER}
+        row2 = dict(base)
+        row2.update(E07=11000.0, E01=9000.0)          # E07 이 최고 성과
+        self._hist_wide(tmp_path, [dict(ts="2026-09-01T00:00:00Z", **base),
+                                   dict(ts="2026-09-01T01:00:00Z", **row2)])
+        t = _load_tracke(logs_dir=tmp_path)
+        assert [c["id"] for c in t["cells"]] == self.FIXED_ORDER   # 정렬 금지
+        assert t["max_cell"] == "E07"
+        flags = [c["is_max"] for c in t["cells"]]
+        assert flags.count(True) == 1
+        assert t["cells"][6]["is_max"] is True
+
+    def test_상태_지표를_셀별로_읽는다(self, tmp_path):
+        # 픽스처를 합성 키가 아니라 엔진 CellState.to_dict() 실스키마로 만들어
+        # 스키마 표류(키 개명 등)를 자동 검출한다 (carrybot 은 import 만, 수정 금지).
+        from carrybot.aggressive.scalp_farm import CellState, FarmPos
+        from src.dashboard.app import _load_tracke
+        cell = CellState(equity=10120.0, halts=2, cost=34.5, fund=-2.1,
+                         turnover=51000.0)
+        cell.positions = {
+            "BTC": FarmPos(d=1, u=0.2, e=50000.0, stop=48000.0, kind="BRK"),
+            "SOL": FarmPos(d=-1, u=50.0, e=150.0, stop=160.0, kind="MR"),
+        }
+        px = {"BTC": 51000.0}                  # SOL 가격 이력 없음 → 진입가 마크
+        d = cell.to_dict(px)
+        # 엔진 직렬화 계약: gross = sum(|u|×마지막 유효 종가)/equity (봉 종가 기준)
+        exp_gross = (0.2 * 51000.0 + 50.0 * 150.0) / 10120.0
+        assert d["gross"] == pytest.approx(exp_gross)
+        (tmp_path / "tracke_state.json").write_text(json.dumps({
+            "t0": "2026-08-28T00:00:00Z",
+            "cells": {"E01": d},
+        }), encoding="utf-8")
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["available"] is True and t["t0"] == "2026-08-28T00:00:00Z"
+        c = t["cells"][0]
+        assert c["pct"] == pytest.approx(1.2)
+        assert c["cost"] == pytest.approx(34.5)
+        assert c["funding"] == pytest.approx(-2.1)
+        assert c["turnover"] == pytest.approx(51000.0)
+        assert c["gross"] == pytest.approx(exp_gross)
+        assert c["halts"] == 2
+
+    def test_포지션_없는_셀의_gross_는_0으로_표시된다(self, tmp_path):
+        # 엔진 계약: 포지션 없으면 gross=0.0 — 대시보드는 '-'가 아니라 0을 표시
+        from carrybot.aggressive.scalp_farm import CellState
+        from src.dashboard.app import _load_tracke
+        d = CellState(equity=10000.0).to_dict()
+        assert d["gross"] == 0.0
+        (tmp_path / "tracke_state.json").write_text(json.dumps(
+            {"cells": {"E01": d}}), encoding="utf-8")
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["cells"][0]["gross"] == 0.0          # None('-') 아님
+
+    def test_손상된_파일은_크래시_없이_대기_구조(self, tmp_path):
+        from src.dashboard.app import _load_tracke
+        (tmp_path / "tracke_history.csv").write_text(
+            "ts,E01\n2026-09-01,깨진값\n", encoding="utf-8")
+        (tmp_path / "tracke_state.json").write_text("{{{{", encoding="utf-8")
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["available"] is False
+        assert [c["id"] for c in t["cells"]] == self.FIXED_ORDER
+
+    def test_long_형식_이력도_읽는다(self, tmp_path):
+        from src.dashboard.app import _load_tracke
+        (tmp_path / "tracke_history.csv").write_text(
+            "ts,cell,equity\n"
+            "2026-09-01T00:00:00Z,E03,10000\n"
+            "2026-09-01T01:00:00Z,E03,10050\n", encoding="utf-8")
+        t = _load_tracke(logs_dir=tmp_path)
+        by_id = {c["id"]: c for c in t["cells"]}
+        assert by_id["E03"]["pct"] == pytest.approx(0.5)
+
+    def test_엔진_실스키마_이력과_상태를_읽는다(self, tmp_path):
+        # scalp_farm_runner 실제 스키마: HIST = day,ts(epoch ms),equity(총합),
+        # e01..e10(소문자, USD),n_pos,bars,fills / STATE = t0(epoch ms),
+        # cells.E01 = CellState.to_dict() (엔진에서 직접 생성 — 표류 자동 검출)
+        from carrybot.aggressive.scalp_farm import CellState
+        from src.dashboard.app import _load_tracke
+        cells_lower = [c.lower() for c in self.FIXED_ORDER]
+        head = "day,ts,equity," + ",".join(cells_lower) + ",n_pos,bars,fills"
+        r1 = "2026-09-08,1788829200000,100000," + ",".join(["10000"] * 10) + ",0,1,0"
+        vals = ["10250" if c == "e05" else "10000" for c in cells_lower]
+        r2 = "2026-09-08,1788832800000,100250," + ",".join(vals) + ",1,1,2"
+        (tmp_path / "tracke_history.csv").write_text(
+            "\n".join([head, r1, r2]) + "\n", encoding="utf-8")
+        e05 = CellState(equity=10250.0, halts=1, cost=12.5, fund=3.3,
+                        turnover=41000.0).to_dict()
+        (tmp_path / "tracke_state.json").write_text(json.dumps({
+            "t0": 1788825600000, "last_ts": 1788832800000,
+            "basket_b": ["XRP", "DOGE", "1000PEPE"],
+            "cells": {"E05": e05},
+        }), encoding="utf-8")
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["available"] is True
+        assert t["t0"] == "2026-09-08 00:00 UTC"          # epoch ms -> 사람용
+        by_id = {c["id"]: c for c in t["cells"]}
+        assert by_id["E05"]["pct"] == pytest.approx(2.5)
+        assert by_id["E05"]["funding"] == pytest.approx(3.3)   # 엔진 키 "fund"
+        assert by_id["E05"]["cost"] == pytest.approx(12.5)
+        assert by_id["E05"]["halts"] == 1
+        assert by_id["E05"]["gross"] == 0.0                    # 포지션 없음 → 0.0
+        assert t["max_cell"] == "E05"
+        # 라벨은 epoch ms -> 연도 포함 표시 형식 (표시 직전 포맷)
+        assert t["farm"]["labels"][0] == "26-09-08 01:00"
+
+    def test_연도_경계에서도_팜_라벨_순서가_보존된다(self, tmp_path):
+        # 집계 키가 원시 epoch ts 라서 2026-12-31 → 2027-01-01 경계에서도
+        # 시간순이 유지된다 (연도 없는 라벨 문자열 정렬이면 01-01 이 앞에 옴).
+        from datetime import datetime, timezone
+        from src.dashboard.app import _load_tracke
+
+        def ms(*a):
+            return int(datetime(*a, tzinfo=timezone.utc).timestamp() * 1000)
+
+        base = {c: 10000.0 for c in self.FIXED_ORDER}
+        row2 = dict(base); row2["E01"] = 10100.0
+        row3 = dict(base); row3["E01"] = 10200.0
+        self._hist_wide(tmp_path, [
+            dict(ts=ms(2026, 12, 31, 23), **base),
+            dict(ts=ms(2027, 1, 1, 0), **row2),
+            dict(ts=ms(2027, 1, 1, 1), **row3),
+        ])
+        t = _load_tracke(logs_dir=tmp_path)
+        assert t["farm"]["labels"] == [
+            "26-12-31 23:00", "27-01-01 00:00", "27-01-01 01:00"]
+        assert t["farm"]["mean"] == [
+            0.0, pytest.approx(0.1), pytest.approx(0.2)]      # E01 만 +1%→+2%
+        by_id = {c["id"]: c for c in t["cells"]}
+        assert by_id["E01"]["pct"] == pytest.approx(2.0)
+
+    def test_index에_트랙E_섹션이_렌더링된다(self, client, tmp_path, monkeypatch):
+        orig = dash._load_tracke
+        monkeypatch.setattr(dash, "_load_tracke",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "PAPER ONLY".encode() in resp.data
+        assert "승급".encode() in resp.data
+        assert "T0 대기".encode() in resp.data           # 데이터 없음 → 대기
+
+    def test_데이터가_있으면_사후최대_태그가_뜬다(self, client, tmp_path, monkeypatch):
+        base = {c: 10000.0 for c in self.FIXED_ORDER}
+        row2 = dict(base); row2["E05"] = 10200.0
+        self._hist_wide(tmp_path, [dict(ts="2026-09-01T00:00:00Z", **base),
+                                   dict(ts="2026-09-01T01:00:00Z", **row2)])
+        orig = dash._load_tracke
+        monkeypatch.setattr(dash, "_load_tracke",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "사후 최대값 — 선택 금지".encode() in resp.data
+        assert "고정 순서".encode() in resp.data
+        assert "🏆".encode() not in resp.data            # 트로피 금지
+
+
+class TestTrackeFirewall:
+    """구조적 방화벽 — Track E 상태·이력이 승급/실거래 게이트에 못 들어간다."""
+
+    def test_트랙E_파일참조는_대시보드_표시층에만_있다(self):
+        from pathlib import Path
+        src = Path(dash.__file__).resolve().parent.parent   # src/
+        offenders = []
+        for p in src.rglob("*.py"):
+            if "dashboard" in p.parts:
+                continue                                     # 표시층만 허용
+            text = p.read_text(encoding="utf-8", errors="ignore").lower()
+            if "tracke_" in text:
+                offenders.append(str(p))
+        assert offenders == [], f"게이트 계층에서 Track E 파일 참조 발견: {offenders}"
+
+    def test_게이트_함수_소스에_트랙E_참조가_없다(self):
+        import inspect
+        for fn in (dash._promote_status, dash._tracks_live,
+                   dash._build_summary, dash.api_live):
+            code = inspect.getsource(fn)
+            assert "tracke_" not in code.lower(), fn.__name__
+            assert "TRACKE" not in code, fn.__name__
+        from pathlib import Path
+        checker = (Path(dash.__file__).resolve().parent.parent
+                   / "risk" / "promote_checker.py")
+        assert "tracke" not in checker.read_text(encoding="utf-8").lower()
+
+    def test_tracks_live는_트랙E_상태를_읽지_않는다(self, tmp_path):
+        (tmp_path / "tracke_state.json").write_text(json.dumps(dict(
+            equity=1.5, positions={"BTC": dict(direction=1, units=1.0,
+                                               entry=100.0)})))
+        assert dash._tracks_live(logs_dir=tmp_path) == {}
+
+    def test_track_curves는_트랙E_이력을_읽지_않는다(self, tmp_path):
+        (tmp_path / "tracke_history.csv").write_text(
+            "day,equity,n_pos,fills\n2026-09-01,1.5,1,x\n", encoding="utf-8")
+        t = dash._load_track_curves(logs_dir=tmp_path)
+        assert set(t.keys()) == {"a", "b", "c", "d"}          # "e" 없음
+        assert all(tr["labels"] == [] for tr in t.values())
+
+    def test_api_live_응답에_트랙E가_없다(self, client, tmp_path, monkeypatch):
+        # 트랙E 상태 파일이 존재해도 /api/live 페이로드에 절대 실리지 않는다
+        (tmp_path / "tracke_state.json").write_text(
+            json.dumps(dict(equity=2.0, positions={})), encoding="utf-8")
+        orig = dash._tracks_live
+        monkeypatch.setattr(dash, "_tracks_live",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        assert b"tracke" not in resp.data.lower()
+
+    def test_요약_카드는_여전히_6개이고_트랙E_카드가_없다(self):
+        s = dash._build_summary(1250.0, [], [], {}, {})
+        assert len(s["cards"]) == 6
+        assert all("E0" not in c["key"] and c["key"] != "tracke"
+                   for c in s["cards"])

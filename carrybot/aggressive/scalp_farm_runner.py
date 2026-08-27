@@ -1,0 +1,473 @@
+"""Track E 라이브 러너 — 매시 실행, 마지막 처리 이후의 닫힌 1h 봉을 전부 재생한다 (멱등).
+
+페이퍼 전용 (실주문·실자금 0, 승급 근거 사용 금지 — docs/TRACKE_SCALP_FARM_2026-08-27.md).
+
+규약:
+- T0 동결: 최초 실행에서 t0(실행 시각)와 바스켓 B(봇 유니버스 규칙: USDT 무기한
+  거래대금 상위, BTC/ETH/SOL 제외 차상위 3종)를 상태에 기록하고 이후 재계산하지 않는다.
+- 워밍업: T0 이전 닫힌 봉(WARMUP_1H개)은 지표 초기화 전용 — 엔진이 주문 생성을 금지한다.
+- fail-closed: 캔들·펀딩 수집 실패, 신선한 봉 갭이면 이번 실행을 통째로 중단한다
+  (재생 기준이 state.last_ts라 다음 실행이 무손실로 따라잡는다). 중단 사유는
+  logs/tracke_last_error.txt 마커와 GITHUB_STEP_SUMMARY 에 남긴다 (종료코드 0 유지 —
+  Actions 초록 위장 방지, 상태 커밋 스텝 보존).
+- 노화 갭: 구멍의 최신 결측 시각이 현재 최신 봉 대비 DATA_STALL_H(48h) 이상
+  과거로 굳으면 그 구멍 시간대만 결측(엔진 심볼별 무행동 fail-closed)으로 두고
+  재생을 진행한다 — 신선한 심볼의 영구 갭이 팜 전체를 영구 동결시키는 것 방지.
+- 원자성: 원장(tracke_ledger.csv, 유일키 중복 제거) → 이력(tracke_history.csv) →
+  상태(tracke_state.json, 커밋 지점) 순서로 임시파일→rename 저장.
+- 폐지: 심볼이 거래소 마켓에서 사라지면 마지막 유효가로 전 셀 청산 후 영구 공석.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from pathlib import Path
+
+import ccxt
+import pandas as pd
+
+from carrybot.aggressive.scalp_farm import (
+    BASKET_A,
+    H1,
+    WARMUP_1H,
+    BarE,
+    FarmState,
+    farm_equities,
+    mark_delisted,
+    new_farm,
+    step,
+)
+
+logger = logging.getLogger(__name__)
+
+STATE = Path("logs/tracke_state.json")
+HIST = Path("logs/tracke_history.csv")
+LEDGER = Path("logs/tracke_ledger.csv")
+ERR_MARK = Path("logs/tracke_last_error.txt")   # 중단 관측성 마커 (성공 시 삭제)
+LEDGER_COLS = ["cell", "sym", "strategy", "bar_close", "action",
+               "price", "qty", "pnl", "cost", "direction", "funding"]
+LEDGER_KEY = ["cell", "sym", "strategy", "bar_close", "action"]
+MIN_TURNOVER = 5_000_000.0      # 봇 유니버스 최소 24h 거래대금 규칙과 동일
+MAX_PAGES = 50
+DATA_STALL_H = 48               # 이 시간 이상 캔들이 끊긴 심볼 = 데이터 단절 → 영구 공석
+
+
+def _retry(fn, *a, **k):
+    """공개 엔드포인트 재시도 (6회, 선형 백오프). 실패 시 None."""
+    for i in range(6):
+        try:
+            return fn(*a, **k)
+        except Exception as exc:  # noqa: BLE001 — 네트워크 계열 전반 재시도
+            if i == 5:
+                logger.error("호출 실패: %s %s", type(exc).__name__, str(exc)[:160])
+                return None
+            time.sleep(1.5 * (i + 1))
+    return None
+
+
+def pick_basket_b(tickers: list) -> list:
+    """봇 유니버스 규칙에서 바스켓 B 선정 (T0 1회, 이후 동결).
+
+    USDT 선형 무기한(만기물 '-' 제외)을 24h 거래대금 내림차순 정렬,
+    거래대금 $5M 미만 제외, BTC/ETH/SOL 제외 후 차상위 3종.
+    """
+    rows = []
+    for t in tickers:
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT") or "-" in sym:
+            continue
+        coin = sym[:-4]
+        if coin in BASKET_A:
+            continue
+        try:
+            vol = float(t.get("turnover24h") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if vol < MIN_TURNOVER:
+            continue
+        rows.append((coin, vol))
+    rows.sort(key=lambda x: -x[1])
+    return [c for c, _ in rows[:3]]
+
+
+def missing_hours(have: set, grid: list, first_ts: int) -> list:
+    """심볼 자체 시작 이후 구간의 결측 봉 ts 목록 (갭 fail-closed 판정)."""
+    return [t for t in grid if t >= first_ts and t not in have]
+
+
+def contiguous_prefix(d: dict, start: int) -> dict:
+    """start부터 1h 간격으로 끊김 없이 이어지는 선두 구간만 남긴다.
+
+    단절 판정을 받은 심볼의 잔여 캔들 재생용 — 내부 갭 이후 꼬리는 버려
+    죽어가는 심볼이 전체 재생을 영구 차단하지 않게 한다.
+    """
+    out = {}
+    t = start
+    while t in d:
+        out[t] = d[t]
+        t += H1
+    return out
+
+
+def stalled_syms(latest: dict, overall_end: int) -> list:
+    """데이터 단절 심볼 — 최신 심볼 대비 DATA_STALL_H 이상 캔들이 끊긴 것들.
+
+    Args:
+        latest: sym -> 마지막으로 확인된 닫힌 봉 ts (없으면 state.last_ts).
+        overall_end: 전 심볼 중 가장 최신 닫힌 봉 ts.
+
+    Returns:
+        단절 판정(경계 포함: 지연 >= DATA_STALL_H) 심볼 목록.
+    """
+    cut = overall_end - DATA_STALL_H * H1
+    return [s for s, t in latest.items() if t <= cut]
+
+
+def apply_stall_policy(state: FarmState, syms: list, data: dict, latest: dict,
+                       since: int) -> list:
+    """데이터 단절 정책 (명세 §4) — 인과 보존 2단계. syms/data/latest 를 변형한다.
+
+    반드시 선두 절단(fail-closed) 검사보다 **먼저** 호출한다 — 죽은 심볼의
+    갭 낀 꼬리가 선두 갭 중단을 유발해 폐지를 영구 회피하는 것을 막는 순서 계약.
+
+    (i) 단절 의심 심볼에 미재생 캔들이 남았으면 since부터의 연속 구간만 남겨
+        이번 실행 재생을 그 끝까지로 캡 (replay_end = min 자동 캡 — 청산
+        손익이 과거 재생 구간의 자본·사이징에 새지 않는다).
+    (ii) 잔여 연속 캔들이 없으면 상태의 마지막 처리 종가로 청산 후 영구 공석.
+
+    Returns:
+        폐지 청산 체결 목록.
+    """
+    fills: list = []
+    if not any(latest.values()):
+        return fills
+    overall_end = max(latest.values())
+    for s in stalled_syms(latest, overall_end):
+        if data[s]:
+            start = since if state.last_ts else min(data[s])
+            data[s] = contiguous_prefix(data[s], start)
+        if data[s]:
+            latest[s] = max(data[s])
+            logger.warning("%s 단절 의심 — 잔여 %d봉 재생 후 다음 실행에서 폐지 판정",
+                           s, len(data[s]))
+            continue
+        logger.warning("%s 캔들 %d시간 이상 단절 — 마지막 처리 종가로 폐지 처리",
+                       s, DATA_STALL_H)
+        fills += mark_delisted(state, s)
+        syms.remove(s)
+        data.pop(s)
+        latest.pop(s)
+    return fills
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """임시파일→rename 원자적 쓰기."""
+    path.parent.mkdir(exist_ok=True)
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def _abort(reason: str) -> None:
+    """중단 관측성 — 사유를 마커 파일과 Actions 스텝 요약에 남긴다 (감사 #3).
+
+    종료코드는 0을 유지한다 (상태 커밋 스텝 보존) — 대신 마커가 저장소에
+    커밋되어 '초록인데 멈춤'을 밖에서 볼 수 있게 한다. 성공 실행이
+    _clear_abort() 로 지운다.
+
+    Args:
+        reason: 중단 사유 (한 줄).
+    """
+    logger.error("%s — fail-closed 중단", reason)
+    _atomic_write(ERR_MARK,
+                  f"{pd.Timestamp.now(tz='utc').isoformat()} {reason}\n")
+    summary = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as f:
+                f.write(f"\n**Track E 중단**: {reason}\n")
+        except OSError as exc:
+            logger.warning("GITHUB_STEP_SUMMARY 기록 실패: %s", exc)
+
+
+def _clear_abort() -> None:
+    """성공 실행 — 직전 중단 마커를 지운다 (없으면 무시)."""
+    try:
+        ERR_MARK.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def append_csv_atomic(path: Path, rows: pd.DataFrame, key: list | None = None,
+                      keep: str = "first") -> int:
+    """CSV에 행 추가 — 유일키 중복 처리 후 임시파일→rename.
+
+    Args:
+        path: CSV 경로.
+        rows: 추가할 행.
+        key: 유일키 열 (None 이면 중복 제거 없음).
+        keep: 중복 시 남길 행 — 원장은 "first"(멱등 계약: 재실행이 기존
+            이벤트를 덮지 못함, 불변), 이력은 "last"(폐지 강제청산 뒤 같은
+            ts 보존 저장이 최신 자본을 반영해야 함 — 감사 #4).
+
+    Returns:
+        추가된 행 수 (대체는 0).
+    """
+    path.parent.mkdir(exist_ok=True)
+    if path.exists():
+        old = pd.read_csv(path)
+        for c in rows.columns:              # 구 스키마 이월 — NaN 오염 방지
+            if c not in old.columns:
+                old[c] = 0.0
+        merged = pd.concat([old, rows], ignore_index=True) if len(rows) else old
+    else:
+        old, merged = None, rows.copy()
+    if key:
+        merged = merged.drop_duplicates(subset=key, keep=keep)
+    added = len(merged) - (0 if old is None else len(old))
+    tmp = Path(str(path) + ".tmp")
+    merged.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+    return added
+
+
+def check_gaps(data: dict, grid: list, overall_end: int,
+               continuing: bool) -> str | None:
+    """봉 갭 처분 — 중단 사유 문자열 또는 None(재생 진행) (감사 #2).
+
+    계속 실행(continuing=True)은 grid 시작(=since)부터 이어져야 하므로 선두
+    결손도 갭으로 본다. 워밍업 실행은 심볼 자체 첫 봉 이후만 본다 (늦은
+    상장의 선행 결측은 갭이 아님).
+
+    노화 판정: 구멍의 최신 결측 시각이 현재 최신 봉(overall_end) 대비
+    DATA_STALL_H(48h) 이상 과거로 굳었으면 그 시간대만 결측으로 남기고
+    재생을 허용한다 (엔진의 심볼별 fail-closed 무행동이 처리) — 최신 봉이
+    신선해 stalled_syms 에 안 걸리는 심볼의 영구 구멍이 매 실행 중단을
+    일으켜 팜 전체(state.last_ts)를 영구 동결시키는 경로 차단.
+    신선한 갭(<48h)은 일시 수집 결손일 수 있어 기존대로 전체 중단·재시도.
+
+    Args:
+        data: sym -> {ts: ohlc} (비어 있지 않은 심볼만).
+        grid: 이번 실행 재생 대상 ts 격자 (since..replay_end).
+        overall_end: 전 심볼 중 가장 최신 닫힌 봉 ts.
+        continuing: state.last_ts 가 있는 계속 실행 여부.
+
+    Returns:
+        신선 갭 발견 시 중단 사유, 전부 무갭/노화 갭이면 None.
+    """
+    aged_cut = overall_end - DATA_STALL_H * H1
+    for s, d in data.items():
+        have = set(d)
+        first = grid[0] if continuing else min(have)
+        miss = missing_hours(have, grid, first)
+        if not miss:
+            continue
+        if max(miss) <= aged_cut:
+            logger.warning("%s 노화 갭 %d봉 (최신 결측 %d) — 해당 시간대만 "
+                           "결측 재생 (심볼별 무행동)", s, len(miss), max(miss))
+            continue
+        return f"{s} 봉 갭 {len(miss)}개 (예: {miss[0]})"
+    return None
+
+
+def fetch_1h_paged(ex, coin: str, since: int, now_h: int) -> dict | None:
+    """닫힌 1h 봉을 since부터 페이지네이션 수집. {ts: (o,h,l,c)} 또는 실패 시 None."""
+    out: dict = {}
+    cur = since
+    for _ in range(MAX_PAGES):
+        rs = _retry(ex.fetch_ohlcv, f"{coin}/USDT:USDT", "1h", since=cur, limit=1000)
+        if rs is None:
+            return None
+        rs = [r for r in rs if cur <= r[0] < now_h]
+        if not rs:
+            break
+        for r in rs:
+            out[int(r[0])] = (float(r[1]), float(r[2]), float(r[3]), float(r[4]))
+        nxt = int(rs[-1][0]) + H1
+        if nxt <= cur:
+            break
+        cur = nxt
+        if cur >= now_h:
+            break
+    return out
+
+
+def fetch_funding(ex, coin: str) -> dict | None:
+    """최근 펀딩 정산 이벤트 {정산 ts: 펀딩률 합}. 실패 시 None.
+
+    Bybit 알트 무기한은 주기가 8h가 아닐 수 있어 정산 타임스탬프 기반으로 합산한다.
+    """
+    r = _retry(ex.publicGetV5MarketFundingHistory,
+               {"category": "linear", "symbol": f"{coin}USDT", "limit": "200"})
+    if not r or str(r.get("retCode", "")) != "0" or "list" not in r.get("result", {}):
+        return None                    # 기형 응답을 '펀딩 0'으로 오인 금지 (fail-closed)
+    ev: dict = {}
+    for x in r["result"]["list"]:
+        t = int(x["fundingRateTimestamp"])
+        ev[t] = ev.get(t, 0.0) + float(x["fundingRate"])
+    return ev
+
+
+def _save_all(state: FarmState, fills: list, replay_end: int, bars_done: int) -> None:
+    """원장 → 이력 → 상태 순서의 원자적 체크포인트 (상태 저장이 커밋 지점).
+
+    원장은 체결이 없어도 헤더 파일을 만든다 — 워크플로 git add 가 존재하지 않는
+    경로에서 전체 실패해 첫 실행 상태(T0·바스켓 동결)가 유실되는 사고 방지.
+    """
+    led = pd.DataFrame(fills, columns=LEDGER_COLS)
+    n = append_csv_atomic(LEDGER, led, LEDGER_KEY)
+    if n:
+        logger.info("원장 %d행 추가 (중복 제거 후)", n)
+    eqs = farm_equities(state)
+    total = sum(eqs.values())
+    n_pos = sum(len(c.positions) for c in state.cells.values())
+    row = {"day": str(pd.Timestamp(replay_end + H1, unit="ms", tz="utc").date()),
+           "ts": replay_end, "equity": round(total, 8)}
+    row.update({c.lower(): round(v, 8) for c, v in sorted(eqs.items())})
+    row.update({"n_pos": n_pos, "bars": bars_done, "fills": len(fills)})
+    # 이력은 keep='last' — 폐지 강제청산 뒤 같은 ts 보존 저장이 최신 자본을
+    # 남긴다 (감사 #4). 원장은 위에서 keep='first' 멱등 계약 유지.
+    append_csv_atomic(HIST, pd.DataFrame([row]), key=["ts"], keep="last")
+    _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+    logger.info("팜 자본 %.2f (셀 10개 합), 포지션 %d, 처리 봉 %d, 체결 %d",
+                total, n_pos, bars_done, len(fills))
+
+
+def main() -> None:
+    """매시 1회: T0 동결 → 새 닫힌 봉 재생 → 원자적 저장. 전 단계 fail-closed."""
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    logger.info("Track E 단타 팜 — PAPER ONLY (실주문·실자금 0, 승급 근거 사용 금지)")
+    ex = ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+    if _retry(ex.load_markets) is None:
+        _abort("마켓 로드 실패")
+        return
+
+    if STATE.exists():
+        state = FarmState.from_dict(json.loads(STATE.read_text()))
+    else:
+        r = _retry(ex.publicGetV5MarketTickers, {"category": "linear"})
+        if not r or str(r.get("retCode", "")) != "0":
+            _abort("티커 조회 실패 — T0 초기화 불가")
+            return
+        bb = pick_basket_b(r.get("result", {}).get("list", []))
+        if len(bb) < 3:
+            _abort(f"바스켓 B 후보 부족({bb})")
+            return
+        state = new_farm(bb, t0=int(time.time() * 1000))
+        _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+        logger.info("T0=%d 동결 — 바스켓 B=%s (이후 교체 없음)", state.t0, bb)
+
+    syms = [s for s in list(BASKET_A) + list(state.basket_b)
+            if s not in state.delisted]
+
+    # 폐지 감지: 마켓 자체가 사라졌으면 마지막 유효가 청산 + 영구 공석
+    fills: list = []
+    for s in list(syms):
+        m = ex.markets.get(f"{s}/USDT:USDT")
+        if m is None or m.get("active") is False:
+            logger.warning("%s 마켓 소멸/비활성 — 폐지 처리", s)
+            fills += mark_delisted(state, s)
+            syms.remove(s)
+    if not syms:
+        _abort("잔여 심볼 없음 — 폐지 변이 보존")
+        if state.last_ts:
+            _save_all(state, fills, state.last_ts, 0)
+        else:
+            _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+        return
+
+    now_h = int(pd.Timestamp.now(tz="utc").floor("h").timestamp() * 1000)
+    since = state.last_ts + H1 if state.last_ts else now_h - WARMUP_1H * H1
+
+    data = {}
+    latest = {}
+    for s in syms:
+        d = fetch_1h_paged(ex, s, since, now_h)
+        if d is None:
+            _abort(f"{s} 1h 수집 실패")
+            return
+        if not d and not state.last_ts:
+            _abort(f"{s} 워밍업 수집 공백")
+            return
+        data[s] = d
+        latest[s] = max(d) if d else state.last_ts
+
+    # 데이터 단절 정책 — 선두 절단 검사보다 먼저 (순서 계약: apply_stall_policy 참조)
+    fills += apply_stall_policy(state, syms, data, latest, since)
+
+    # 선두 절단 검사 — 워밍업 실행 전용. 계속 실행의 선두 결손은 아래 갭 검사가
+    # 노화 판정(check_gaps)과 함께 처리한다 (감사 #2 — 영구 갭 동결 방지).
+    # 상장 이력이 확실한 바스켓 A는 워밍업도 처음부터 이어져야 한다
+    # (짧은 응답을 '새 상장'으로 오인한 절단 금지).
+    for s in syms:
+        d = data[s]
+        if d and min(d) > since and not state.last_ts:
+            if s in BASKET_A:
+                _abort(f"{s} 선두 봉 결측 ({min(d)} > {since}) — 워밍업")
+                return
+            logger.warning("%s 워밍업이 %d부터 시작 (신규 상장 추정 — 지표 늦게 형성)",
+                           s, min(d))
+
+    # 단절 유예(48h 미만) 구간의 빈 심볼은 fail-closed 중단 (다음 시간 재시도)
+    for s in syms:
+        if not data[s]:
+            _abort(f"{s} 새 봉 없음 (단절 유예 중)")
+            _save_all(state, fills, state.last_ts, 0)      # 폐지 변이 보존
+            return
+    if not syms:
+        _abort("잔여 심볼 없음 — 상태 보존")
+        _save_all(state, fills, state.last_ts, 0)
+        return
+
+    replay_end = min(max(d) for d in data.values())
+    if replay_end < since:
+        logger.info("새 봉 없음")
+        _save_all(state, fills, state.last_ts or now_h - H1, 0)   # 폐지·T0 변이 보존
+        _clear_abort()
+        return
+    grid = list(range(since, replay_end + 1, H1))
+
+    # 갭 검사 — 신선 갭은 통째 중단(다음 실행 재시도), 노화 갭은 결측 재생 진행
+    reason = check_gaps(data, grid, max(latest.values()), bool(state.last_ts))
+    if reason:
+        _abort(reason)
+        if state.last_ts:
+            _save_all(state, fills, state.last_ts, 0)      # 폐지 변이 보존
+        return
+
+    # 펀딩 — 라이브 구간이 있을 때만 필요 (워밍업 봉엔 포지션이 없다)
+    fund_ev: dict = {}
+    if state.t0 and grid[-1] >= state.t0:
+        need_from = max(grid[0], state.t0)
+        for s in syms:
+            ev = fetch_funding(ex, s)
+            if ev is None:
+                _abort(f"{s} 펀딩 조회 실패")
+                return
+            if len(ev) >= 200 and ev and min(ev) > need_from:
+                _abort(f"{s} 펀딩 이력이 재생 구간을 못 덮음")
+                return
+            fund_ev[s] = ev
+
+    bars_done = 0
+    for t in grid:
+        bars = {s: BarE(t, *data[s][t]) for s in syms if t in data[s]}
+        if not bars:
+            continue
+        fmap = {s: fund_ev.get(s, {}).get(t + H1, 0.0) for s in bars}
+        for f in step(state, bars, fmap):
+            fills.append(f)
+            logger.info("  %s %s %s %s @ %.6f pnl %+.4f",
+                        pd.Timestamp(t, unit="ms", tz="utc"), f["cell"], f["sym"],
+                        f["action"], f["price"], f["pnl"])
+        bars_done += 1
+
+    _save_all(state, fills, replay_end, bars_done)
+    _clear_abort()
+
+
+if __name__ == "__main__":
+    main()

@@ -165,6 +165,22 @@
         .schedule-strip .sch-item strong { color: #c9d1d9; font-weight: 600; }
         .schedule-strip .sch-key { color: var(--blue); font-weight: 700; margin-right: 6px; }
         #equityChart { max-height: 300px; }
+        /* Track E — 단타 팜 (중립 표시 전용: 초록 강조·트로피 금지) */
+        .tracke-banner {
+            background: rgba(255, 176, 32, 0.08);
+            border: 1px solid rgba(255, 176, 32, 0.45);
+            border-radius: 12px; padding: 12px 18px;
+            font-size: 0.85rem; color: #e6edf3; line-height: 1.55;
+        }
+        .tracke-banner strong { color: #ffb020; }
+        .tracke-maxtag {
+            font-size: 0.64rem; padding: 1px 7px; border-radius: 999px;
+            border: 1px solid rgba(255, 176, 32, 0.4); color: #ffb020;
+            background: rgba(255, 176, 32, 0.12); margin-left: 6px;
+            white-space: nowrap; font-weight: 500;
+        }
+        .tracke-table td, .tracke-table th { font-size: 0.8rem; }
+        .tracke-table .mono { color: #c9d1d9; }  /* 손익 색상 강조 없음 (중립) */
         .watch-item {
             background: #161b22;
             border: 1px solid #21262d;
@@ -400,6 +416,76 @@
             </div>
         </div>
     </div>
+
+    <div class="section-divider">
+        <span class="sd-label">Track E — 단타 팜 (페이퍼 전용 &middot; 매시)</span>
+        <div class="sd-line"></div>
+    </div>
+    <!-- Row 2.4: Track E 단타 팜 (표시 전용 — 승급/실거래 게이트 입력 아님) -->
+    <div class="tracke-banner mb-3">
+        <strong>PAPER ONLY</strong> &mdash; 가상 $100,000 (셀당 $10,000 &times; 10) &middot;
+        실제 주문/자금 <strong>0</strong> &middot;
+        본 트랙 성과는 <strong>승급&middot;실거래 근거로 사용 금지</strong>
+        (상관된 다중 경로에서 승자가 자연 발생하는 사후선택 함정의 라이브 시연).
+        일손실 &minus;5%는 당일 신규 진입 정지 <em>트리거</em>이며 손실 상한이 아님.
+        판정은 사전 지정 시점만: {{ tracke.verdicts | join(' · ') }} (lab/tracke_null.py — 공동 max-stat null).
+    </div>
+    {% if tracke.available %}
+    <div class="row g-3 mb-3">
+        <div class="col-lg-5">
+            <div class="card p-3 h-100">
+                <div class="section-title">동일가중 팜 곡선 &middot; 셀 간 중앙값/IQR (누적 %)</div>
+                <canvas id="trackeChart" style="max-height: 280px;"></canvas>
+            </div>
+        </div>
+        <div class="col-lg-7">
+            <div class="card p-3 h-100">
+                <div class="section-title">
+                    가상계정 E01~E10 &mdash; 고정 순서 (성과순 정렬 없음)
+                    <span class="text-muted float-end" style="font-weight:400; font-size:0.75rem;">T0 {{ tracke.t0 or '-' }}</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm tracke-table mb-0">
+                        <thead>
+                        <tr>
+                            <th>셀</th><th>전략</th><th>바스켓</th><th>고정 라벨</th>
+                            <th class="text-end">수익률</th><th class="text-end">비용</th>
+                            <th class="text-end">펀딩</th><th class="text-end">회전</th>
+                            <th class="text-end">gross</th><th class="text-end">MDD</th>
+                            <th class="text-end">정지</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for c in tracke.cells %}
+                        <tr>
+                            <td class="mono fw-bold" style="white-space:nowrap;">{{ c.id }}{% if c.is_max %}<span class="tracke-maxtag">사후 최대값 — 선택 금지</span>{% endif %}</td>
+                            <td class="mono">{{ c.strategy }}</td>
+                            <td>{{ c.basket }} <span class="text-muted" style="font-size:0.68rem;">{{ c.basket_label }}</span></td>
+                            <td class="text-muted" style="font-size:0.72rem;">{{ c.label }}</td>
+                            <td class="text-end mono">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '-' }}</td>
+                            <td class="text-end mono">{{ ("%.1f"|format(c.cost)) if c.cost is not none else '-' }}</td>
+                            <td class="text-end mono">{{ ("%+.1f"|format(c.funding)) if c.funding is not none else '-' }}</td>
+                            <td class="text-end mono">{{ ("%.0f"|format(c.turnover)) if c.turnover is not none else '-' }}</td>
+                            <td class="text-end mono">{{ ("%.2f"|format(c.gross)) ~ 'x' if c.gross is not none else '-' }}</td>
+                            <td class="text-end mono">{{ ("%.1f"|format(c.mdd)) ~ '%' if c.mdd is not none else '-' }}</td>
+                            <td class="text-end mono">{{ c.halts if c.halts is not none else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="text-muted mt-2" style="font-size: 0.72rem;">
+                    비용·펀딩·회전 단위: USD 누적 (셀 자본 $10,000 기준, 펀딩 양수 = 지불) &middot; gross = 현재 명목/자본 배수.
+                    바스켓 B는 T0 동결 &middot; 이후 교체 없음. 어떤 셀도 이 성과로 선발하지 않는다.
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="card p-3 mb-3 text-center text-muted" style="font-size: 0.9rem;">
+        T0 대기 &mdash; 첫 러너 실행 시 T0 기록·바스켓 B 동결 후 가상계정 E01~E10이 여기에 표시됩니다.
+    </div>
+    {% endif %}
 
     <div class="section-divider">
         <span class="sd-label">ICT 봇 — 기존 트랙 (15분)</span>
@@ -1043,6 +1129,55 @@
                 scales: {
                     x: { ticks: { color: '#8b949e', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: '#21262d' } },
                     y: { ticks: { color: '#8b949e', font: { size: 11 }, callback: v => v.toFixed(1) + '%' }, grid: { color: '#21262d' } }
+                },
+                interaction: { intersect: false, mode: 'index' }
+            }
+        });
+    })();
+
+    // Track E 단타 팜 — 동일가중 곡선 + 중앙값/IQR 밴드 (중립색만, 초록 강조 금지)
+    const trackeData = {{ tracke_json | safe }};
+    (function () {
+        const el = document.getElementById('trackeChart');
+        if (!el) return;
+        const f = trackeData.farm || {labels: []};
+        if (!f.labels || f.labels.length < 2) {
+            el.parentElement.innerHTML +=
+                '<div class="text-center text-muted py-4">이력이 2봉 이상 축적되면 곡선이 그려집니다.<br>' +
+                '현재 ' + ((f.labels || []).length) + '봉 축적됨</div>';
+            return;
+        }
+        const pr = f.labels.length > 30 ? 0 : 2;
+        new Chart(el.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: f.labels,
+                datasets: [
+                    { label: '동일가중 팜', data: f.mean, borderColor: '#4da6ff',
+                      borderWidth: 2, tension: 0.2, pointRadius: pr, spanGaps: true },
+                    { label: '중앙값', data: f.median, borderColor: '#8b949e',
+                      borderWidth: 1.5, borderDash: [5, 4], tension: 0.2, pointRadius: 0, spanGaps: true },
+                    { label: 'IQR (25~75%)', data: f.q3, borderColor: 'rgba(139,148,158,0)',
+                      backgroundColor: 'rgba(139,148,158,0.13)', fill: '+1',
+                      borderWidth: 0, tension: 0.2, pointRadius: 0, spanGaps: true },
+                    { label: 'IQR 하단', data: f.q1, borderColor: 'rgba(139,148,158,0)',
+                      borderWidth: 0, tension: 0.2, pointRadius: 0, spanGaps: true },
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#c9d1d9', font: { size: 11 },
+                              filter: item => item.text !== 'IQR 하단' } },
+                    tooltip: {
+                        backgroundColor: '#1a1d23', borderColor: '#21262d', borderWidth: 1,
+                        titleColor: '#c9d1d9', bodyColor: '#c9d1d9',
+                        callbacks: { label: c => c.dataset.label + ': ' + (c.parsed.y === null ? '-' : c.parsed.y.toFixed(3) + '%') }
+                    }
+                },
+                scales: {
+                    x: { ticks: { color: '#8b949e', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: '#21262d' } },
+                    y: { ticks: { color: '#8b949e', font: { size: 11 }, callback: v => v.toFixed(2) + '%' }, grid: { color: '#21262d' } }
                 },
                 interaction: { intersect: false, mode: 'index' }
             }

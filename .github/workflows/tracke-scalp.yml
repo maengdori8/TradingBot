@@ -1,0 +1,43 @@
+name: tracke-scalp
+
+# Track E (단타 팜 10셀, PAPER ONLY) — 매시 닫힌 1h 봉 재생 (멱등, fail-closed).
+# 사전등록: docs/TRACKE_SCALP_FARM_2026-08-27.md — 어떤 셀도 승급/실거래 근거 사용 금지.
+# 크론 지연·누락은 러너의 last_ts 재생 구조가 무손실로 흡수한다.
+on:
+  schedule:
+    - cron: "22 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracke-scalp
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 의존성 설치
+        run: pip install -q ccxt pandas numpy
+      - name: 새 봉 재생
+        run: PYTHONPATH=. python -m carrybot.aggressive.scalp_farm_runner
+      - name: 상태 커밋
+        run: |
+          git config user.name  "tracke-scalp"
+          git config user.email "noreply@github.com"
+          # 파일별 개별 add — 하나라도 없으면 전체 add가 실패해 상태 커밋이 통째로
+          # 유실되는 git pathspec 함정 방지. tracke_last_error.txt 는 중단 관측성
+          # 마커 (성공 실행이 삭제 — add가 삭제도 스테이징한다)
+          for f in logs/tracke_state.json logs/tracke_history.csv logs/tracke_ledger.csv logs/tracke_last_error.txt; do
+            git add -f "$f" 2>/dev/null || true
+          done
+          git diff --staged --quiet || git commit -m "[tracke] $(date -u +%Y-%m-%dT%H:%MZ) 단타 팜 처리"
+          git pull --rebase --autostash origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}
