@@ -14,7 +14,7 @@ import math
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -432,6 +432,169 @@ def _load_trader_study(logs_dir: Path | None = None) -> dict:
 
 
 
+# ------------------------------------------------------------------
+# H2 꾸준함 가설 연구 (하방 일관성 — 2026-08-27 사전등록)
+# ------------------------------------------------------------------
+
+# 사전등록 고정 판정 일정 (변경 금지 — 판정일·명칭은 명세 문서 기준)
+H2_SCHEDULE: tuple[tuple[str, str], ...] = (
+    ("2026-09-24", "H1 T+30"),
+    ("2026-09-26", "트랙A T+30"),
+    ("2026-10-24", "H1 T+60"),
+    ("2026-10-26", "트랙A T+60"),
+    ("2026-11-23", "H1 T+90"),
+    ("2026-11-25", "트랙A T+90"),
+    ("2026-11-26", "트랙B 형성종료"),
+    ("2026-12-26", "트랙B T+30"),
+    ("2027-01-25", "트랙B T+60 (게이트 확정)"),
+    ("2027-02-24", "트랙B T+90"),
+)
+
+
+def _h2_cohort_meta(path: Path) -> dict | None:
+    """h2_cohort.json.gz 헤더에서 1차 적격 수·MDE IC를 읽는다.
+
+    Args:
+        path: 코호트 파일 경로 (gzip JSON, {"header": {...}, "wallets": [...]}).
+
+    Returns:
+        {"n": 1차 적격 지갑 수, "mde_ic": MDE IC} — 파일 없음/손상 시 None.
+    """
+    import gzip as _gzip
+    try:
+        with _gzip.open(path, "rt", encoding="utf-8") as f:
+            header = json.load(f).get("header", {})
+        n = header.get("counts", {}).get("eligible_primary")
+        mde = header.get("mde", {}).get("ic")
+        if n is None:
+            return None
+        return {"n": int(n), "mde_ic": float(mde) if mde is not None else None}
+    except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _h2_snapshot_status(snap_dir: Path) -> dict | None:
+    """h2_snapshots/ 최신 스냅샷 파일의 날짜·행수를 읽는다.
+
+    수집 중 프로세스가 죽으면 마지막 gzip 멤버가 잘릴 수 있으므로
+    절단 지점까지 읽힌 유효 행수만 센다 (크래시 금지).
+
+    Args:
+        snap_dir: 스냅샷 디렉토리 (<YYYY-MM-DD>.jsonl.gz, 지갑당 1줄).
+
+    Returns:
+        {"day": 최신 파일 날짜, "rows": 행수} — 디렉토리/파일 없으면 None.
+    """
+    import gzip as _gzip
+    import zlib as _zlib
+    try:
+        files = sorted(snap_dir.glob("*.jsonl.gz"))
+    except OSError:
+        return None
+    if not files:
+        return None
+    latest = files[-1]
+    rows = 0
+    try:
+        with _gzip.open(latest, "rt", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    rows += 1
+    except (OSError, EOFError, _zlib.error):
+        pass    # 잘린 gzip — 그 지점까지의 유효 행수만 사용
+    return {"day": latest.name.replace(".jsonl.gz", ""), "rows": rows}
+
+
+def _h2_fills_status(path: Path) -> dict | None:
+    """h2_fills_state.json 에서 절단·초기절단 지갑 수를 센다.
+
+    Args:
+        path: 체결 이력 수집 상태 파일 ({"wallets": {addr: {...}}}).
+
+    Returns:
+        {"tracked": 추적 지갑 수, "censored": fill-history-censored 수,
+         "truncated": initial_window_truncated 수} — 파일 없음/손상 시 None.
+    """
+    try:
+        wallets = json.loads(path.read_text(encoding="utf-8")).get("wallets", {})
+        censored = sum(1 for w in wallets.values() if isinstance(w, dict)
+                       and w.get("status") == "fill-history-censored")
+        truncated = sum(1 for w in wallets.values() if isinstance(w, dict)
+                        and w.get("initial_window_truncated"))
+        return {"tracked": len(wallets), "censored": censored,
+                "truncated": truncated}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _h2_gate_status(path: Path) -> dict | None:
+    """h2_trackb_gate.json 의 판정 기록·stage2_eligible 을 요약한다.
+
+    Args:
+        path: 트랙 B 게이트 상태 파일 (lab/h2_trackb.py gate 가 기록).
+
+    Returns:
+        {"n_entries": 기록 건수, "stage2_eligible": bool,
+         "verdict": 최근 판정 한 줄 (IC·p·통과 여부, 없으면 None)}
+        — 파일 없음/손상 시 None (카드에서 "판정 전" 표시).
+    """
+    try:
+        gate = json.loads(path.read_text(encoding="utf-8"))
+        entries = gate.get("entries") or []
+        verdict = None
+        if entries:
+            e = entries[-1]
+            head = f"{e.get('judgment_date', '-')} T+{e.get('horizon_days', '?')}"
+            if e.get("indeterminate") or e.get("ic") is None or e.get("p") is None:
+                verdict = f"{head} · 판정불가"
+            else:
+                verdict = (f"{head} · IC {float(e['ic']):+.3f}"
+                           f" · p {float(e['p']):.4f}"
+                           f" · {'통과' if e.get('passed') else '미통과'}")
+        return {"n_entries": len(entries),
+                "stage2_eligible": bool(gate.get("stage2_eligible", False)),
+                "verdict": verdict}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def _load_h2_study(logs_dir: Path | None = None, today: date | None = None) -> dict:
+    """H2(꾸준함 가설) 연구 상태 카드 데이터를 조립한다.
+
+    손익 트랙이 아닌 사전등록 연구라 실시간 수익률이 없다 — 코호트 규모·
+    수집 상태·다음 판정 카운트다운·게이트 기록만 요약한다. 입력 파일이
+    하나도 없어도 크래시 없이 해당 항목만 None("대기" 표시)인 구조를
+    반환한다. /api/live 대상이 아니며 페이지 로드 시 1회 계산된다.
+
+    Args:
+        logs_dir: 이력 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+        today: 카운트다운 기준일 (기본 오늘 UTC, 테스트 주입용).
+
+    Returns:
+        cohort/snapshot/fills/gate 각 요약(dict | None) + upcoming
+        (미래 최근접 판정 1~2개, {"day", "label", "dday"}).
+    """
+    logs = logs_dir or (ROOT / "logs")
+    t = today or datetime.now(timezone.utc).date()
+    upcoming: list[dict] = []
+    for day_s, label in H2_SCHEDULE:
+        try:
+            d = datetime.strptime(day_s, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d >= t:
+            upcoming.append({"day": day_s, "label": label, "dday": (d - t).days})
+        if len(upcoming) == 2:
+            break
+    return {
+        "cohort": _h2_cohort_meta(logs / "h2_cohort.json.gz"),
+        "snapshot": _h2_snapshot_status(logs / "h2_snapshots"),
+        "fills": _h2_fills_status(logs / "h2_fills_state.json"),
+        "gate": _h2_gate_status(logs / "h2_trackb_gate.json"),
+        "upcoming": upcoming,
+    }
+
+
 def _read_track_positions(fname: str) -> list[str]:
     """트랙 상태 파일에서 보유 심볼·방향을 읽는다 (없으면 빈 목록)."""
     try:
@@ -612,6 +775,7 @@ def index():
     scan = load_scan_state()
     tracks = _load_track_curves()
     trader_study = _load_trader_study()
+    h2_study = _load_h2_study()
     summary = _build_summary(balance, positions, trades, tracks, trader_study)
 
     return render_template(
@@ -631,6 +795,7 @@ def index():
         tracks_json=json.dumps(tracks),
         trader_study=trader_study,
         trader_study_json=json.dumps(trader_study),
+        h2=h2_study,
         summary=summary,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
@@ -663,6 +828,7 @@ def api_status():
     return jsonify({
         "tracks": tracks,
         "trader_study": trader_study,
+        "h2_study": _load_h2_study(),
         "balance": balance,
         "initial_balance": initial_balance,
         "performance": perf,

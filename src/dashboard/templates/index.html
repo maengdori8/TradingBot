@@ -307,7 +307,7 @@
             </div>
         </div>
         <div class="col-lg-4">
-            <div class="card p-3">
+            <div class="card p-3 mb-3">
                 <div class="section-title">&#128300; 연구 상태</div>
                 {% if trader_study.available %}
                 <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
@@ -337,6 +337,66 @@
                 {% else %}
                 <div class="text-muted" style="font-size: 0.85rem;">코호트 데이터 없음 — trader-recorder 워크플로 실행 후 표시됩니다.</div>
                 {% endif %}
+            </div>
+
+            <!-- H2 꾸준함 가설 (전향 연구 — 상태·일정 카드, 실시간 수익률 없음) -->
+            <div class="card p-3">
+                <div class="section-title d-flex justify-content-between align-items-center">
+                    <span>&#129514; H2 &middot; 꾸준함 가설 (연구)</span>
+                    <span class="exp-badge">자본 권한 없음</span>
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">코호트 (1차 적격)</span>
+                    {% if h2.cohort %}
+                    <span class="mono">{{ "{:,}".format(h2.cohort.n) }}지갑{% if h2.cohort.mde_ic is not none %} &middot; MDE IC {{ "%.3f"|format(h2.cohort.mde_ic) }}{% endif %}</span>
+                    {% else %}
+                    <span class="mono text-muted">대기</span>
+                    {% endif %}
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">수집 (최신 스냅샷)</span>
+                    {% if h2.snapshot %}
+                    <span class="mono">{{ h2.snapshot.day }} &middot; {{ "{:,}".format(h2.snapshot.rows) }}행</span>
+                    {% else %}
+                    <span class="mono text-muted">대기</span>
+                    {% endif %}
+                </div>
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">체결 이력 절단 / 초기절단</span>
+                    {% if h2.fills %}
+                    <span class="mono">{{ h2.fills.censored }} / {{ h2.fills.truncated }} (추적 {{ h2.fills.tracked }})</span>
+                    {% else %}
+                    <span class="mono text-muted">대기</span>
+                    {% endif %}
+                </div>
+                {% if h2.upcoming %}
+                {% for u in h2.upcoming %}
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">{{ '다음 판정' if loop.first else '그다음' }} &middot; {{ u.label }}</span>
+                    <span class="mono" style="color: var(--blue);">D-{{ u.dday }} <span class="text-muted">({{ u.day }})</span></span>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">다음 판정</span>
+                    <span class="mono text-muted">일정 종료</span>
+                </div>
+                {% endif %}
+                <div class="d-flex justify-content-between" style="font-size: 0.9rem;">
+                    <span class="text-muted">게이트 (트랙B 2단계)</span>
+                    {% if h2.gate %}
+                    <span class="mono">기록 {{ h2.gate.n_entries }}건 &middot; stage2 {{ '충족' if h2.gate.stage2_eligible else '미충족' }}</span>
+                    {% else %}
+                    <span class="mono text-muted">판정 전</span>
+                    {% endif %}
+                </div>
+                {% if h2.gate and h2.gate.verdict %}
+                <div class="text-muted mt-1" style="font-size: 0.78rem; word-break: break-all;">최근 판정: {{ h2.gate.verdict }}</div>
+                {% endif %}
+                <div class="text-muted mt-2" style="font-size: 0.78rem;">
+                    하방 일관성(꾸준함) 전향 사전등록 연구 &mdash; 손익 트랙 아님.<br>
+                    판정은 사전등록 일정·기준으로만 한다 (2026-08-27 등록).
+                </div>
             </div>
         </div>
     </div>

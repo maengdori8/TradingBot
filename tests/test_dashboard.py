@@ -36,6 +36,13 @@ class TestRoutes:
         assert resp.status_code == 200
         assert b"Paper Trading" in resp.data
 
+    def test_index_h2_card_renders(self, client):
+        """H2 연구 상태 카드가 메인 페이지에 표시된다."""
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "꾸준함 가설".encode() in resp.data
+        assert "자본 권한 없음".encode() in resp.data
+
     def test_api_status_empty(self, client):
         """API가 빈 상태에서도 정상 JSON 반환."""
         resp = client.get("/api/status")
@@ -186,6 +193,91 @@ class TestLoadTraderStudy:
         assert t["days"] == 1
         assert t["top"][0] > 0 > t["bottom"][0]
         assert abs(t["spread"] - (t["top"][0] - t["bottom"][0])) < 1e-9
+
+
+class TestLoadH2Study:
+    """_load_h2_study — H2 꾸준함 가설 연구 상태 카드 로더."""
+
+    def _cohort(self, tmp_path, n=136, mde=0.2429):
+        import gzip, json
+        with gzip.open(tmp_path / "h2_cohort.json.gz", "wt", encoding="utf-8") as f:
+            json.dump({"header": {"counts": {"eligible_primary": n},
+                                  "mde": {"n_primary": n, "ic": mde}},
+                       "wallets": []}, f)
+
+    def _snapshot(self, tmp_path, day="2026-08-27", rows=3):
+        import gzip, json
+        d = tmp_path / "h2_snapshots"
+        d.mkdir(exist_ok=True)
+        with gzip.open(d / f"{day}.jsonl.gz", "wt", encoding="utf-8") as f:
+            for i in range(rows):
+                f.write(json.dumps({"address": f"0x{i}"}) + "\n")
+
+    def _fills(self, tmp_path):
+        import json
+        (tmp_path / "h2_fills_state.json").write_text(json.dumps({
+            "high_turnover": [],
+            "wallets": {
+                "0x1": {"status": "ok"},
+                "0x2": {"status": "fill-history-censored"},
+                "0x3": {"status": "ok", "initial_window_truncated": True},
+            }}), encoding="utf-8")
+
+    def _gate(self, tmp_path):
+        import json
+        (tmp_path / "h2_trackb_gate.json").write_text(json.dumps({
+            "stage2_eligible": False,
+            "entries": [{"judgment_date": "2026-12-26", "horizon_days": 30,
+                         "ic": 0.31, "p": 0.004, "passed": True,
+                         "indeterminate": False}]}), encoding="utf-8")
+
+    def test_파일이_모두_있으면_전_항목이_채워진다(self, tmp_path):
+        from datetime import date
+        from src.dashboard.app import _load_h2_study
+        self._cohort(tmp_path)
+        self._snapshot(tmp_path)
+        self._fills(tmp_path)
+        self._gate(tmp_path)
+        h2 = _load_h2_study(logs_dir=tmp_path, today=date(2026, 8, 27))
+        assert h2["cohort"]["n"] == 136
+        assert h2["cohort"]["mde_ic"] == pytest.approx(0.2429)
+        assert h2["snapshot"] == {"day": "2026-08-27", "rows": 3}
+        assert h2["fills"] == {"tracked": 3, "censored": 1, "truncated": 1}
+        assert h2["gate"]["n_entries"] == 1
+        assert h2["gate"]["stage2_eligible"] is False
+        assert "IC +0.310" in h2["gate"]["verdict"]
+        assert "통과" in h2["gate"]["verdict"]
+        # 카운트다운: 고정 일정표에서 미래 최근접 2개 (H1 T+30 → 트랙A T+30)
+        assert h2["upcoming"][0] == {"day": "2026-09-24", "label": "H1 T+30", "dday": 28}
+        assert h2["upcoming"][1]["day"] == "2026-09-26"
+        assert h2["upcoming"][1]["dday"] == 30
+
+    def test_파일이_전부_없어도_크래시_없이_대기_구조(self, tmp_path):
+        from datetime import date
+        from src.dashboard.app import _load_h2_study
+        h2 = _load_h2_study(logs_dir=tmp_path, today=date(2026, 8, 27))
+        assert h2["cohort"] is None
+        assert h2["snapshot"] is None
+        assert h2["fills"] is None
+        assert h2["gate"] is None                     # 카드에서 "판정 전"
+        assert len(h2["upcoming"]) == 2               # 일정은 파일과 무관하게 고정
+
+    def test_일부만_있으면_있는_항목만_채운다(self, tmp_path):
+        from datetime import date
+        from src.dashboard.app import _load_h2_study
+        self._cohort(tmp_path)
+        self._snapshot(tmp_path, day="2026-08-26", rows=2)
+        h2 = _load_h2_study(logs_dir=tmp_path, today=date(2026, 8, 27))
+        assert h2["cohort"]["n"] == 136
+        assert h2["snapshot"] == {"day": "2026-08-26", "rows": 2}
+        assert h2["fills"] is None
+        assert h2["gate"] is None
+
+    def test_일정이_모두_지나면_카운트다운은_빈_목록(self, tmp_path):
+        from datetime import date
+        from src.dashboard.app import _load_h2_study
+        h2 = _load_h2_study(logs_dir=tmp_path, today=date(2027, 3, 1))
+        assert h2["upcoming"] == []
 
 
 class TestBuildSummary:
