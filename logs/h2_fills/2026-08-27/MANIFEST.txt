@@ -1,0 +1,6 @@
+T0 fills 원본 (2026-08-27) — GitHub 100MB 한도 초과로 원본은 로컬 디스크 보관.
+fills.jsonl.gz  550,555,226 bytes
+SHA-256  d71148e6f19dcc804fe89884f2255f7833c26fd8a6acb7d59f34c26aa205813b
+내용: T0 첫 폴링 — 전 코호트 5,790지갑 userFills 최근 이력(지갑당 최대 2,000건), tid 중복 제거 원본.
+summary.jsonl.gz(커밋됨)에 지갑별 집계·커서가 있고, 이후 일별 fills는 증분이라 크기가 작다.
+무결성 검증: shasum -a 256 fills.jsonl.gz 가 위 해시와 일치해야 한다.
