@@ -1176,3 +1176,173 @@ class TestTrackeFirewall:
         assert len(s["cards"]) == 6
         assert all("E0" not in c["key"] and c["key"] != "tracke"
                    for c in s["cards"])
+
+
+class TestLoadMarketScan:
+    """전 코인 스캐너 로더 — 존재/부재/오래됨/손상 (표시 전용, 크래시 금지)."""
+
+    def _write(self, tmp_path, generated_at="2026-08-28T03:00:00+00:00",
+               coins=None, extra=None):
+        d = {"generated_at_utc": generated_at,
+             "coins": coins if coins is not None else [
+                 {"symbol": "BTC/USDT:USDT", "coin": "BTC", "price": 100000.0,
+                  "chg24h_pct": 1.2, "turnover24h": 5e9,
+                  "dist24h_pct": 0.5, "dist96h_pct": -1.2, "rsi14": 61.0,
+                  "rsi2": 95.0, "bb_pctb": 1.02, "sma200_pct": 3.1,
+                  "vol_surge": 2.5, "gate_long": True, "gate_short": False},
+                 {"symbol": "ETH/USDT:USDT", "coin": "ETH", "price": 4000.0,
+                  "chg24h_pct": -0.3, "turnover24h": 3e9,
+                  "dist24h_pct": 2.0, "dist96h_pct": 4.0, "rsi14": 42.0,
+                  "rsi2": 8.0, "bb_pctb": 0.30, "sma200_pct": -1.0,
+                  "vol_surge": 0.8, "gate_long": False, "gate_short": False},
+             ],
+             "skipped": 1}
+        d.update(extra or {})
+        (tmp_path / "market_scan.json").write_text(
+            json.dumps(d), encoding="utf-8")
+
+    def test_파일이_없으면_스캔_대기_구조(self, tmp_path):
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is False
+        assert s["coins"] == []
+
+    def test_파일_순서를_보존하고_메타를_채운다(self, tmp_path):
+        from datetime import datetime, timezone
+        self._write(tmp_path)
+        now = datetime(2026, 8, 28, 3, 30, tzinfo=timezone.utc)   # 30분 뒤 — 신선
+        s = dash._load_market_scan(logs_dir=tmp_path, now=now)
+        assert s["available"] is True
+        assert [c["coin"] for c in s["coins"]] == ["BTC", "ETH"]  # 재정렬 금지
+        assert s["generated_at"] == "2026-08-28 03:00 UTC"
+        assert s["stale"] is False
+        assert s["age_label"] is None
+        assert s["skipped"] == 1
+
+    def test_오래되면_n시간_전_라벨(self, tmp_path):
+        from datetime import datetime, timezone
+        self._write(tmp_path)
+        now = datetime(2026, 8, 28, 8, 10, tzinfo=timezone.utc)   # 5시간+ 경과
+        s = dash._load_market_scan(logs_dir=tmp_path, now=now)
+        assert s["stale"] is True
+        assert s["age_label"] == "5시간 전"
+
+    def test_손상_JSON은_대기로_흡수(self, tmp_path):
+        (tmp_path / "market_scan.json").write_text("{broken", encoding="utf-8")
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is False
+
+    def test_빈_코인_목록은_대기로_흡수(self, tmp_path):
+        self._write(tmp_path, coins=[])
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is False
+
+    def test_생성시각_기형이어도_크래시_없음(self, tmp_path):
+        self._write(tmp_path, generated_at="언젠가")
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is True
+        assert s["stale"] is False
+
+    def test_coins가_리스트가_아니면_대기로_흡수(self, tmp_path):
+        (tmp_path / "market_scan.json").write_text(
+            json.dumps({"coins": 1, "generated_at_utc": "x"}), encoding="utf-8")
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is False
+
+    def test_거대수치_Infinity_극단시각도_크래시_없음(self, tmp_path):
+        """OverflowError 경로 3종 — float 승격·시각 변환·skipped 정수화."""
+        (tmp_path / "market_scan.json").write_text(
+            '{"generated_at_utc": "9999-12-31T23:59:59-23:59",'
+            ' "skipped": Infinity,'
+            ' "coins": [{"coin": "BTC", "price": 1e999,'
+            f' "rsi14": {10 ** 400}, "gate_long": true}}]}}',
+            encoding="utf-8")
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is True
+        assert s["coins"][0]["price"] is None      # JSON Infinity — 무시
+        assert s["coins"][0]["rsi14"] is None      # 거대 int — 무시
+        assert s["coins"][0]["gate_long"] is True
+        assert s["skipped"] == 0
+
+    def test_불완전한_행은_전_키를_None으로_정규화한다(self, tmp_path):
+        """필드 결손·기형 타입이 템플릿 UndefinedError 를 일으키지 않는다."""
+        self._write(tmp_path, coins=[
+            {"coin": "BTC"},                              # 숫자 필드 전부 결손
+            {"symbol": "ETH/USDT:USDT", "price": "많이",   # 문자열 수치 — 무시
+             "gate_long": "yes"},                          # 비불리언 — False
+            {"price": 1.0},                                # 식별자 없음 — 행 폐기
+            "행이 아님",                                    # dict 아님 — 폐기
+        ])
+        s = dash._load_market_scan(logs_dir=tmp_path)
+        assert s["available"] is True
+        assert [c["coin"] for c in s["coins"]] == ["BTC", "ETH"]
+        btc = s["coins"][0]
+        for k in ("price", "chg24h_pct", "dist24h_pct", "dist96h_pct",
+                  "rsi14", "rsi2", "bb_pctb"):
+            assert btc[k] is None
+        assert btc["gate_long"] is False
+        assert s["coins"][1]["price"] is None
+        assert s["coins"][1]["gate_long"] is False
+
+    def test_불완전한_행도_렌더된다(self, tmp_path, monkeypatch, client):
+        """정규화된 결손 행(전부 None)이 템플릿을 통과한다 — 크래시 금지."""
+        self._write(tmp_path, coins=[{"coin": "BTC"}])
+        data = dash._load_market_scan(logs_dir=tmp_path)   # 실제 로더 산출물
+        monkeypatch.setattr(dash, "_load_market_scan", lambda *a, **k: data)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"BTC" in resp.data
+
+
+class TestMarketScanRender:
+    """전 코인 스캐너 카드 렌더 — 존재/부재, 주의 문구, /api/live 비대상."""
+
+    _FIXTURE = {
+        "available": True, "generated_at": "2026-08-28 03:00 UTC",
+        "age_label": None, "stale": False, "skipped": 0,
+        "coins": [
+            {"symbol": "BTC/USDT:USDT", "coin": "BTC", "price": 100000.0,
+             "chg24h_pct": 1.2, "turnover24h": 5e9, "dist24h_pct": 0.5,
+             "dist96h_pct": -1.2, "rsi14": 61.0, "rsi2": 95.0,
+             "bb_pctb": 1.02, "sma200_pct": 3.1, "vol_surge": 2.5,
+             "gate_long": True, "gate_short": False},
+        ],
+    }
+
+    def test_카드와_주의_문구가_렌더된다(self, client, monkeypatch):
+        monkeypatch.setattr(dash, "_load_market_scan",
+                            lambda *a, **k: dict(self._FIXTURE))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "전 코인 스캐너".encode() in resp.data
+        assert "관측 전용".encode() in resp.data
+        assert "자동 거래 아님. 거래는 동결된 18계정 규칙만 수행.".encode() in resp.data
+        assert b"BTC" in resp.data
+        assert "●".encode() in resp.data          # 롱 게이트 충족 표시
+        assert "○".encode() in resp.data          # 숏 게이트 미충족 표시
+        assert b"2026-08-28 03:00 UTC" in resp.data
+
+    def test_부재시_스캔_대기(self, client, monkeypatch):
+        monkeypatch.setattr(dash, "_load_market_scan",
+                            lambda *a, **k: {"available": False,
+                                             "generated_at": None,
+                                             "age_label": None, "stale": False,
+                                             "coins": [], "skipped": 0})
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "스캔 대기".encode() in resp.data
+
+    def test_오래되면_회색_라벨이_보인다(self, client, monkeypatch):
+        d = dict(self._FIXTURE)
+        d.update(stale=True, age_label="5시간 전")
+        monkeypatch.setattr(dash, "_load_market_scan", lambda *a, **k: d)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "5시간 전".encode() in resp.data
+
+    def test_api_status에_포함되고_api_live에는_없다(self, client, monkeypatch):
+        monkeypatch.setattr(dash, "_load_market_scan",
+                            lambda *a, **k: dict(self._FIXTURE))
+        st = json.loads(client.get("/api/status").data)
+        assert st["market_scan"]["available"] is True
+        live = json.loads(client.get("/api/live").data)
+        assert "market_scan" not in live          # 시간당 데이터 — 초단위 비대상

@@ -31,11 +31,25 @@
   남고, 다른 그룹 열은 그 시점 상태 스냅숏을 읽는다). 상태는 variant2_cells 키
   (t0_variant2 write-once — 확장 지표 워밍업 수집까지 성공한 최초 원자적 기록
   시각, 수집 실패 시 동결 지연). 본 원장 기록 금지 방화벽 동일.
+- 변형3 셀 E19~E21 (전 유니버스 BRK24·BRK24GATE·MR — scalp_farm.py 동결 명세):
+  E13~E18 단계 '뒤'의 넷째 단계, 같은 격리 규약 (_safe_variant — 변형3 실패는
+  본·E11/E12·E13~E18 커밋에 무영향, 역도 성립). 유니버스는 첫 호출에서 봇
+  유니버스 관례(거래대금 상위 40)로 선정해 알파벳순 write-once 동결하고,
+  40심볼 전부 fresh 워밍업(WARMUP_1H, 레이트리밋은 ccxt enableRateLimit —
+  실패 시 t0 동결 지연 fail-closed 재시도) 후 t0_variant3 를 동결한다.
+  이후 실행: 바스켓 중복 심볼은 본 실행 수집분 공유(중복 페치 회피), 유니버스
+  전용 심볼만 [vsince, replay_end] 페치 (통상 새 봉 1개 = 1페이지). 폐지·단절은
+  본 폐지 미러가 아니라 **자체 판정** (마켓 소멸 검사 + 48h 단절 정책 + 신선
+  갭/단절 유예 단계 실패 — 본 러너 규칙 미러). 원장·이력은 기존 변형 파일
+  통합 (이력 e19~e21 열 추가, 스키마 이월 관례). 본 팜이 종말(전 심볼 폐지)
+  하면 변형3 단계도 더 돌지 않으므로 그 시점 보유 포지션은 미실현으로 동결
+  된다 (문서화된 한계 — 페이퍼 전용).
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from pathlib import Path
@@ -49,6 +63,9 @@ from carrybot.aggressive.scalp_farm import (
     H1,
     V2CELLS,
     V2LABELS,
+    V3CELLS,
+    V3LABELS,
+    V3_UNIVERSE_N,
     VCELLS,
     VLABELS,
     WARMUP_1H,
@@ -59,17 +76,24 @@ from carrybot.aggressive.scalp_farm import (
     new_farm,
     new_variant,
     new_variant2,
+    new_variant3,
     step,
     step_variant,
     step_variant2,
+    step_variant3,
     variant2_delist,
     variant2_equities,
     variant2_from_dict,
     variant2_to_dict,
+    variant3_delist,
+    variant3_equities,
+    variant3_from_dict,
+    variant3_to_dict,
     variant_delist,
     variant_equities,
     variant_from_dict,
     variant_to_dict,
+    warmup_full,
     warmup_x2,
 )
 
@@ -86,10 +110,11 @@ LEDGER_KEY = ["cell", "sym", "strategy", "bar_close", "action"]
 # lab/tracke_null.py 공식 10셀 계약(미지 셀 거부)을 보호한다 (기록 교차 금지)
 VLEDGER = Path("logs/tracke_variant_ledger.csv")
 VHIST = Path("logs/tracke_variant_history.csv")
-# 이력 스키마 — e13~e18 열 추가 (구 파일의 결여 열은 0.0 이월 = 부재 표기).
-# equity = 행 기록 시점의 변형 전 셀(양 그룹) 시가평가 합, keep-last(ts).
+# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3) 열 추가 (구 파일의 결여 열은
+# 0.0 이월 = 부재 표기). equity = 행 기록 시점의 변형 전 셀(전 그룹) 시가평가
+# 합, keep-last(ts).
 VHIST_COLS = ["day", "ts", "equity", "e11", "e12", "e13", "e14", "e15", "e16",
-              "e17", "e18", "n_pos", "bars", "fills"]
+              "e17", "e18", "e19", "e20", "e21", "n_pos", "bars", "fills"]
 OFFICIAL_IDS = frozenset(s.cell for s in CELLS)     # E01~E10
 VARIANT_IDS = frozenset(s.cell for s in VCELLS)     # E11·E12
 VARIANT2_IDS = frozenset(s.cell for s in V2CELLS)   # E13~E18
@@ -137,6 +162,46 @@ def pick_basket_b(tickers: list) -> list:
     return [c for c, _ in rows[:3]]
 
 
+def pick_universe40(tickers: list, markets: dict | None = None) -> list:
+    """봇 유니버스 규칙(거래대금 상위 40)에서 변형3 전 유니버스 선정 (T0(v3) 1회).
+
+    USDT 선형 무기한(만기물 '-' 제외)을 24h 거래대금 내림차순 — 동률은 심볼
+    오름차순(결정론 tie-break) — 정렬, 비유한 값·$5M(MIN_TURNOVER) 미만 제외,
+    BTC/ETH/SOL 포함(바스켓 중복 허용) 상위 V3_UNIVERSE_N종. 같은 코인의 중복
+    행은 최대 유효 거래대금으로 집계한다 (입력 순서 무관 — 결정론, Codex 검토).
+    markets 가 주어지면 활성·무만기·swap/linear 인 `{coin}/USDT:USDT` 마켓이
+    있는 심볼만 남긴다 (메타 키 부재는 통과 — ccxt 통일 심볼 형식 자체가 선형
+    스왑을 함의). 선정 시점 거래대금 순위는 감사 보조용으로 로그에만 남긴다
+    (write-once 계약은 알파벳순 목록 쪽).
+
+    Returns:
+        코인명 **알파벳순** 목록 — 동시 신호 6개 초과 시 선착 순서의 사전 고정.
+    """
+    best: dict = {}
+    for t in tickers:
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT") or "-" in sym:
+            continue
+        coin = sym[:-4]
+        try:
+            vol = float(t.get("turnover24h") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(vol) or vol < MIN_TURNOVER:
+            continue
+        if markets is not None:
+            m = markets.get(f"{coin}/USDT:USDT")
+            if m is None or m.get("active") is False or m.get("swap") is False \
+                    or m.get("linear") is False or m.get("expiry") is not None:
+                continue
+        best[coin] = max(best.get(coin, 0.0), vol)
+    rows = sorted(best.items(), key=lambda x: (-x[1], x[0]))
+    top = rows[:V3_UNIVERSE_N]
+    logger.info("변형3 유니버스 선정 (거래대금 순, 감사용): %s",
+                ", ".join(f"{c}={v:.0f}" for c, v in top))
+    return sorted(c for c, _ in top)
+
+
 def missing_hours(have: set, grid: list, first_ts: int) -> list:
     """심볼 자체 시작 이후 구간의 결측 봉 ts 목록 (갭 fail-closed 판정)."""
     return [t for t in grid if t >= first_ts and t not in have]
@@ -171,7 +236,7 @@ def stalled_syms(latest: dict, overall_end: int) -> list:
 
 
 def apply_stall_policy(state: FarmState, syms: list, data: dict, latest: dict,
-                       since: int) -> list:
+                       since: int, delist_fn=mark_delisted) -> list:
     """데이터 단절 정책 (명세 §4) — 인과 보존 2단계. syms/data/latest 를 변형한다.
 
     반드시 선두 절단(fail-closed) 검사보다 **먼저** 호출한다 — 죽은 심볼의
@@ -181,6 +246,10 @@ def apply_stall_policy(state: FarmState, syms: list, data: dict, latest: dict,
         이번 실행 재생을 그 끝까지로 캡 (replay_end = min 자동 캡 — 청산
         손익이 과거 재생 구간의 자본·사이징에 새지 않는다).
     (ii) 잔여 연속 캔들이 없으면 상태의 마지막 처리 종가로 청산 후 영구 공석.
+
+    Args:
+        delist_fn: 폐지 함수 (기본 본 셀 mark_delisted — 변형3 은 variant3_delist
+            로 자체 상태에 적용한다. 시그니처 (state, sym) -> fills 동일).
 
     Returns:
         폐지 청산 체결 목록.
@@ -200,7 +269,7 @@ def apply_stall_policy(state: FarmState, syms: list, data: dict, latest: dict,
             continue
         logger.warning("%s 캔들 %d시간 이상 단절 — 마지막 처리 종가로 폐지 처리",
                        s, DATA_STALL_H)
-        fills += mark_delisted(state, s)
+        fills += delist_fn(state, s)
         syms.remove(s)
         data.pop(s)
         latest.pop(s)
@@ -473,7 +542,9 @@ def _vhist_row(state: FarmState, v: FarmState, own_cells: tuple,
     total, n_pos = 0.0, 0
     groups = ((VCELLS, state.variant_cells, variant_from_dict, variant_equities),
               (V2CELLS, state.variant2_cells, variant2_from_dict,
-               variant2_equities))
+               variant2_equities),
+              (V3CELLS, state.variant3_cells, variant3_from_dict,
+               variant3_equities))
     for cells, vc, from_d, eq_fn in groups:
         if cells is own_cells:
             g = v
@@ -777,6 +848,206 @@ def _run_variant2(ex, state: FarmState, data: dict, fund_ev: dict,
     _save_variant2(state, v, vfills + fills2, replay_end, bars_done)
 
 
+def _save_variant3(state: FarmState, v: FarmState, vfills: list,
+                   ts_end: int, bars_done: int) -> None:
+    """변형3(E19~E21) 원장 → 이력 → 상태(variant3_cells) 순 원자적 체크포인트.
+
+    _save_variant2 와 같은 계약 — 파일 통합(VLEDGER/VHIST), 상태 키·t0 분리.
+    방화벽: (cell, strategy) 쌍이 V3CELLS 밖이면 기록 대신 예외 (E19~E21 의
+    전략명 BRK24/BRK24GATE/MR 이 본·변형2 와 겹치므로 쌍 단위가 필수).
+    t0_variant3 와 유니버스(basket_b)는 write-once — 다른 값 저장 시도는
+    어떤 파일도 쓰기 전에 예외로 죽는다.
+    """
+    prev = state.variant3_cells
+    if prev is not None and prev.get("t0_variant3") != v.t0:
+        raise ValueError(f"t0_variant3 변경 금지 (write-once): "
+                         f"{prev.get('t0_variant3')} != {v.t0}")
+    if prev is not None and list(prev.get("basket_b", [])) != list(v.basket_b):
+        raise ValueError(f"변형3 유니버스 변경 금지 (write-once): "
+                         f"{prev.get('basket_b')} != {v.basket_b}")
+    if prev is not None and not set(prev.get("delisted", [])) <= set(v.delisted):
+        raise ValueError(f"변형3 영구 공석 축소 금지 (단조 증가): "
+                         f"{prev.get('delisted')} -> {v.delisted}")
+    allowed = {(s.cell, s.strategy) for s in V3CELLS}
+    bad = {(f["cell"], f["strategy"]) for f in vfills} - allowed
+    if bad:
+        raise ValueError(f"변형3 원장에 비변형3 행 기록 금지: {sorted(bad)}")
+    n = append_csv_atomic(VLEDGER, pd.DataFrame(vfills, columns=LEDGER_COLS),
+                          LEDGER_KEY)
+    if n:
+        logger.info("변형3 원장 %d행 추가 (중복 제거 후)", n)
+    row = _vhist_row(state, v, V3CELLS, ts_end, bars_done, len(vfills))
+    append_csv_atomic(VHIST, pd.DataFrame([row], columns=VHIST_COLS),
+                      key=["ts"], keep="last")
+    try:
+        state.variant3_cells = variant3_to_dict(v)
+        _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+    except BaseException:
+        state.variant3_cells = prev     # 실패 격리 롤백 (_save_variant 와 대칭)
+        raise
+    logger.info("변형3 자본 %.2f (E19~E21), 포지션 %d, 처리 봉 %d, 체결 %d",
+                sum(row[s.cell.lower()] for s in V3CELLS),
+                sum(len(c.positions) for c in v.cells.values()),
+                bars_done, len(vfills))
+
+
+def _variant3_inputs(ex, v: FarmState, data: dict, fund_ev: dict,
+                     since: int, replay_end: int) -> tuple:
+    """변형3(E19~E21) 재생 입력 — 유니버스 캔들·펀딩 수집 + 자체 단절 정책.
+
+    바스켓 중복 심볼은 본 실행 수집분(data)을 공유해 재페치를 피하고
+    (공유 캐시), 유니버스 전용 심볼만 [vsince, replay_end] 구간을 페치한다
+    (통상 새 봉 1개 = 1페이지 — 페이지네이션 최소). 단절·재생 끝 규칙은 본
+    러너 미러: 48h 단절은 잔여 연속 구간 재생 후 폐지(apply_stall_policy,
+    variant3_delist), v3_end = min(비단절 심볼 최신 봉, 본 replay_end),
+    신선 갭·새 봉 없음(단절 유예)은 그룹 단계 실패 (다음 실행 따라잡기).
+    펀딩은 재생할 봉이 있을 때만 수집한다 (본 수집분이 덮으면 재사용).
+
+    Returns:
+        (vsince, v3_end, vdata, vfund, dfills) — v3_end < vsince 면 재생 없음.
+
+    Raises:
+        RuntimeError: 봉/펀딩 수집 실패·신선 갭·단절 유예 (변형3 단계만 실패).
+    """
+    vsince = v.last_ts + H1
+    syms = [s for s in v.basket_b if s not in v.delisted]
+    vdata: dict = {}
+    latest: dict = {}
+    for s in syms:
+        have = data.get(s)
+        if have is not None and vsince >= since:
+            d = dict(have)                  # 본 수집분이 [vsince, replay_end] 커버
+        else:
+            d = dict(have) if have is not None else {}
+            end = since if have is not None else replay_end + H1
+            extra = fetch_1h_paged(ex, s, vsince, end)
+            if extra is None:
+                raise RuntimeError(f"{s} 변형3 봉 수집 실패")
+            d.update(extra)
+        vdata[s] = d
+        latest[s] = max(d) if d else v.last_ts
+    dfills = apply_stall_policy(v, syms, vdata, latest, vsince,
+                                delist_fn=variant3_delist)
+    for s in syms:
+        if not vdata[s]:
+            raise RuntimeError(f"{s} 변형3 새 봉 없음 (단절 유예 중)")
+    if not syms:
+        return vsince, v.last_ts, {}, {}, dfills
+    v3_end = min(replay_end, min(latest[s] for s in syms))
+    if v3_end < vsince:
+        return vsince, v3_end, {}, {}, dfills
+    reason = check_gaps(vdata, list(range(vsince, v3_end + 1, H1)),
+                        max(latest.values()), continuing=True)
+    if reason:
+        raise RuntimeError(f"변형3 갭 — {reason}")
+    need = max(vsince, v.t0)
+    vfund: dict = {}
+    for s in vdata:
+        ev = fund_ev.get(s)
+        if ev is not None and not (len(ev) >= 200 and ev and min(ev) > need):
+            vfund[s] = ev                   # 본 실행 수집분이 변형3 구간을 덮는다
+            continue
+        rng = fetch_funding_range(ex, s, need)
+        if rng is None:
+            raise RuntimeError(f"{s} 변형3 펀딩 범위 수집 실패")
+        vfund[s] = rng
+    return vsince, v3_end, vdata, vfund, dfills
+
+
+def _run_variant3(ex, state: FarmState, data: dict, fund_ev: dict,
+                  since: int, replay_end: int) -> None:
+    """변형3 셀(E19~E21) 재생 — E13~E18 단계 뒤 넷째 단계 (_safe_variant 격리).
+
+    첫 호출: 티커 조회 → pick_universe40 (40 미만이면 동결 지연 fail-closed) →
+    유니버스 40심볼 전부 fresh 워밍업(WARMUP_1H, warmup_full — 본 팜 지표
+    상속 없음) → 성공 시에만 t0_variant3 + 유니버스 동결(write-once) 후 종료.
+    이후: 자체 마켓 소멸 검사 → 자체 수집/단절 정책(_variant3_inputs) →
+    재생 → 통합 파일 저장. 본 폐지 미러는 하지 않는다 (자체 판정 —
+    본 팜의 과거 단절 판정이 회복 심볼을 배제하지 않음, 모듈 docstring).
+
+    Args:
+        ex: ccxt bybit (티커·워밍업·유니버스 수집).
+        state: 본 팜 상태 (variant3_cells 키만 갱신됨).
+        data: 본 실행이 수집한 sym -> {ts: (o,h,l,c,vol)} (읽기 전용 공유 캐시).
+        fund_ev: 본 실행이 수집한 sym -> {정산 ts: 펀딩률 합}.
+        since: 본 실행 재생 시작 ts.
+        replay_end: 본 실행 재생 끝 ts (변형3 재생 끝의 상한).
+    """
+    if state.variant3_cells is None:
+        if not state.last_ts:
+            return                      # 본 팜 미가동 — 다음 실행에서 초기화
+        r = _retry(ex.publicGetV5MarketTickers, {"category": "linear"})
+        if not r or str(r.get("retCode", "")) != "0":
+            raise RuntimeError("변형3 티커 조회 실패 — t0 동결 지연 (fail-closed)")
+        uni = pick_universe40(r.get("result", {}).get("list", []),
+                              getattr(ex, "markets", None))
+        if len(uni) < V3_UNIVERSE_N:
+            raise RuntimeError(f"변형3 유니버스 후보 부족({len(uni)}/"
+                               f"{V3_UNIVERSE_N}) — t0 동결 지연 (fail-closed)")
+        v = new_variant3(state, uni, t0=int(time.time() * 1000))
+        w_since = state.last_ts - (WARMUP_1H - 1) * H1
+        for s in v.basket_b:
+            rows = fetch_1h_paged(ex, s, w_since, state.last_ts + H1)
+            # 워밍업 완결성 검증 — 변형2 전례 그대로: last_ts 까지 덮어야 하고,
+            # 연속 꼬리만 사용, 꼬리 밖 관측 봉 = 내부 갭 재시도 (fail-closed)
+            if not rows or max(rows) != state.last_ts:
+                raise RuntimeError(
+                    f"{s} 변형3 워밍업 수집 불완전 — t0 동결 지연 (fail-closed)")
+            tail = []
+            t = state.last_ts
+            while t in rows:
+                tail.append(t)
+                t -= H1
+            tail.reverse()
+            if s in BASKET_A and len(tail) < WARMUP_1H:
+                # 상장 이력이 확실한 메이저는 완전 깊이 필수 — 그 외 유니버스
+                # 심볼은 늦은 상장 가능, 연속 꼬리만으로 시작 (지표 늦게 형성)
+                raise RuntimeError(
+                    f"{s} 변형3 워밍업 깊이 부족({len(tail)}/{WARMUP_1H}) — "
+                    f"t0 동결 지연 (fail-closed)")
+            if len(tail) != len(rows):
+                raise RuntimeError(
+                    f"{s} 변형3 워밍업 내부 갭({len(rows) - len(tail)}봉) — "
+                    f"t0 동결 지연 (fail-closed)")
+            warmup_full(v, s, [rows[t] for t in tail])
+        try:
+            state.variant3_cells = variant3_to_dict(v)
+            # 헤더 선생성 + 이력 스키마 이월 (e19~e21 열 정렬 — 변형2 전례)
+            append_csv_atomic(VLEDGER, pd.DataFrame([], columns=LEDGER_COLS),
+                              LEDGER_KEY)
+            _migrate_vhist_schema()
+            _atomic_write(STATE, json.dumps(state.to_dict(), indent=1,
+                                            default=float))
+        except BaseException:
+            state.variant3_cells = None   # 미기록 t0 영속화 금지 (롤백)
+            raise
+        logger.info("변형3 t0_variant3=%d 동결 (write-once) — E19~E21: %s / "
+                    "유니버스 40종(알파벳순): %s",
+                    v.t0, V3LABELS["E19"], ",".join(v.basket_b))
+        return
+    v = variant3_from_dict(state.variant3_cells)
+    if v.last_ts > state.last_ts:
+        raise ValueError(f"변형3 last_ts({v.last_ts})가 본 팜({state.last_ts}) 초과")
+    # 자체 마켓 소멸 검사 (본 폐지 미러 아님) — 죽은 마켓 페치 실패로 단계가
+    # 영구 실패하는 것 방지. 마켓 정보가 없으면(테스트 더블 등) 이번 실행은
+    # 생략 — 그 사이 죽은 마켓은 수집 실패로 이 단계만 실패하고, 마켓이 로드된
+    # 다음 실행에서 여기서 폐지된다 (살아있는 마켓의 데이터 단절은 48h 정책).
+    mk = getattr(ex, "markets", None)
+    vfills: list = []
+    if isinstance(mk, dict) and mk:
+        for s in [x for x in v.basket_b if x not in v.delisted]:
+            m = mk.get(f"{s}/USDT:USDT")
+            if m is None or m.get("active") is False:
+                logger.warning("%s 변형3 마켓 소멸/비활성 — 폐지 처리", s)
+                vfills += variant3_delist(v, s)
+    vsince, v3_end, vdata, vfund, dfills = _variant3_inputs(
+        ex, v, data, fund_ev, since, replay_end)
+    fills2, bars_done = _replay_variant(v, vdata, vfund, vsince, v3_end,
+                                        step_variant3)
+    _save_variant3(state, v, vfills + dfills + fills2,
+                   max(v3_end, v.last_ts), bars_done)
+
+
 def _finalize_variant(state: FarmState) -> None:
     """폐지만 있는 조기 종료 분기용 — 초기화된 변형에 폐지 미러만 수행·저장.
 
@@ -973,6 +1244,8 @@ def main() -> None:
     _safe_variant(_run_variant, ex, state, data, fund_ev, since, replay_end)
     # 변형2 셀 E13~E18 — E11·E12 뒤 셋째 단계, 각 단계 실패 상호 무영향 (분리)
     _safe_variant(_run_variant2, ex, state, data, fund_ev, since, replay_end)
+    # 변형3 셀 E19~E21 — 넷째 단계 (전 유니버스, 자체 수집·자체 폐지 판정)
+    _safe_variant(_run_variant3, ex, state, data, fund_ev, since, replay_end)
 
 
 if __name__ == "__main__":

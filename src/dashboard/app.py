@@ -1021,6 +1021,104 @@ def _load_h2_study(logs_dir: Path | None = None, today: date | None = None) -> d
     }
 
 
+# ------------------------------------------------------------------
+# 전 코인 스캐너 (carrybot/live/market_scanner.py 산출물 — 표시 전용)
+# ------------------------------------------------------------------
+
+MARKET_SCAN_STALE_H = 2.0       # 시간당 갱신 데이터 — 이 이상이면 "n시간 전" 회색
+
+# 코인 행 정규화 스키마 — 템플릿이 참조하는 전 키를 항상 채워 UndefinedError 차단
+_MS_NUM_FIELDS = ("price", "chg24h_pct", "turnover24h", "dist24h_pct",
+                  "dist96h_pct", "rsi14", "rsi2", "bb_pctb", "sma200_pct",
+                  "vol_surge", "close")
+
+
+def _ms_coin_row(c: dict) -> dict | None:
+    """스캐너 코인 행 1개를 표시 스키마로 정규화한다 (기형 필드 = None).
+
+    coin/symbol 둘 다 없으면 행 자체를 버린다 (None 반환).
+    """
+    coin = c.get("coin") or (str(c.get("symbol") or "").split("/")[0] or None)
+    if not coin:
+        return None
+    row: dict = {"coin": str(coin), "symbol": str(c.get("symbol") or "")}
+    for k in _MS_NUM_FIELDS:
+        v = c.get(k)
+        try:
+            # float 승격 뒤 검사 — 거대 int 는 math.isfinite(int) 단계에서
+            # OverflowError 를 던진다 (총체적 무크래시 계약)
+            fv = float(v) if not isinstance(v, bool) else float("nan")
+            ok = math.isfinite(fv)
+        except (TypeError, ValueError, OverflowError):
+            ok = False
+        row[k] = fv if ok else None
+    row["gate_long"] = c.get("gate_long") is True
+    row["gate_short"] = c.get("gate_short") is True
+    return row
+
+
+def _load_market_scan(logs_dir: Path | None = None,
+                      now: datetime | None = None) -> dict:
+    """전 코인 스캐너 카드 데이터를 읽는다 (표시 전용 — 게이트/주문 입력 금지).
+
+    logs/market_scan.json (스캐너가 원자 저장) 을 그대로 표시한다. 코인 순서는
+    파일 순서(24h 거래대금 내림차순 고정)를 보존한다 — 성과·근접도 재정렬 금지
+    (표시 규율). 파일 부재/손상/빈 목록은 available=False ("스캔 대기" 표시,
+    크래시 금지). 시간당 갱신 데이터라 /api/live 대상이 아니며 페이지 로드 시
+    1회 계산된다.
+
+    Args:
+        logs_dir: 산출물 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+        now: 신선도 기준 시각 (기본 현재 UTC, 테스트 주입용).
+
+    Returns:
+        {"available", "generated_at", "age_label", "stale", "coins",
+         "skipped"} (JSON 직렬화 가능).
+    """
+    logs = logs_dir or (ROOT / "logs")
+    empty = {"available": False, "generated_at": None, "age_label": None,
+             "stale": False, "coins": [], "skipped": 0}
+    try:
+        d = json.loads((logs / "market_scan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return empty
+    if not isinstance(d, dict):
+        return empty
+    raw_coins = d.get("coins")
+    if not isinstance(raw_coins, list):
+        return empty
+    coins = [r for r in (_ms_coin_row(c) for c in raw_coins
+                         if isinstance(c, dict)) if r is not None]
+    if not coins:
+        return empty
+
+    gen_disp: str | None = None
+    age_label: str | None = None
+    stale = False
+    raw = d.get("generated_at_utc")
+    if isinstance(raw, str):
+        try:
+            gen = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if gen.tzinfo is None:
+                gen = gen.replace(tzinfo=timezone.utc)
+            gen_disp = gen.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            ref = now or datetime.now(timezone.utc)
+            age_h = (ref - gen).total_seconds() / 3600.0
+            if age_h >= MARKET_SCAN_STALE_H:
+                stale = True
+                age_label = f"{int(age_h)}시간 전"
+        except (ValueError, OverflowError, OSError):
+            gen_disp = raw[:19].replace("T", " ")
+
+    try:
+        skipped = int(d.get("skipped") or 0)
+    except (TypeError, ValueError, OverflowError):
+        skipped = 0
+    return {"available": True, "generated_at": gen_disp,
+            "age_label": age_label, "stale": stale,
+            "coins": coins, "skipped": skipped}
+
+
 def _read_track_positions(fname: str) -> list[str]:
     """트랙 상태 파일에서 보유 심볼·방향을 읽는다 (없으면 빈 목록)."""
     try:
@@ -1207,6 +1305,7 @@ def index():
     # 셀 펼침 상세 초기값 — 표시 전용 스냅샷 (읽기 전용, 이후 pollLive 갱신).
     # 가격은 1초 캐시(_live_price)라 /api/live 폴링과 비용을 공유한다.
     tracke_detail = (_tracke_live() or {}).get("cells_detail", {})
+    market_scan = _load_market_scan()
     summary = _build_summary(balance, positions, trades, tracks, trader_study)
 
     return render_template(
@@ -1233,6 +1332,7 @@ def index():
         tracke_detail=tracke_detail,
         tracke_detail_json=json.dumps(tracke_detail),
         tracke_cell_capital=TRACKE_CELL_CAPITAL,
+        market_scan=market_scan,
         summary=summary,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
@@ -1266,6 +1366,7 @@ def api_status():
         "tracks": tracks,
         "trader_study": trader_study,
         "h2_study": _load_h2_study(),
+        "market_scan": _load_market_scan(),   # 시간당 갱신 — /api/live 비대상
         "tracke": _load_tracke(),     # 표시 전용 — 게이트/승급 입력 아님
         "balance": balance,
         "initial_balance": initial_balance,

@@ -102,6 +102,56 @@
   통합 — 유일키에 cell 이 있어 행 충돌 없음. 이력은 e13~e18 열 추가(keep-last
   관례 유지), equity 열 = 행 기록 시점의 변형 전 셀 시가평가 합. 본 원장
   (tracke_ledger.csv) 기록 금지 방화벽은 그룹별 저장 경계에서 강제.
+
+변형3 셀 E19~E21 — 2026-08-28 사전 고정, 성과 조회 전 동결 (V3CELLS 그룹):
+- 지위: 공식 판정 비대상·판정 권한 없음 (V3LABELS 동결 문구 — "전 유니버스 ·
+  미검증 · 백테스트 기준선 없음(전방 전용) · 판정 권한 없음"). 새 전략 로직
+  없음: E19 = BRK24, E20 = BRK24GATE(변형2 3중 게이트 정의 재사용), E21 = MR —
+  전부 기존 코드 경로 그대로, 유니버스·리스크 파라미터만 다르다.
+- 유니버스: T0(v3) 시점 봇 유니버스 관례(USDT 선형 무기한, 만기물 제외, 24h
+  거래대금 >= $5M)의 거래대금 상위 40종 = "거래량 상위 40 고정 코호트"
+  (바스켓 A/B 심볼 포함 가능 — 중복 허용). **알파벳순 정렬로 서브상태
+  basket_b 슬롯에 write-once 동결** (V3CELLS 의 basket 코드 "U" 가 cell_syms
+  에서 이 목록을 읽는다). 동적 전체 시장을 대표하지 않으며 T0 당시 이벤트성
+  고거래대금 종목에 편향될 수 있다 (공시 — Codex 검토).
+- 리스크 (셀당 신규 $10,000): 포지션당 리스크 **최대 1%** (스탑거리 역산,
+  V3_RISK — heat 잔여가 1% 미만이면 잔여만큼 클램프: heat_clamp. 비용 차감
+  후 equity 수축 탓에 클램프 없이는 6번째 진입이 상시 heat 차단되는 산술
+  결함의 사전 교정 — Codex 검토), 동시 최대 6포지션 (V3_MAX_POS).
+  heat 6%·gross 10x·일손실 -5% 진입정지·펀딩은 공통 그대로. heat 캡의 의미는
+  기존 관례 그대로 **진입 승인 시점** equity 기준이다 — 진입비용 차감 후
+  잔존 heat/equity 는 6%를 소폭 넘을 수 있고, 그 초과는 신규 진입 차단으로
+  작동한다 (손실 상한 아님 — Codex 검토 명기).
+- 선착 규칙 (동결): 같은 봉에 신호가 6개 초과면 **심볼 알파벳순 선착** —
+  구현 = 유니버스의 알파벳순 저장 + 셀 심볼 순회가 그 순서 + 동시 보유 캡.
+  정확한 의미는 "원신호 상위 6개 컷"이 아니라 "알파벳순 처리 순회에서 캡
+  도달까지 체결" (거절·같은 봉 청산으로 빈 슬롯은 뒤 심볼이 쓸 수 있다 —
+  결정론적, 사전 고정). 알파벳 앞 심볼로 노출이 쏠리는 편향 공시.
+- 비용 (동결, cost_model="major8_alt11"): 메이저(BASKET_A = BTC/ETH/SOL)는
+  기존 편도 8bp(왕복 16bp) 유지, **비메이저는 편도 11bp(왕복 22bp) = taker
+  6 + 슬립 5bp** — 캘리브레이션된 추정치가 아니라 얇은 알트 슬리피지를
+  보수 방향으로 고정한 **사전 고정 스트레스 비용 모델** (Codex 1라운드 합의:
+  균일 16bp 는 34+개 알트 비용을 체계적으로 낙관해 '비용 침식 관찰' 목적
+  자체를 훼손). E13~E18 등 기존 셀은 동결이라 소급 없음 (cost_model="").
+- 초기화 (본 팜과의 차이, 동결): 지표 스냅숏·폐지 목록을 **상속하지 않는다**
+  — 40심볼 전부를 러너가 같은 **최대** 깊이(WARMUP_1H)로 fresh 워밍업
+  (warmup_full, 기저+확장 지표 동시)해 초기조건을 대칭으로 만들고, 본 팜의
+  과거 단절 판정이 회복 심볼을 배제하지 않게 한다 (Codex 검토). 메이저
+  (BASKET_A)는 완전 깊이 필수, 상장 420h 미만 심볼은 상장 후 전체 연속
+  이력으로 시작한다 (v2 전례 — 엄격 420봉 강제는 동결을 최대 17.5일 지연
+  시키고 그 사이 재선정으로 코호트가 표류하므로 기각, 지표 미형성 동안
+  신호 차단이 비대칭을 흡수. 공시: 늦은 상장 심볼의 지표 이력은 짧다).
+  폐지·단절은 자체
+  수집 기준의 기존 규칙(마켓 소멸/48h 단절 → 마지막 유효가 청산 후 슬롯
+  영구 공석) — 본 폐지 미러 없음. 본 팜이 종말(전 심볼 폐지)하면 v3 단계도
+  더 못 돌므로 그 시점 보유 포지션은 미실현으로 동결된다 (문서화된 한계 —
+  페이퍼 전용이라 수용).
+- 상태: variant3_cells 키, t0_variant3 write-once (유니버스 워밍업 수집까지
+  성공한 최초 원자적 기록 시각 — 실패 시 동결 지연, fail-closed 재시도).
+  유니버스(basket_b)도 저장 경계에서 write-once 검증. 원장·이력은 기존 변형
+  파일 통합 (이력 e19~e21 열 추가, 스키마 이월 관례). 본 원장 기록 금지
+  방화벽·E01~E18 바이트 동일성 보증(variant3_cells 키 제외 projection)은
+  기존 그룹과 동일 (tests/test_scalp_farm.py 회귀).
 """
 from __future__ import annotations
 
@@ -160,15 +210,37 @@ RSI2_TREND_N = 200             # 레짐 필터 SMA 길이 (게이트 ①과 동�
 V2_NOTIONAL_FRAC = 1.0 / 3.0   # 스탑 없는 셀(BBMR·RSI2) 명목 = equity × 1/3
 V2_HEAT_FRAC = -DAILY_HALT     # 스탑 부재 heat 기여율 = 일손실 한도 크기 (5%)
 
+# --- 변형3 셀(E19~E21) 동결 상수 — 거래량 상위 40 고정 코호트("전 유니버스").
+#     새 전략 로직 없음 (BRK24/BRK24GATE/MR 재사용). 규칙은 모듈 docstring ---
+V3_RISK = 0.01                 # 포지션당 리스크 최대 1% (heat 잔여 클램프)
+V3_MAX_POS = 6                 # 셀당 동시 최대 포지션
+V3_UNIVERSE_N = 40             # 유니버스 크기 (T0(v3) 거래대금 상위, write-once)
+V3_COST_MODEL = "major8_alt11"  # 2단계 비용: 메이저 편도 8bp / 비메이저 11bp
+V3_COST_SIDE_ALT = 0.0011      # 비메이저(BASKET_A 외) 편도 = taker 6 + 슬립 5bp
+
 
 @dataclass(frozen=True)
 class CellSpec:
-    """셀 정의 (T0 동결)."""
+    """셀 정의 (T0 동결).
+
+    risk/max_pos/cost_model/heat_clamp 는 변형3(E19~E21) 파라미터화용 기본값
+    필드 — 기존 셀(E01~E18)은 전부 기본값이라 행동이 바이트 단위로 불변이다
+    (tests/test_scalp_farm.py 회귀 테스트가 보증).
+    """
 
     cell: str
-    strategy: str      # "BRK24"|"BRK48"|"BRK96"|"MR"|"RSIDIV"
-    basket: str        # "A"|"B"
+    strategy: str      # "BRK24"|"BRK48"|"BRK96"|"MR"|"RSIDIV"|파생 변형
+    basket: str        # "A"|"B"|"U"(변형3 전 유니버스)
     n: int             # BRK 채널 길이 (BRK 외 0)
+    risk: float = RISK             # 포지션당 리스크 (스탑거리 역산 사이징)
+    max_pos: int = MAX_POS         # 셀당 동시 최대 포지션
+    cost_model: str = ""           # "" = 균일 COST_SIDE, "major8_alt11" = 2단계
+    heat_clamp: bool = False       # True: heat 잔여로 수량 클램프 (리스크 '최대')
+
+    def __post_init__(self) -> None:
+        """cost_model 오타가 레거시 비용으로 조용히 폴백하는 것 방지 (Codex 검토)."""
+        if self.cost_model not in ("", V3_COST_MODEL):
+            raise ValueError(f"미지 cost_model: {self.cost_model!r}")
 
 
 CELLS: tuple[CellSpec, ...] = (
@@ -215,6 +287,28 @@ V2LABELS: dict = {
     "E17": "Connors RSI2 (출판) · 미검증 · 판정 권한 없음",
     "E18": "Connors RSI2 (출판) · 미검증 · 판정 권한 없음",
 }
+
+# 변형3 셀(E19~E21) — VCELLS·V2CELLS 와 분리된 그룹 (t0_variant3 별도 write-once).
+# basket "U" = 서브상태 basket_b 슬롯에 알파벳순 동결된 전 유니버스 (cell_syms).
+V3CELLS: tuple[CellSpec, ...] = (
+    CellSpec("E19", "BRK24", "U", 24, risk=V3_RISK, max_pos=V3_MAX_POS,
+             cost_model=V3_COST_MODEL, heat_clamp=True),
+    CellSpec("E20", "BRK24GATE", "U", 24, risk=V3_RISK, max_pos=V3_MAX_POS,
+             cost_model=V3_COST_MODEL, heat_clamp=True),
+    CellSpec("E21", "MR", "U", 0, risk=V3_RISK, max_pos=V3_MAX_POS,
+             cost_model=V3_COST_MODEL, heat_clamp=True),
+)
+
+# 변형3 셀 고정 라벨 (동결 문구 — 성과와 무관, 변경 금지)
+V3LABELS: dict = {
+    "E19": "전 유니버스 · 미검증 · 백테스트 기준선 없음(전방 전용) · 판정 권한 없음",
+    "E20": "전 유니버스 · 미검증 · 백테스트 기준선 없음(전방 전용) · 판정 권한 없음",
+    "E21": "전 유니버스 · 미검증 · 백테스트 기준선 없음(전방 전용) · 판정 권한 없음",
+}
+
+# 대시보드 바스켓 표기 (표시 전용 — _tracke_variant_spec 이 발견하면 사용.
+# "A"/"B" 는 대시보드 폴백 표기 유지, "U" 만 여기서 공급)
+VBASKET_LABELS: dict = {"U": "거래량 상위 40 고정 코호트 (T0 동결)"}
 
 
 @dataclass(frozen=True)
@@ -363,6 +457,29 @@ def warmup_x2(v: FarmState, sym: str, rows: list) -> None:
         _update_x2(x2, close, vol)
 
 
+def warmup_full(v: FarmState, sym: str, rows: list) -> None:
+    """변형3 심볼 전체 지표 워밍업 — (o,h,l,c[,vol]) 시퀀스를 시간순 반영 (주문 없음).
+
+    t0_variant3 동결 전 1회 전용: 기저 지표(ATR·채널·MR 종가)와 확장 지표(x2)를
+    _update_1h 로 함께 채운다 — 본 팜 지표 상속 없이 40심볼을 동일 깊이로
+    초기화한다 (초기조건 대칭 — Codex 검토 반영). NaN OHLC 봉은 결측 관례
+    (엔진 공통 fail-closed)로 건너뛴다 (NaN 거래량은 게이트만 차단).
+
+    Args:
+        v: 변형3 서브상태 (new_variant3 직후).
+        sym: 심볼.
+        rows: [(open, high, low, close[, vol]), ...] 시간 오름차순.
+    """
+    ind = v.ind.setdefault(sym, _new_ind())
+    ind.setdefault("x2", _new_x2())
+    for r in rows:
+        o, h, lo, c = r[0], r[1], r[2], r[3]
+        vol = r[4] if len(r) > 4 else float("nan")
+        if any(math.isnan(x) for x in (o, h, lo, c)):
+            continue
+        _update_1h(ind, BarE(0, o, h, lo, c, vol))
+
+
 @dataclass
 class FarmState:
     """팜 전체 상태 — JSON 직렬화 가능 (라이브 러너가 보존)."""
@@ -379,6 +496,8 @@ class FarmState:
     variant_cells: dict | None = None
     # 변형2(E13~E18) 서브상태 — 위와 같은 계약, 키·t0(t0_variant2)만 분리.
     variant2_cells: dict | None = None
+    # 변형3(E19~E21) 서브상태 — 동일 계약, 키·t0(t0_variant3)·유니버스 분리.
+    variant3_cells: dict | None = None
 
     def to_dict(self) -> dict:
         """JSON 직렬화 (셀 gross 계산용 마지막 유효 종가 마크맵 주입)."""
@@ -388,7 +507,8 @@ class FarmState:
                     delisted=list(self.delisted), ind=self.ind,
                     cells={c: s.to_dict(px) for c, s in self.cells.items()},
                     variant_cells=self.variant_cells,
-                    variant2_cells=self.variant2_cells)
+                    variant2_cells=self.variant2_cells,
+                    variant3_cells=self.variant3_cells)
 
     @classmethod
     def from_dict(cls, d: dict) -> "FarmState":
@@ -397,7 +517,8 @@ class FarmState:
                  basket_b=list(d.get("basket_b", [])),
                  delisted=list(d.get("delisted", [])), ind=dict(d.get("ind", {})),
                  variant_cells=d.get("variant_cells"),
-                 variant2_cells=d.get("variant2_cells"))
+                 variant2_cells=d.get("variant2_cells"),
+                 variant3_cells=d.get("variant3_cells"))
         st.cells = {c: CellState.from_dict(s) for c, s in d.get("cells", {}).items()}
         return st
 
@@ -449,11 +570,34 @@ def new_variant2(state: FarmState, t0: int) -> FarmState:
     return v
 
 
+def new_variant3(state: FarmState, universe: list, t0: int) -> FarmState:
+    """변형3 서브팜(E19~E21) 초기화 — t0_variant3 동결 시점에 1회 (write-once).
+
+    유니버스(거래량 상위 40 고정 코호트)는 **알파벳순 정렬**로 basket_b 슬롯에
+    동결 저장한다 — V3CELLS 의 basket "U" 가 cell_syms 에서 이 목록을 읽으며,
+    저장 순서 자체가 '같은 봉 신호 6개 초과 시 알파벳순 선착'의 사전 고정이다.
+    본 팜과 달리 지표 스냅숏·폐지 목록을 **상속하지 않는다** — 40심볼 전부를
+    러너가 같은 최대 깊이(WARMUP_1H, 늦은 상장은 상장 후 전체 연속 이력)로
+    fresh 워밍업(warmup_full)해 초기조건을 대칭으로 만들고, 폐지 판정도 자체
+    수집 기준으로만 한다 (본 팜의 과거 단절 판정이 회복 심볼을 배제하지
+    않음 — Codex 검토 반영).
+
+    Args:
+        state: 본 팜 상태 (변형되지 않음 — last_ts 정렬만 읽는다).
+        universe: 유니버스 코인명 목록 (정렬 전 허용 — 내부에서 알파벳순 동결).
+        t0: t0_variant3 (epoch ms) — 기록 후 불변.
+    """
+    return FarmState(t0=t0, last_ts=state.last_ts,
+                     basket_b=sorted(universe),
+                     cells={spec.cell: CellState() for spec in V3CELLS})
+
+
 def _vgroup_to_dict(v: FarmState, key: str) -> dict:
     """변형 그룹 직렬화 공용 — t0 를 그룹 키로 개명, 서브상태 중첩 제거."""
     d = v.to_dict()
     d.pop("variant_cells", None)          # 중첩 없음 (변형 안의 변형 금지)
     d.pop("variant2_cells", None)
+    d.pop("variant3_cells", None)
     d[key] = d.pop("t0")
     return d
 
@@ -466,6 +610,11 @@ def variant_to_dict(v: FarmState) -> dict:
 def variant2_to_dict(v: FarmState) -> dict:
     """변형2 서브상태 직렬화 — 'variant2_cells' 키 계약 (t0_variant2 명명)."""
     return _vgroup_to_dict(v, "t0_variant2")
+
+
+def variant3_to_dict(v: FarmState) -> dict:
+    """변형3 서브상태 직렬화 — 'variant3_cells' 키 계약 (t0_variant3 명명)."""
+    return _vgroup_to_dict(v, "t0_variant3")
 
 
 def _vgroup_from_dict(d: dict | None, key: str, cells: tuple) -> FarmState:
@@ -500,9 +649,22 @@ def variant2_from_dict(d: dict | None) -> FarmState:
     return _vgroup_from_dict(d, "t0_variant2", V2CELLS)
 
 
+def variant3_from_dict(d: dict | None) -> FarmState:
+    """'variant3_cells' 키 역직렬화 — 손상 시 fail-closed (E19~E21)."""
+    return _vgroup_from_dict(d, "t0_variant3", V3CELLS)
+
+
 def cell_syms(spec: CellSpec, state: FarmState) -> tuple:
-    """셀의 바스켓 심볼."""
-    return BASKET_A if spec.basket == "A" else tuple(state.basket_b)
+    """셀의 바스켓 심볼 — "U"(변형3 전 유니버스)는 서브상태 basket_b 슬롯 재사용.
+
+    Raises:
+        ValueError: 미지의 바스켓 코드 (fail-closed — 오타가 B 경로로 새는 것 방지).
+    """
+    if spec.basket == "A":
+        return BASKET_A
+    if spec.basket in ("B", "U"):
+        return tuple(state.basket_b)
+    raise ValueError(f"미지 바스켓 코드: {spec.basket!r}")
 
 
 def _cell_mtm(cell: CellState, px: dict) -> float:
@@ -535,6 +697,11 @@ def variant2_equities(v: FarmState) -> dict:
     return _equities(v, V2CELLS)
 
 
+def variant3_equities(v: FarmState) -> dict:
+    """변형3 셀(E19~E21) 시가평가 — 변형3 서브상태 전용."""
+    return _equities(v, V3CELLS)
+
+
 def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
         qty: float, pnl: float, cost: float, d: int, fund: float = 0.0) -> dict:
     """원장 이벤트 — 유일키 (cell, sym, strategy, bar_close, action).
@@ -547,12 +714,24 @@ def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
                 direction=d, funding=fund)
 
 
+def _cost_side(spec: CellSpec, s: str) -> float:
+    """심볼별 편도 비용 — cost_model 스코프 (기존 셀은 항상 COST_SIDE 그대로).
+
+    "major8_alt11" (변형3 E19~E21 동결): 메이저(BASKET_A)는 편도 8bp 유지,
+    비메이저는 편도 11bp (taker 6 + 슬립 5bp) — 얇은 알트 슬리피지를 보수
+    방향으로 고정한 사전 고정 스트레스 비용 모델 (캘리브레이션 추정치 아님).
+    """
+    if spec.cost_model == V3_COST_MODEL and s not in BASKET_A:
+        return V3_COST_SIDE_ALT
+    return COST_SIDE
+
+
 def _close(cell: CellState, spec: CellSpec, s: str, ts_close: int, px: float,
            action: str, fills: list) -> None:
-    """포지션 청산 (편도 비용 차감)."""
+    """포지션 청산 (편도 비용 차감 — 비용률은 _cost_side)."""
     p = cell.positions.pop(s)
     pnl = p.u * (px - p.e) * p.d
-    cost = p.u * px * COST_SIDE
+    cost = p.u * px * _cost_side(spec, s)
     cell.equity += pnl - cost
     cell.cost += cost
     cell.turnover += p.u * px
@@ -577,7 +756,7 @@ def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: fl
         시가 동시 체결 확정 후 _post_fill_check()로 수행한다.
     """
     ts_close = b.ts + H1
-    if cell.halted or len(cell.positions) >= MAX_POS:
+    if cell.halted or len(cell.positions) >= spec.max_pos:
         return False
     if notional:
         dist = fill * V2_HEAT_FRAC     # 스탑 부재 heat 기여 = 명목 × 5% (동결 정의)
@@ -593,15 +772,21 @@ def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: fl
     gross = sum(pp.u * px.get(ss, pp.e) for ss, pp in cell.positions.items())
     if gross >= GROSS_CAP * eq:
         return False
-    want = V2_NOTIONAL_FRAC * eq / fill if notional else RISK * eq / dist
+    want = V2_NOTIONAL_FRAC * eq / fill if notional else spec.risk * eq / dist
     u = min(want, max(0.0, GROSS_CAP * eq - gross) / fill)
+    heat = sum(pp.risk_d * pp.u for pp in cell.positions.values())
+    if spec.heat_clamp:
+        # 변형3: heat 잔여로 수량 클램프 — "포지션당 리스크 '최대' spec.risk".
+        # 비용 차감 후 equity 수축 탓에 클램프 없이는 6번째 진입이 상시 heat
+        # 차단되는 산술 결함의 사전 교정 (Codex 검토). room 은 tolerance 없이
+        # 계산 — 아래 기존 검사(1+1e-9)가 부동소수 ulp 오차를 흡수한다.
+        u = min(u, max(0.0, HEAT_CAP * eq - heat) / dist)
     if u <= 0:
         return False
-    heat = sum(pp.risk_d * pp.u for pp in cell.positions.values())
     if heat + u * dist > HEAT_CAP * eq * (1 + 1e-9):
         logger.info("%s %s 진입 차단 — heat 캡 %.0f%%", spec.cell, s, HEAT_CAP * 100)
         return False
-    cost = u * fill * COST_SIDE
+    cost = u * fill * _cost_side(spec, s)
     cell.equity -= cost
     cell.cost += cost
     cell.turnover += u * fill
@@ -1021,6 +1206,26 @@ def step_variant2(state: FarmState, bars: dict, funding: dict | None = None) -> 
     return _step_cells(state, bars, funding, V2CELLS)
 
 
+def step_variant3(state: FarmState, bars: dict, funding: dict | None = None) -> list:
+    """변형3 서브팜(E19~E21) 전용 step — 같은 내부 경로, 상태·셀만 분리.
+
+    확장 지표(x2)가 없는 심볼은 빈 상태로 만든다 (step_variant2 관례 —
+    이력이 찰 때까지 게이트 신호는 전부 차단, fail-closed).
+
+    Args:
+        state: 변형3 서브상태 (variant3_from_dict 결과, 변형됨).
+        bars: sym -> BarE (동일 ts 필수, vol 포함 권장 — 결측 시 게이트만 차단).
+        funding: sym -> 이 봉 종가 시각에 정산되는 펀딩률 합 (없으면 0).
+
+    Returns:
+        체결 이벤트 목록 (cell 은 E19~E21 만).
+    """
+    for s, b in bars.items():
+        if b.ts > state.last_ts:
+            state.ind.setdefault(s, _new_ind()).setdefault("x2", _new_x2())
+    return _step_cells(state, bars, funding, V3CELLS)
+
+
 def _step_cells(state: FarmState, bars: dict, funding: dict | None,
                 cells: tuple) -> list:
     """닫힌 1h 봉 1개를 cells 전체에 처리하는 내부 공용 구현 (인과 규약 준수)."""
@@ -1161,6 +1366,15 @@ def variant2_delist(v: FarmState, sym: str, last_px: float | None = None) -> lis
     return _delist_cells(v, sym, last_px, V2CELLS)
 
 
+def variant3_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
+    """변형3 셀(E19~E21) 폐지 처리 — 자체 수집 기준 (본 폐지 미러 아님).
+
+    러너의 변형3 단계가 자체 마켓 소멸 검사·48h 단절 정책으로 호출한다 —
+    청산가는 변형3 상태의 마지막 처리 종가 (fail-closed 관례 동일).
+    """
+    return _delist_cells(v, sym, last_px, V3CELLS)
+
+
 def _delist_cells(state: FarmState, sym: str, last_px: float | None,
                   cells: tuple) -> list:
     """폐지 내부 공용 구현 — cells 의 포지션을 마지막 유효가로 강제 청산."""
@@ -1180,7 +1394,7 @@ def _delist_cells(state: FarmState, sym: str, last_px: float | None,
             continue
         use = px if px is not None else p.e        # 가격 이력 없으면 진입가 (fail-closed)
         pnl = p.u * (use - p.e) * p.d
-        cost = p.u * use * COST_SIDE
+        cost = p.u * use * _cost_side(spec, sym)
         cell.equity += pnl - cost
         cell.cost += cost
         cell.turnover += p.u * use

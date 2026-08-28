@@ -597,6 +597,69 @@
     {% endif %}
 
     <div class="section-divider">
+        <span class="sd-label">전 코인 스캐너 — 거래량 상위 40 (1h &middot; 관측 전용)</span>
+        <div class="sd-line"></div>
+    </div>
+    <!-- 전 코인 스캐너 (carrybot/live/market_scanner.py 산출물 — 표시 전용, /api/live 비대상) -->
+    <div class="card p-3 mb-3">
+        <div class="section-title">
+            전 코인 스캐너
+            <span class="text-muted" style="font-weight:400; font-size:0.72rem;">거래대금 순 고정 &mdash; 성과·근접도 정렬 없음</span>
+            <span class="text-muted float-end mono" style="font-weight:400; font-size:0.75rem;">
+                {% if market_scan.available %}
+                    {{ market_scan.generated_at or '-' }}{% if market_scan.stale %} <span style="color:#8b949e;">({{ market_scan.age_label }})</span>{% endif %}
+                {% endif %}
+            </span>
+        </div>
+        <div class="text-muted mb-2" style="font-size: 0.75rem;">
+            관측 전용 &mdash; 자동 거래 아님. 거래는 동결된 18계정 규칙만 수행.
+        </div>
+        {% if market_scan.available %}
+        <div class="table-responsive">
+            <table class="table table-sm tracke-table mb-0">
+                <thead>
+                <tr>
+                    <th>코인</th>
+                    <th class="text-end">현재가</th>
+                    <th class="text-end">24h%</th>
+                    <th class="text-end" title="24h 채널 상단까지 거리 % (음수 = 확정 종가가 이미 상단 위)">돌파 24h</th>
+                    <th class="text-end" title="96h 채널 상단까지 거리 % (음수 = 확정 종가가 이미 상단 위)">돌파 96h</th>
+                    <th class="text-end">RSI14</th>
+                    <th class="text-end">BB %b</th>
+                    <th class="text-center" title="3중 게이트 (추세·RSI50·거래량) 롱 충족">롱</th>
+                    <th class="text-center" title="3중 게이트 (추세·RSI50·거래량) 숏 충족">숏</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for c in market_scan.coins %}
+                <tr>
+                    <td class="mono fw-bold">{{ c.coin }}</td>
+                    <td class="text-end mono">{{ ("%.8f"|format(c.price)).rstrip('0').rstrip('.') if c.price is not none else '-' }}</td>
+                    <td class="text-end mono {{ 'positive' if c.chg24h_pct is not none and c.chg24h_pct >= 0 else ('negative' if c.chg24h_pct is not none else '') }}">{{ ("%+.2f"|format(c.chg24h_pct)) ~ '%' if c.chg24h_pct is not none else '-' }}</td>
+                    <td class="text-end mono">{{ ("%+.2f"|format(c.dist24h_pct)) ~ '%' if c.dist24h_pct is not none else '-' }}</td>
+                    <td class="text-end mono">{{ ("%+.2f"|format(c.dist96h_pct)) ~ '%' if c.dist96h_pct is not none else '-' }}</td>
+                    <td class="text-end mono">{{ ("%.1f"|format(c.rsi14)) if c.rsi14 is not none else '-' }}</td>
+                    <td class="text-end mono">{{ ("%.2f"|format(c.bb_pctb)) if c.bb_pctb is not none else '-' }}</td>
+                    <td class="text-center mono">{{ '●' if c.gate_long else '○' }}</td>
+                    <td class="text-center mono">{{ '●' if c.gate_short else '○' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="text-muted mt-2" style="font-size: 0.72rem;">
+            현재가&middot;24h%는 티커 스냅숏 &middot; 지표&middot;돌파 거리는 최신 1h <strong>확정봉 종가</strong> 기준
+            (음수 = 확정 종가가 이미 채널 상단 위) &middot; 게이트 = 추세(SMA200)&middot;RSI50&middot;거래량 3중 AND
+            {% if market_scan.skipped %} &middot; 스킵 {{ market_scan.skipped }}종목{% endif %}
+        </div>
+        {% else %}
+        <div class="text-muted" style="font-size: 0.8rem;">
+            스캔 대기 &mdash; 스캐너(python -m carrybot.live.market_scanner) 첫 실행 후 여기에 표시됩니다.
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="section-divider">
         <span class="sd-label">ICT 봇 — 기존 트랙 (15분)</span>
         <div class="sd-line"></div>
     </div>
