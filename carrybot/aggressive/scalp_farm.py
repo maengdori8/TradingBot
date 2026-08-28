@@ -56,6 +56,52 @@
 - E01~E10 불변 보증: 본 셀은 step()/CELLS 경로만 사용하며 변형은 step_variant()/
   VCELLS 별도 상태로만 돈다 — 동일 합성 시퀀스에서 본 원장 바이트 동일
   (tests/test_scalp_farm.py 회귀 테스트).
+
+변형 셀 E13~E18 — 2026-08-28 사전 고정, 성과 조회 전 동결 (V2CELLS 그룹):
+- 지위: 공식 판정 비대상·판정 권한 없음 (V2LABELS 동결 문구). 원전은
+  lab/confluence_gate_test.py(E13/E14)·lab/published_systems_test.py(E15~E18)의
+  확정 구현 1:1 이식. 상태는 본 상태 JSON 의 variant2_cells 키 (E11/E12 의
+  variant_cells 와 완전 분리), t0_variant2 = 변형2 서브상태의 최초 원자적 기록
+  시각 (그룹별 write-once, 기존 t0_variant 불변·E11/E12 무영향).
+- E13/E14 = BRK24GATE (바스켓 A/B): BRK24 와 진입·스탑·사이징·청산 완전 동일
+  (같은 코드 경로) — 단 진입 허용 = 3중 게이트 AND (전부 확정봉 [i-1] 값,
+  NaN/미형성 = 차단 fail-closed, _gate_ok):
+  ① 추세: close[i-1] vs SMA200(1h)[i-1] (롱 >, 숏 <)
+  ② 모멘텀: Wilder RSI14[i-1] vs 50 (롱 >, 숏 <)
+  ③ 거래량: vol[i-1] > mean(vol[i-21..i-2]) (rolling(20).mean().shift(2) 구조)
+  이중 돌파봉(상하 동시)은 롱 우선 해석 후 게이트 (confluence_gate_test 확정).
+- E15/E16 = BBMR (바스켓 A/B): BB(20, 2σ, ddof=0 모표준편차, 중심 SMA20).
+  확정봉 종가 < 하단밴드 → 다음 봉 시가 롱 진입 (U1 실행 규약), 청산 = 확정봉
+  종가 >= SMA20 → 다음 봉 시가. 롱 온리, 스탑 없음 (출판 충실).
+- E17/E18 = RSI2 (바스켓 A/B): Connors 원전 — 롱: close>SMA200 ∧ RSI(2)<5 →
+  다음 봉 시가 진입, 청산 close>SMA5 → 다음 봉 시가. 숏 대칭 (close<SMA200 ∧
+  RSI(2)>95, 청산 close<SMA5). Wilder 평활 (published_systems wilder_rsi 의
+  dn==0 정의 포함: 상승만 100, 무변동 50). 스탑 없음.
+- 사이징 (E15~E18 공통, 스탑 부재): 포지션 명목 = equity × 1/3 (3슬롯 균등,
+  레버리지 없음) — 2% 스탑거리 역산 사이징 미적용 (_try_open notional 모드).
+  일손실 -5% 진입정지·비용 왕복 16bp·펀딩·MAX_POS 3·그로스 캡은 공통 그대로.
+- heat 정의 (스탑 없는 포지션): heat 기여 = 명목 × |일손실 한도|(5%) —
+  risk_d = fill × V2_HEAT_FRAC 로 동결. 슬롯당 equity 의 1/3 × 5% ≈ 1.667% →
+  3슬롯 만재 시 5% ≤ HEAT_CAP 6% (설계 슬롯은 구조적으로 허용, 드로다운 뒤
+  잔존 heat 가 캡을 넘기면 신규 진입 차단). gross 는 통상대로 |u|×마크 산입.
+  주의: 이 heat 정의는 손실 상한이 아니다 — 스탑이 없어 포지션 최대 손실은
+  명목 전체이며, heat 는 진입 차단용 대리변수일 뿐이다 (실질 손실 제동은
+  명목 1/3 고정·MAX_POS 3·일손실 -5% 진입정지가 담당 — Codex 검토 명기).
+- 실행 규약과 원전의 명시적 차이 (동결):
+  (i) 같은 봉 청산 심볼 재진입 금지 — 팜 공통 위상 규약이 lab 의 '청산 체결봉
+      종가 재신호 허용'에 우선한다 (재진입 신호가 lab 대비 최대 1봉 지연).
+  (ii) 체결봉 종가는 확정봉이므로 BBMR·RSI2 의 '청산 신호' 평가에 포함한다
+      (_step_cells 3단계 예외) — lab 과 1:1, 청산 체결은 다음 봉 시가라 인과 무결.
+  (iii) 지표 이력은 관측된 봉만 축적 (결측 봉 보간 없음 — 엔진 공통 관례;
+      lab 동결 데이터는 내부 갭이 없어 실질 동일).
+- 지표: BRK 핵심(ATR·채널)은 본 팜 스냅숏 상속 (E11 전례). 본 팜이 추적하지
+  않는 확장 지표(x2: 200종가·21거래량·RSI14·RSI2 평활)는 러너가 t0_variant2
+  동결 전에 warmup_x2 로 과거 봉을 재생해 채운다 (수집 실패 시 동결 지연,
+  fail-closed — 워밍업 중·미형성 지표는 전부 차단이며 주문 없음).
+- 원장·이력: E11/E12 와 같은 분리 파일(tracke_variant_ledger/history.csv)에
+  통합 — 유일키에 cell 이 있어 행 충돌 없음. 이력은 e13~e18 열 추가(keep-last
+  관례 유지), equity 열 = 행 기록 시점의 변형 전 셀 시가평가 합. 본 원장
+  (tracke_ledger.csv) 기록 금지 방화벽은 그룹별 저장 경계에서 강제.
 """
 from __future__ import annotations
 
@@ -99,6 +145,21 @@ WARMUP_1H = 420                # 워밍업 조회 깊이 (완전한 4h 창 최�
 VAR_TP_R = 1.0                 # BRK24TP 익절 배수 (1R)
 VAR_MAX_HOLD = 12              # 최대 보유 1h봉 수 (진입봉 = 1)
 
+# --- 변형2 셀(E13~E18) 동결 상수 — 원전: lab/confluence_gate_test.py(게이트),
+#     lab/published_systems_test.py(BBMR·RSI2). 규칙은 모듈 docstring ---
+GATE_SMA_N = 200               # 게이트 ① 추세 SMA (1h)
+GATE_RSI_N = 14                # 게이트 ② Wilder RSI
+GATE_VOL_N = 20                # 게이트 ③ 거래량 평균 창 (vol[i-1] vs 직전 20봉)
+BB_N = 20                      # BBMR 밴드 길이 (중심 SMA20)
+BB_K = 2.0                     # BBMR 밴드 폭 (2σ, ddof=0 모표준편차)
+RSI2_N = 2                     # Connors RSI 길이
+RSI2_LO = 5.0                  # 롱 진입 임계 (원전 수치 — 10/90 완화 변형 아님)
+RSI2_HI = 95.0                 # 숏 진입 임계
+RSI2_EXIT_N = 5                # 청산 SMA 길이
+RSI2_TREND_N = 200             # 레짐 필터 SMA 길이 (게이트 ①과 동수·별도 출처)
+V2_NOTIONAL_FRAC = 1.0 / 3.0   # 스탑 없는 셀(BBMR·RSI2) 명목 = equity × 1/3
+V2_HEAT_FRAC = -DAILY_HALT     # 스탑 부재 heat 기여율 = 일손실 한도 크기 (5%)
+
 
 @dataclass(frozen=True)
 class CellSpec:
@@ -138,16 +199,38 @@ VLABELS: dict = {
     "E12": "빠른 익절 변형 · 미검증 · 판정 권한 없음",
 }
 
+# 변형2 셀(E13~E18) — VCELLS 와도 분리된 그룹 (t0_variant2 별도 write-once)
+V2CELLS: tuple[CellSpec, ...] = (
+    CellSpec("E13", "BRK24GATE", "A", 24), CellSpec("E14", "BRK24GATE", "B", 24),
+    CellSpec("E15", "BBMR", "A", 0), CellSpec("E16", "BBMR", "B", 0),
+    CellSpec("E17", "RSI2", "A", 0), CellSpec("E18", "RSI2", "B", 0),
+)
+
+# 변형2 셀 고정 라벨 (동결 문구 — 성과와 무관, 변경 금지)
+V2LABELS: dict = {
+    "E13": "컨플루언스 게이트 변형 · 미검증 · 판정 권한 없음",
+    "E14": "컨플루언스 게이트 변형 · 미검증 · 판정 권한 없음",
+    "E15": "볼린저 평균회귀 (출판) · 미검증 · 판정 권한 없음",
+    "E16": "볼린저 평균회귀 (출판) · 미검증 · 판정 권한 없음",
+    "E17": "Connors RSI2 (출판) · 미검증 · 판정 권한 없음",
+    "E18": "Connors RSI2 (출판) · 미검증 · 판정 권한 없음",
+}
+
 
 @dataclass(frozen=True)
 class BarE:
-    """닫힌 1h 봉 (ts = 봉 시작 시각 ms, 종가 시각은 ts + H1)."""
+    """닫힌 1h 봉 (ts = 봉 시작 시각 ms, 종가 시각은 ts + H1).
+
+    vol: 거래량 — 변형2 게이트 ③ 전용 (본 셀·E11/E12 는 사용하지 않음).
+        OHLC NaN 결측 검사에 불포함, NaN 이면 게이트만 차단 (fail-closed).
+    """
 
     ts: int
     open: float
     high: float
     low: float
     close: float
+    vol: float = float("nan")
 
 
 @dataclass
@@ -228,6 +311,58 @@ def _new_ind() -> dict:
     }
 
 
+def _new_x2() -> dict:
+    """변형2(E13~E18) 확장 지표 초기값 — 본 팜·E11/E12 의 ind 에는 없는 키('x2').
+
+    이 키의 존재 자체가 갱신 스위치다 (_update_1h): 본 상태에는 절대 생기지
+    않으므로 본 경로·기존 변형 경로의 상태 바이트가 변하지 않는다.
+    """
+    return {"c2": [],       # 최근 200 종가 (현재 봉 제외 — 봉 처리 후 갱신)
+            "v2": [],       # 최근 21 거래량 (NaN 허용 — 게이트가 차단)
+            "u14": None, "d14": None,   # 게이트 RSI14 Wilder 평활
+            "u2": None, "d2": None}     # Connors RSI(2) Wilder 평활
+
+
+def _update_x2(x2: dict, close: float, vol: float) -> None:
+    """확장 지표 1봉 반영 (봉 처리 '후' 호출 — 다음 봉에서 [i-1] 값이 된다).
+
+    RSI 평활은 첫 diff 시드 — pandas ewm(alpha=1/n, adjust=False)의
+    선행 NaN 스킵과 동치 (confluence_gate_test·published_systems 원전 동형).
+    """
+    if x2["c2"]:
+        diff = close - x2["c2"][-1]
+        ux, dx = max(diff, 0.0), max(-diff, 0.0)
+        x2["u14"] = ux if x2["u14"] is None else \
+            x2["u14"] + (ux - x2["u14"]) / GATE_RSI_N
+        x2["d14"] = dx if x2["d14"] is None else \
+            x2["d14"] + (dx - x2["d14"]) / GATE_RSI_N
+        x2["u2"] = ux if x2["u2"] is None else x2["u2"] + (ux - x2["u2"]) / RSI2_N
+        x2["d2"] = dx if x2["d2"] is None else x2["d2"] + (dx - x2["d2"]) / RSI2_N
+    x2["c2"].append(close)
+    del x2["c2"][:-max(GATE_SMA_N, RSI2_TREND_N)]
+    x2["v2"].append(vol)
+    del x2["v2"][:-(GATE_VOL_N + 1)]
+
+
+def warmup_x2(v: FarmState, sym: str, rows: list) -> None:
+    """변형2 확장 지표 워밍업 — (close, vol) 시퀀스를 시간순 반영 (주문 없음).
+
+    t0_variant2 동결 전 1회 전용: 본 팜 스냅숏(new_variant2)에 없는 게이트·
+    밴드·RSI 이력을 v.last_ts 이전 봉으로만 채운다. NaN 종가 봉은 결측 관례
+    (엔진 공통 fail-closed)로 건너뛴다.
+
+    Args:
+        v: 변형2 서브상태 (new_variant2 직후).
+        sym: 심볼.
+        rows: [(close, vol), ...] 시간 오름차순.
+    """
+    x2 = v.ind.setdefault(sym, _new_ind()).setdefault("x2", _new_x2())
+    for close, vol in rows:
+        if math.isnan(close):
+            continue
+        _update_x2(x2, close, vol)
+
+
 @dataclass
 class FarmState:
     """팜 전체 상태 — JSON 직렬화 가능 (라이브 러너가 보존)."""
@@ -242,6 +377,8 @@ class FarmState:
     # None = 미초기화(초기화 가능), dict = variant_to_dict() 산출물.
     # {} 등 손상값은 variant_from_dict 가 fail-closed (재초기화로 t0 이동 금지).
     variant_cells: dict | None = None
+    # 변형2(E13~E18) 서브상태 — 위와 같은 계약, 키·t0(t0_variant2)만 분리.
+    variant2_cells: dict | None = None
 
     def to_dict(self) -> dict:
         """JSON 직렬화 (셀 gross 계산용 마지막 유효 종가 마크맵 주입)."""
@@ -250,7 +387,8 @@ class FarmState:
         return dict(t0=self.t0, last_ts=self.last_ts, basket_b=list(self.basket_b),
                     delisted=list(self.delisted), ind=self.ind,
                     cells={c: s.to_dict(px) for c, s in self.cells.items()},
-                    variant_cells=self.variant_cells)
+                    variant_cells=self.variant_cells,
+                    variant2_cells=self.variant2_cells)
 
     @classmethod
     def from_dict(cls, d: dict) -> "FarmState":
@@ -258,7 +396,8 @@ class FarmState:
         st = cls(t0=d.get("t0", 0), last_ts=d.get("last_ts", 0),
                  basket_b=list(d.get("basket_b", [])),
                  delisted=list(d.get("delisted", [])), ind=dict(d.get("ind", {})),
-                 variant_cells=d.get("variant_cells"))
+                 variant_cells=d.get("variant_cells"),
+                 variant2_cells=d.get("variant2_cells"))
         st.cells = {c: CellState.from_dict(s) for c, s in d.get("cells", {}).items()}
         return st
 
@@ -289,34 +428,76 @@ def new_variant(state: FarmState, t0: int) -> FarmState:
                      cells={spec.cell: CellState() for spec in VCELLS})
 
 
-def variant_to_dict(v: FarmState) -> dict:
-    """변형 서브상태 직렬화 — 상태 JSON 'variant_cells' 키 계약 (t0_variant 명명)."""
+def new_variant2(state: FarmState, t0: int) -> FarmState:
+    """변형2 서브팜(E13~E18) 초기화 — t0_variant2 동결 시점에 1회 (write-once).
+
+    본 팜 지표 스냅숏 상속은 E11 전례(new_variant)와 동일하되, 본 팜이 추적하지
+    않는 확장 지표(x2)는 빈 상태로 만든다 — 러너가 t0 동결 전 warmup_x2 로
+    과거 봉을 재생해 채운다 (미형성 동안 게이트·밴드·RSI 신호는 전부 차단).
+
+    Args:
+        state: 본 팜 상태 (변형되지 않음).
+        t0: t0_variant2 (epoch ms) — 기록 후 불변.
+    """
+    v = FarmState(t0=t0, last_ts=state.last_ts,
+                  basket_b=list(state.basket_b),
+                  delisted=list(state.delisted),
+                  ind=copy.deepcopy(state.ind),
+                  cells={spec.cell: CellState() for spec in V2CELLS})
+    for i_ in v.ind.values():
+        i_.setdefault("x2", _new_x2())
+    return v
+
+
+def _vgroup_to_dict(v: FarmState, key: str) -> dict:
+    """변형 그룹 직렬화 공용 — t0 를 그룹 키로 개명, 서브상태 중첩 제거."""
     d = v.to_dict()
     d.pop("variant_cells", None)          # 중첩 없음 (변형 안의 변형 금지)
-    d["t0_variant"] = d.pop("t0")
+    d.pop("variant2_cells", None)
+    d[key] = d.pop("t0")
     return d
 
 
-def variant_from_dict(d: dict | None) -> FarmState:
-    """'variant_cells' 키 역직렬화 — 손상 시 fail-closed.
+def variant_to_dict(v: FarmState) -> dict:
+    """변형 서브상태 직렬화 — 상태 JSON 'variant_cells' 키 계약 (t0_variant 명명)."""
+    return _vgroup_to_dict(v, "t0_variant")
+
+
+def variant2_to_dict(v: FarmState) -> dict:
+    """변형2 서브상태 직렬화 — 'variant2_cells' 키 계약 (t0_variant2 명명)."""
+    return _vgroup_to_dict(v, "t0_variant2")
+
+
+def _vgroup_from_dict(d: dict | None, key: str, cells: tuple) -> FarmState:
+    """변형 그룹 역직렬화 공용 — 손상 시 fail-closed.
 
     부재(None)와 손상({}·키 누락·셀 구성 오류)을 구분한다: 부재만 초기화
-    대상이고, 손상은 예외다 — 조용한 재초기화로 t0_variant 가 이동하는 것 금지.
+    대상이고, 손상은 예외다 — 조용한 재초기화로 그룹 t0 가 이동하는 것 금지.
 
     Raises:
-        ValueError: t0_variant 부재/0 또는 셀 구성이 정확히 {E11, E12}가 아닐 때.
+        ValueError: 그룹 t0 부재/0 또는 셀 구성이 그룹 정의와 다를 때.
     """
-    t0 = d.get("t0_variant") if isinstance(d, dict) else None
+    t0 = d.get(key) if isinstance(d, dict) else None
     if not isinstance(t0, (int, float)) or isinstance(t0, bool) or t0 <= 0:
         raise ValueError(
-            f"변형 서브상태 손상 — t0_variant 부재/비정상 (재초기화 금지): {t0!r}")
-    want = {spec.cell for spec in VCELLS}
+            f"변형 서브상태 손상 — {key} 부재/비정상 (재초기화 금지): {t0!r}")
+    want = {spec.cell for spec in cells}
     have = set(d.get("cells", {}))
     if have != want:
         raise ValueError(f"변형 셀 구성 불일치: {sorted(have)} != {sorted(want)}")
     d = copy.deepcopy(d)                  # 저장된 dict 와의 중첩 별칭 차단
-    d["t0"] = d.pop("t0_variant")
+    d["t0"] = d.pop(key)
     return FarmState.from_dict(d)
+
+
+def variant_from_dict(d: dict | None) -> FarmState:
+    """'variant_cells' 키 역직렬화 — 손상 시 fail-closed (E11·E12)."""
+    return _vgroup_from_dict(d, "t0_variant", VCELLS)
+
+
+def variant2_from_dict(d: dict | None) -> FarmState:
+    """'variant2_cells' 키 역직렬화 — 손상 시 fail-closed (E13~E18)."""
+    return _vgroup_from_dict(d, "t0_variant2", V2CELLS)
 
 
 def cell_syms(spec: CellSpec, state: FarmState) -> tuple:
@@ -349,6 +530,11 @@ def variant_equities(v: FarmState) -> dict:
     return _equities(v, VCELLS)
 
 
+def variant2_equities(v: FarmState) -> dict:
+    """변형2 셀(E13~E18) 시가평가 — 변형2 서브상태 전용."""
+    return _equities(v, V2CELLS)
+
+
 def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
         qty: float, pnl: float, cost: float, d: int, fund: float = 0.0) -> dict:
     """원장 이벤트 — 유일키 (cell, sym, strategy, bar_close, action).
@@ -375,13 +561,16 @@ def _close(cell: CellState, spec: CellSpec, s: str, ts_close: int, px: float,
 
 def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: float,
               stop: float, kind: str, px: dict, fills: list,
-              tgt: float = 0.0, n4_entry: int = 0) -> bool:
+              tgt: float = 0.0, n4_entry: int = 0, notional: bool = False) -> bool:
     """진입 시도 — 리스크 역산 사이징 + 그로스/heat 캡 + 같은 봉 스탑 비관 처리.
 
     Args:
         px: 그로스 마크용 가격 — 직전 봉 종가에 **이번 봉 확정 체결가를 덮어쓴**
             셀 로컬 마크맵 (체결 시점에 이번 봉 종가는 미지 — 인과 규약).
             체결 성공 시 이 맵의 s 마크를 체결가로 갱신한다. 없는 심볼은 진입가.
+        notional: 스탑 없는 셀(BBMR·RSI2)의 명목 사이징 모드 — 수량 =
+            equity × 1/3 / fill (2% 스탑 역산 미적용, stop 인자 무시=0.0),
+            heat 기여 단가 = fill × V2_HEAT_FRAC (risk_d 로 동결, 명목 기준 정의).
 
     Returns:
         진입 체결이 발생했으면 True. 같은 봉 스탑/목표 비관 검사는 호출자가
@@ -390,17 +579,22 @@ def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: fl
     ts_close = b.ts + H1
     if cell.halted or len(cell.positions) >= MAX_POS:
         return False
-    dist = (fill - stop) * d
-    if dist <= 0:
-        logger.warning("%s %s 진입 스킵 — 체결가가 스탑 반대편 (fail-closed)", spec.cell, s)
-        return False
+    if notional:
+        dist = fill * V2_HEAT_FRAC     # 스탑 부재 heat 기여 = 명목 × 5% (동결 정의)
+    else:
+        dist = (fill - stop) * d
+        if dist <= 0:
+            logger.warning("%s %s 진입 스킵 — 체결가가 스탑 반대편 (fail-closed)",
+                           spec.cell, s)
+            return False
     eq = cell.equity
     if eq <= 0 or fill <= 0:
         return False
     gross = sum(pp.u * px.get(ss, pp.e) for ss, pp in cell.positions.items())
     if gross >= GROSS_CAP * eq:
         return False
-    u = min(RISK * eq / dist, max(0.0, GROSS_CAP * eq - gross) / fill)
+    want = V2_NOTIONAL_FRAC * eq / fill if notional else RISK * eq / dist
+    u = min(want, max(0.0, GROSS_CAP * eq - gross) / fill)
     if u <= 0:
         return False
     heat = sum(pp.risk_d * pp.u for pp in cell.positions.values())
@@ -424,6 +618,8 @@ def _post_fill_check(cell: CellState, spec: CellSpec, s: str, b: BarE,
     p = cell.positions.get(s)
     if p is None:
         return
+    if p.kind in ("BBMR", "RSI2"):
+        return          # 스탑·목표 없는 종류 — stop=0.0 센티널 오검(숏 즉시청산) 방지
     ts_close = b.ts + H1
     if (p.d > 0 and b.low <= p.stop) or (p.d < 0 and b.high >= p.stop):
         _close(cell, spec, s, ts_close, p.stop, "same_bar_stop", fills)
@@ -435,7 +631,11 @@ def _post_fill_check(cell: CellState, spec: CellSpec, s: str, b: BarE,
 
 
 def _update_1h(ind: dict, b: BarE) -> None:
-    """1h 지표 갱신 — 봉 처리 '후'에 호출되어 다음 봉에서 ATR[i-1]·shift(1) 채널이 된다."""
+    """1h 지표 갱신 — 봉 처리 '후'에 호출되어 다음 봉에서 ATR[i-1]·shift(1) 채널이 된다.
+
+    확장 지표(x2)는 키가 있을 때만 갱신 — 변형2 서브상태 전용 스위치라
+    본 팜·E11/E12 상태는 바이트 단위로 불변이다.
+    """
     pc = ind["pc"]
     tr = b.high - b.low if pc is None else max(b.high - b.low,
                                                abs(b.high - pc), abs(b.low - pc))
@@ -446,6 +646,9 @@ def _update_1h(ind: dict, b: BarE) -> None:
     ind["cl"].append(b.close)
     del ind["cl"][:-MR_SMA_N]
     ind["pc"] = b.close
+    x2 = ind.get("x2")
+    if x2 is not None:
+        _update_x2(x2, b.close, b.vol)
 
 
 def _confirm_4h(h4: dict, o: float, h: float, low: float, c: float):
@@ -524,6 +727,64 @@ def _update_4h(h4: dict, b: BarE):
     return None
 
 
+def _gate_ok(ind: dict, d: int) -> bool:
+    """BRK24GATE 3중 게이트 AND — 전부 확정봉 [i-1] 값, NaN/미형성 = 차단.
+
+    원전 confluence_gate_test.gates 1:1 (이 봉 처리 시점의 x2 는 [i-1]까지 갱신):
+    ① 추세: close[i-1] vs SMA200[i-1] (롱 >, 숏 <; SMA 는 close[i-1] 포함 200봉)
+    ② 모멘텀: Wilder RSI14[i-1] vs 50 (롱 >, 숏 <). dn==0·up>0 은 pandas
+       ru/rd=inf → RSI 100 과 동치로 100.0, dn==up==0 은 0/0=NaN → 차단.
+    ③ 거래량: vol[i-1] > mean(vol[i-21..i-2]) — rolling(20).mean().shift(2)
+       구조 (롱숏 공통, 직전 20봉 평균에서 i-1 제외). NaN 거래량 창 = 차단.
+
+    Args:
+        ind: 심볼 지표 상태 (x2 필수 — 없으면 차단).
+        d: 돌파 해석 방향 (+1 롱 / -1 숏; 이중 돌파봉은 호출자가 롱 우선 해석).
+    """
+    x2 = ind.get("x2")
+    if x2 is None:
+        return False
+    c2, v2 = x2["c2"], x2["v2"]
+    if len(c2) < GATE_SMA_N or len(v2) < GATE_VOL_N + 1:
+        return False                    # 워밍업 (pandas NaN) — 차단 (fail-closed)
+    pc = c2[-1]
+    sma = float(np.mean(c2[-GATE_SMA_N:]))
+    if not (pc > sma if d > 0 else pc < sma):
+        return False
+    u, dn = x2["u14"], x2["d14"]
+    if u is None or dn is None:
+        return False
+    if dn > 0:
+        rsi = 100.0 - 100.0 / (1.0 + u / dn)
+    elif u > 0:
+        rsi = 100.0                     # pandas ru/0 = inf → RSI 100 동치
+    else:
+        return False                    # 0/0 = NaN — 차단
+    if not (rsi > 50.0 if d > 0 else rsi < 50.0):
+        return False
+    vm = float(np.mean(v2[-(GATE_VOL_N + 1):-1]))
+    return bool(v2[-1] > vm)            # NaN 비교는 False — 차단 (fail-closed)
+
+
+def _rsi_next(u, dn, diff: float, n: int) -> float:
+    """Wilder RSI 1스텝 선행값 — 확정봉 [i] 종가까지 포함한 RSI[i] (상태 불변).
+
+    published_systems.wilder_rsi 의 dn==0 명시 정의 포함: 상승만 100, 무변동 50.
+
+    Args:
+        u: [i-1]까지의 up 평활 (None = 이번 diff 가 첫 시드).
+        dn: [i-1]까지의 down 평활.
+        diff: close[i] - close[i-1].
+        n: 평활 길이.
+    """
+    ux, dx = max(diff, 0.0), max(-diff, 0.0)
+    u = ux if u is None else u + (ux - u) / n
+    dn = dx if dn is None else dn + (dx - dn) / n
+    if dn > 0:
+        return 100.0 - 100.0 / (1.0 + u / dn)
+    return 100.0 if u > 0 else 50.0
+
+
 def _fill_pending(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
                   live: bool, px: dict, fills: list) -> bool:
     """대기 진입 주문을 이번 봉 시가에 체결 시도한다 (교정 3).
@@ -538,6 +799,10 @@ def _fill_pending(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
         logger.warning("%s %s 대기주문 취소 — 다음 봉 연속성 붕괴 (fail-closed)",
                        spec.cell, s)
         return False
+    if pend["kind"] in ("BBMR", "RSI2"):
+        # 스탑 없는 출판 시스템 — 명목 사이징 (equity × 1/3), stop=0.0 센티널
+        return _try_open(cell, spec, s, b, pend["d"], b.open, 0.0, pend["kind"],
+                         px, fills, notional=True)
     if pend["kind"] == "MR":
         a = ind["atr1"]            # 신호봉까지 갱신된 ATR = 체결봉 직전 봉 ATR
         if a is None or a <= 0:
@@ -606,6 +871,23 @@ def _manage(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
                     p.pending_exit = "signal"
         if not p.pending_exit and p.hold >= MR_MAX_HOLD:
             p.pending_exit = "timeout"
+    elif spec.strategy == "BBMR":
+        # 스탑 없음 (출판 충실) — 청산 신호만: 확정봉 종가 >= SMA20(현재 종가
+        # 포함 20봉) → 다음 봉 시가. 체결봉 종가도 확정봉이라 같은 봉 평가 포함
+        # (_step_cells 3단계 예외 — lab run_bollinger 1:1)
+        x2 = ind.get("x2")
+        if x2 is not None and len(x2["c2"]) >= BB_N - 1:
+            mid = float(np.mean(x2["c2"][-(BB_N - 1):] + [b.close]))
+            if b.close >= mid:
+                p.pending_exit = "signal"
+    elif spec.strategy == "RSI2":
+        # 스탑 없음 — 청산: 롱 close > SMA5 / 숏 close < SMA5 (현재 종가 포함)
+        # → 다음 봉 시가 (lab run_connors 1:1, 체결봉 종가 평가 포함)
+        x2 = ind.get("x2")
+        if x2 is not None and len(x2["c2"]) >= RSI2_EXIT_N - 1:
+            sma5 = float(np.mean(x2["c2"][-(RSI2_EXIT_N - 1):] + [b.close]))
+            if (p.d > 0 and b.close > sma5) or (p.d < 0 and b.close < sma5):
+                p.pending_exit = "signal"
     elif spec.strategy == "RSIDIV":
         # 원본 유지 (미결 #15 기본값): 스탑/목표 모두 레벨 그대로 체결, 스탑 우선
         if (p.d > 0 and b.low <= p.stop) or (p.d < 0 and b.high >= p.stop):
@@ -621,7 +903,7 @@ def _manage(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
 
 def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
             px: dict, sig, fills: list) -> None:
-    """봉 종가 신호 생성 (MR·RSI-DIV는 대기주문) 및 BRK 봉내 돌파 진입."""
+    """봉 종가 신호 생성 (MR·RSI-DIV·BBMR·RSI2 는 대기주문) 및 BRK 봉내 돌파 진입."""
     if spec.strategy.startswith("BRK"):
         hl, a = ind["hl"], ind["atr1"]      # a = ATR[i-1] (이번 봉 미반영 — 교정 1)
         if cell.halted or len(hl) < spec.n or a is None or a <= 0:
@@ -633,6 +915,11 @@ def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
         elif b.low < lo:
             d, fill = -1, min(b.open, lo)
         else:
+            return
+        # 변형2 BRK24GATE: 방향 해석(이중 돌파봉 롱 우선) '후' 3중 게이트 —
+        # 차단 시 무행동 (반대 방향 재해석 없음, confluence_gate_test 확정 순서).
+        # 통과 시 진입·스탑·사이징·청산은 아래 BRK24 경로와 완전 동일.
+        if spec.strategy == "BRK24GATE" and not _gate_ok(ind, d):
             return
         stop = fill - d * BRK_ATR_MULT * a
         # 변형 BRK24TP: 진입·스탑·사이징은 위와 완전 동일 경로 — 목표만 추가
@@ -653,6 +940,30 @@ def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
         d = -1 if z > MR_Z else (1 if z < -MR_Z else 0)
         if d:
             cell.pending[s] = {"kind": "MR", "d": d, "ets": b.ts + H1}
+    elif spec.strategy == "BBMR":
+        # 확정봉 종가 < 하단밴드(종가 기준, 봉내 터치 아님) → 다음 봉 시가 롱.
+        # 밴드는 현재 종가 포함 20봉 (pandas rolling(20) 동형), 미형성 = 무신호.
+        x2 = ind.get("x2")
+        if x2 is None or len(x2["c2"]) < BB_N - 1:
+            return
+        w = x2["c2"][-(BB_N - 1):] + [b.close]
+        mid = float(np.mean(w))
+        sd = float(np.std(w))               # ddof=0 모표준편차 (출판 기본값)
+        if b.close < mid - BB_K * sd:       # 롱 온리 — 상단밴드 숏 없음 (동결)
+            cell.pending[s] = {"kind": "BBMR", "d": 1, "ets": b.ts + H1}
+    elif spec.strategy == "RSI2":
+        # Connors 원전: 롱 close>SMA200 ∧ RSI(2)<5 / 숏 close<SMA200 ∧ RSI(2)>95
+        # → 다음 봉 시가 (U1 실행 규약). SMA200·RSI 는 현재 확정 종가 포함.
+        x2 = ind.get("x2")
+        if x2 is None or len(x2["c2"]) < RSI2_TREND_N - 1:
+            return                          # SMA200 미형성 (pandas NaN) — 무신호
+        c2 = x2["c2"]
+        r2 = _rsi_next(x2["u2"], x2["d2"], b.close - c2[-1], RSI2_N)
+        sma200 = float(np.mean(c2[-(RSI2_TREND_N - 1):] + [b.close]))
+        if b.close > sma200 and r2 < RSI2_LO:
+            cell.pending[s] = {"kind": "RSI2", "d": 1, "ets": b.ts + H1}
+        elif b.close < sma200 and r2 > RSI2_HI:
+            cell.pending[s] = {"kind": "RSI2", "d": -1, "ets": b.ts + H1}
     elif spec.strategy == "RSIDIV" and sig is not None:
         d, stop, idx = sig
         cell.pending[s] = {"kind": "RSIDIV", "d": d, "stop": stop, "n4": idx,
@@ -688,6 +999,26 @@ def step_variant(state: FarmState, bars: dict, funding: dict | None = None) -> l
         체결 이벤트 목록 (cell 은 E11/E12 만).
     """
     return _step_cells(state, bars, funding, VCELLS)
+
+
+def step_variant2(state: FarmState, bars: dict, funding: dict | None = None) -> list:
+    """변형2 서브팜(E13~E18) 전용 step — 같은 내부 경로, 상태·셀만 분리.
+
+    확장 지표(x2)가 없는 심볼(초기화 후 새로 나타난 경우)은 여기서 빈 상태로
+    만든다 — 이력이 찰 때까지 게이트·밴드·RSI 신호는 전부 차단 (fail-closed).
+
+    Args:
+        state: 변형2 서브상태 (variant2_from_dict 결과, 변형됨).
+        bars: sym -> BarE (동일 ts 필수, vol 포함 권장 — 결측 시 게이트만 차단).
+        funding: sym -> 이 봉 종가 시각에 정산되는 펀딩률 합 (없으면 0).
+
+    Returns:
+        체결 이벤트 목록 (cell 은 E13~E18 만).
+    """
+    for s, b in bars.items():
+        if b.ts > state.last_ts:
+            state.ind.setdefault(s, _new_ind()).setdefault("x2", _new_x2())
+    return _step_cells(state, bars, funding, V2CELLS)
 
 
 def _step_cells(state: FarmState, bars: dict, funding: dict | None,
@@ -765,10 +1096,14 @@ def _step_cells(state: FarmState, bars: dict, funding: dict | None,
                 newly.append(s)
         for s in newly:
             _post_fill_check(cell, spec, s, ok_bars[s], fills)
-        # 3) 봉내 청산·관리 (이번 봉 시가 체결분 제외)
+        # 3) 봉내 청산·관리 (이번 봉 시가 체결분 제외 — 단 스탑 없는 신호청산형
+        #    BBMR·RSI2 는 체결봉 종가도 확정봉 종가이므로 청산 '신호' 평가에
+        #    포함한다: 원전 lab 1:1, 실제 청산은 다음 봉 시가라 인과 무결.
+        #    두 전략의 _manage 는 봉내 청산이 없어 touched 를 늘리지 않는다)
+        sigexit = spec.strategy in ("BBMR", "RSI2")
         for s in act:
-            if s not in touched and _manage(cell, spec, s, ok_bars[s],
-                                            state.ind[s], fills):
+            if (s not in touched or sigexit) and _manage(cell, spec, s, ok_bars[s],
+                                                         state.ind[s], fills):
                 touched.add(s)
         # 4) 신호·봉내 진입 — 같은 봉 청산 심볼 재진입 금지, T0 이전 주문 금지 (교정 6)
         if live:
@@ -819,6 +1154,11 @@ def variant_delist(v: FarmState, sym: str, last_px: float | None = None) -> list
     (변형이 뒤처진 채 폐지가 미러되면; fail-closed 관례로 동결).
     """
     return _delist_cells(v, sym, last_px, VCELLS)
+
+
+def variant2_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
+    """변형2 셀(E13~E18) 폐지 처리 — variant_delist 와 동일 관례, 그룹만 분리."""
+    return _delist_cells(v, sym, last_px, V2CELLS)
 
 
 def _delist_cells(state: FarmState, sym: str, last_px: float | None,

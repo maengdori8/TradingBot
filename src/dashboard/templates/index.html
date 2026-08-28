@@ -492,9 +492,10 @@
                     바스켓 B는 T0 동결 &middot; 이후 교체 없음. 어떤 셀도 이 성과로 선발하지 않는다.
                 </div>
 
-                <!-- 빠른 익절 변형 (E11·E12) — 분리 소구역: 본 표·사후 최대값 태그와 무관 -->
+                <!-- 변형 셀 — 분리 소구역: 본 표·사후 최대값 태그와 무관.
+                     셀 목록은 엔진 상수(_tracke_variant_spec) 주도 — 셀이 늘어도 이 블록 무수정 -->
                 <div class="section-divider" style="margin: 1.0rem 0 0.6rem 0;">
-                    <span class="sd-label">빠른 익절 변형 — 공식 판정 대상 아님</span>
+                    <span class="sd-label">빠른 익절·게이트·출판 변형 — 공식 판정 대상 아님</span>
                     <span class="text-muted" id="trackeVarLiveNote" style="font-size:0.68rem;"></span>
                     <div class="sd-line"></div>
                 </div>
@@ -514,7 +515,7 @@
                             <td class="mono">{{ c.strategy }}</td>
                             <td>{{ c.basket }} <span class="text-muted" style="font-size:0.68rem;">{{ c.basket_label }}</span></td>
                             <td class="text-muted" style="font-size:0.72rem;">{{ c.label }}</td>
-                            <td class="text-end mono"><span id="trackeVarPct-{{ c.id }}">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '-' }}</span></td>
+                            <td class="text-end mono"><span id="trackeVarPct-{{ c.id }}">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '대기' }}</span></td>
                             <td class="text-muted" style="font-size:0.72rem;">{{ c.positions | join(' · ') if c.positions else '-' }}</td>
                         </tr>
                         {% endfor %}
@@ -522,7 +523,7 @@
                     </table>
                 </div>
                 {% else %}
-                <div class="text-muted" style="font-size: 0.8rem;">대기 &mdash; 변형 상태·이력이 기록되면 E11·E12가 여기에 표시됩니다.</div>
+                <div class="text-muted" style="font-size: 0.8rem;">대기 &mdash; 변형 상태·이력이 기록되면 변형 셀이 여기에 표시됩니다.</div>
                 {% endif %}
             </div>
         </div>
@@ -966,11 +967,12 @@
                     note.textContent = '보유 ' + (d.tracke.n_pos ?? 0)
                         + (fb.length ? ' · 종가 폴백: ' + fb.join('·') : '');
                 }
-                // 빠른 익절 변형 (E11·E12) — 분리 소구역만 갱신 (부재 시 페이지 로드 값 유지)
+                // 변형 셀 — 분리 소구역만 갱신, 셀 목록은 서버 응답 주도
+                // (부재/미가동 셀은 페이지 로드 값 "대기" 유지)
                 if (d.tracke.variant) {
-                    for (const cid of ['E11', 'E12']) {
+                    for (const [cid, pct] of Object.entries(d.tracke.variant)) {
+                        if (cid === 'n_pos') continue;
                         const el = document.getElementById('trackeVarPct-' + cid);
-                        const pct = d.tracke.variant[cid];
                         if (el && pct != null) el.textContent = signed(pct, 2) + '%';
                     }
                     const vnote = document.getElementById('trackeVarLiveNote');

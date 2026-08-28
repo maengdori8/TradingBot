@@ -643,18 +643,39 @@ class TestTrackeLive:
 
 
 class TestTrackeVariant:
-    """빠른 익절 변형 E11·E12 — 분리 소구역 표시 전용 (공식 판정 대상 아님)."""
+    """변형 셀 소구역 — 분리 표시 전용 (공식 판정 대상 아님).
 
-    VARIANT_ORDER = ["E11", "E12"]
+    셀 목록은 엔진 상수(_tracke_variant_spec) 주도 — 테스트도 명세에서
+    순서를 읽는다 (셀 추가 시 테스트 무수정).
+    """
+
+    VARIANT_ORDER = [c[0] for c in dash._tracke_variant_spec()[0]]
     MAIN_ORDER = [f"E{i:02d}" for i in range(1, 11)]
 
-    def _state(self, tmp_path, main_cells=None, variant=None):
-        """tracke_state.json 작성 — variant 는 variant_cells 블록 전체."""
+    def _state(self, tmp_path, main_cells=None, variant=None, variant2=None):
+        """tracke_state.json 작성 — variant/variant2 는 병렬 블록 전체."""
         st = {"t0": 1787813928812, "cells": main_cells or {}, "ind": {}}
         if variant is not None:
             st["variant_cells"] = variant
+        if variant2 is not None:
+            st["variant2_cells"] = variant2
         (tmp_path / "tracke_state.json").write_text(
             json.dumps(st), encoding="utf-8")
+
+    @staticmethod
+    def _fake_engine(cells, cells2=()):
+        """가짜 scalp_farm 모듈 — 실제 구조(VCELLS/VLABELS + V2CELLS/V2LABELS)."""
+        from types import SimpleNamespace
+
+        def _specs(cs):
+            return tuple(SimpleNamespace(cell=c, strategy=s, basket=b)
+                         for c, s, b in cs)
+
+        def _labels(cs):
+            return {c: f"{s} 변형 · 미검증 · 판정 권한 없음" for c, s, _ in cs}
+
+        return SimpleNamespace(VCELLS=_specs(cells), VLABELS=_labels(cells),
+                               V2CELLS=_specs(cells2), V2LABELS=_labels(cells2))
 
     def _main_hist(self, tmp_path):
         """본 이력 — E05 만 +2% (사후최대 태그 대상)."""
@@ -710,7 +731,8 @@ class TestTrackeVariant:
         v = dash._load_tracke_variant(logs_dir=tmp_path)
         assert v["available"] is True
         assert [c["id"] for c in v["cells"]] == self.VARIANT_ORDER
-        e11, e12 = v["cells"]
+        by_id = {c["id"]: c for c in v["cells"]}
+        e11, e12 = by_id["E11"], by_id["E12"]
         assert e11["pct"] == pytest.approx(2.0)
         assert e12["pct"] == pytest.approx(-0.5)
         assert e11["strategy"] == e12["strategy"] == "BRK24TP"
@@ -730,7 +752,8 @@ class TestTrackeVariant:
         assert [c["id"] for c in t["cells"]] == self.MAIN_ORDER
         v = dash._load_tracke_variant(logs_dir=tmp_path)
         assert all("is_max" not in c for c in v["cells"])    # 태그 플래그 자체가 없음
-        assert v["cells"][0]["pct"] == pytest.approx(50.0)
+        by_id = {c["id"]: c for c in v["cells"]}
+        assert by_id["E11"]["pct"] == pytest.approx(50.0)
 
     # ── 실시간 (/api/live) ───────────────────────────────────────
     def test_변형_롱숏_시가평가는_variant_블록에만_실린다(self, tmp_path, monkeypatch):
@@ -805,11 +828,12 @@ class TestTrackeVariant:
         self._patch_loaders(monkeypatch, tmp_path)
         resp = client.get("/")
         assert resp.status_code == 200
-        assert "빠른 익절 변형 — 공식 판정 대상 아님".encode() in resp.data
+        assert "빠른 익절·게이트·출판 변형 — 공식 판정 대상 아님".encode() in resp.data
         assert b"trackeVarPct-E11" in resp.data
         assert b"trackeVarPct-E12" in resp.data
         assert b"BRK24TP" in resp.data
-        assert "빠른 익절 변형 · 미검증 · 판정 권한 없음".encode() in resp.data
+        # 셀 고정 라벨은 엔진 명세에서 온다 (데이터 주도)
+        assert dash._tracke_variant_spec()[1]["E11"].encode() in resp.data
         # 변형이 더 커도 "사후 최대값 — 선택 금지" 태그는 본 표 최대 셀 1곳에만
         assert resp.data.count("사후 최대값 — 선택 금지".encode()) == 1
 
@@ -818,9 +842,107 @@ class TestTrackeVariant:
         self._patch_loaders(monkeypatch, tmp_path)
         resp = client.get("/")
         assert resp.status_code == 200
-        assert "빠른 익절 변형 — 공식 판정 대상 아님".encode() in resp.data
+        assert "빠른 익절·게이트·출판 변형 — 공식 판정 대상 아님".encode() in resp.data
         assert "변형 상태·이력이 기록되면".encode() in resp.data   # "대기" 안내
         assert b"trackeVarPct-E11" not in resp.data          # 행 없음, 크래시 없음
+
+    # ── 데이터 주도 일반화 (엔진 V*CELLS 그룹 → 행 생성, 하드코딩 금지) ──
+    TWO = [("E11", "BRK24TP", "A"), ("E12", "BRK24TP", "B")]
+    SIX = [("E13", "BRK24GATE", "A"), ("E14", "BRK24GATE", "B"),
+           ("E15", "BBMR", "A"), ("E16", "BBMR", "B"),
+           ("E17", "RSI2", "A"), ("E18", "RSI2", "B")]
+
+    def test_일반화_로더는_엔진_두_그룹_명세를_그대로_따른다(self, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "carrybot.aggressive.scalp_farm",
+                            self._fake_engine(self.TWO, self.SIX))
+        self._state(
+            tmp_path,
+            variant={
+                "t0_variant": 1787881216290,
+                "cells": {"E11": dict(equity=10100.0),
+                          "E12": dict(equity=10000.0)}},
+            variant2={
+                "t0_variant2": 1788881216290,     # 별도 t0 키 병렬 블록
+                "cells": {c: dict(equity=10000.0 + i * 100.0)
+                          for i, (c, _, _) in enumerate(self.SIX)}})
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert v["available"] is True
+        assert [c["id"] for c in v["cells"]] == \
+            [c for c, _, _ in self.TWO + self.SIX]           # E11..E18 고정 순서
+        assert [c["strategy"] for c in v["cells"]] == \
+            [s for _, s, _ in self.TWO + self.SIX]
+        by_id = {c["id"]: c for c in v["cells"]}
+        assert by_id["E11"]["pct"] == pytest.approx(1.0)
+        assert by_id["E13"]["pct"] == pytest.approx(0.0)
+        assert by_id["E18"]["pct"] == pytest.approx(5.0)
+        assert by_id["E15"]["label"] == "BBMR 변형 · 미검증 · 판정 권한 없음"
+        assert by_id["E13"]["basket_label"] == "BTC·ETH·SOL"  # 바스켓 표기 폴백
+
+    def test_부분_존재_E11_가동_E13_대기(self, client, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "carrybot.aggressive.scalp_farm",
+                            self._fake_engine([("E11", "BRK24TP", "A")],
+                                              [("E13", "BRK24GATE", "A")]))
+        self._state(tmp_path,
+                    main_cells={"E01": dict(equity=10000.0)},   # 본 표 렌더용
+                    variant={
+                        "t0_variant": 1787881216290,
+                        "cells": {"E11": dict(equity=10200.0)},
+                    })                        # variant2 블록 자체 부재 (t0 대기)
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert v["available"] is True
+        by_id = {c["id"]: c for c in v["cells"]}
+        assert by_id["E11"]["pct"] == pytest.approx(2.0)
+        assert by_id["E13"]["pct"] is None               # 미가동 → "대기" 표시 대상
+        # 렌더링: E13 행이 뜨되 수익률 자리는 "대기", 크래시 없음
+        self._patch_loaders(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"trackeVarPct-E13" in resp.data
+        assert 'id="trackeVarPct-E13">대기<'.encode() in resp.data
+        assert 'id="trackeVarPct-E11">+2.00%<'.encode() in resp.data
+
+    def test_live_변형은_두_상태_블록을_모두_평가한다(self, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "carrybot.aggressive.scalp_farm",
+                            self._fake_engine([("E11", "BRK24TP", "A")],
+                                              [("E13", "BRK24GATE", "A"),
+                                               ("E15", "BBMR", "A")]))
+        self._state(
+            tmp_path,
+            main_cells={"E01": dict(equity=10000.0, positions={})},
+            variant={"cells": {
+                "E11": dict(equity=10000.0,
+                            positions={"BTC": dict(d=1, u=0.1, e=80000.0)})}},
+            variant2={"cells": {
+                "E13": dict(equity=10100.0, positions={}),
+                "E15": dict(equity=10000.0,
+                            positions={"HYPE": dict(d=1, u=10.0, e=80.0)})},
+                "ind": {"HYPE": dict(pc=90.0)}})     # 블록 자체 ind 폴백
+        monkeypatch.setattr(dash, "_live_price",
+                            lambda s: {"BTC/USDT:USDT": 81000.0}.get(s))
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t["variant"]["E11"] == pytest.approx(1.0)   # 롱 +0.1×1000
+        assert t["variant"]["E13"] == pytest.approx(1.0)   # 현금 자본
+        assert t["variant"]["E15"] == pytest.approx(1.0)   # 변형2 자체 ind 종가 폴백
+        assert t["variant"]["n_pos"] == 2
+        assert set(t["cells"]) == {"E01"}                  # 본 집계 비혼입
+
+    def test_엔진_import_실패시_E11_E12_폴백(self, tmp_path, monkeypatch):
+        import sys
+        # sys.modules 의 None 엔트리는 import 를 ImportError 로 중단시킨다
+        monkeypatch.setitem(sys.modules, "carrybot.aggressive.scalp_farm", None)
+        cells, labels, baskets = dash._tracke_variant_spec()
+        assert [c[0] for c in cells] == ["E11", "E12"]
+        assert labels["E11"] == "빠른 익절 변형 · 미검증 · 판정 권한 없음"
+        self._state(tmp_path, variant={"cells": {"E11": dict(equity=10100.0)}})
+        v = dash._load_tracke_variant(logs_dir=tmp_path)   # 크래시 금지
+        assert v["available"] is True
+        assert [c["id"] for c in v["cells"]] == ["E11", "E12"]
+        by_id = {c["id"]: c for c in v["cells"]}
+        assert by_id["E11"]["pct"] == pytest.approx(1.0)
+        assert by_id["E12"]["pct"] is None
 
 
 class TestTrackeFirewall:

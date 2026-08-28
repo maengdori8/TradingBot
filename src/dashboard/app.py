@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import math
+import re
 import sqlite3
 import sys
 import time
@@ -358,16 +360,93 @@ TRACKE_VERDICT_DATES: tuple[str, ...] = (
     "2026-09-26", "2026-11-25", "2027-02-23")
 TRACKE_CELL_CAPITAL: float = 10_000.0        # 셀당 가상 자본 (USD)
 
-# 빠른 익절 변형 셀 (표시 전용 분리 소구역 — 공식 판정 대상 아님, 명세 동결)
-# 본 표(E01~E10)와 섞지 않으며 "사후 최대값" 태그 계산에도 절대 넣지 않는다.
-TRACKE_VARIANT_CELLS: tuple[tuple[str, str, str], ...] = (
+# 변형 셀 (표시 전용 분리 소구역 — 공식 판정 대상 아님)
+# 셀 목록·전략명·바스켓·라벨은 엔진 동결 상수(carrybot.aggressive.scalp_farm 의
+# V*CELLS/V*LABELS 그룹 — VCELLS·V2CELLS, ...)에서 읽는다 — 엔진에 셀·그룹이
+# 추가돼도 대시보드는 무수정 (데이터 주도). 본 표(E01~E10)와 섞지 않으며
+# "사후 최대값" 태그 계산에도 절대 넣지 않는다.
+# 아래는 엔진 import 실패 시에만 쓰는 동결 폴백 (2026-08-28 E11·E12 분).
+TRACKE_VARIANT_FALLBACK_CELLS: tuple[tuple[str, str, str], ...] = (
     ("E11", "BRK24TP", "A"),
     ("E12", "BRK24TP", "B"),
 )
-TRACKE_VARIANT_IDS: tuple[str, ...] = tuple(c[0] for c in TRACKE_VARIANT_CELLS)
+TRACKE_VARIANT_FALLBACK_LABEL: str = "빠른 익절 변형 · 미검증 · 판정 권한 없음"
 TRACKE_VARIANT_BASKET_LABELS: dict[str, str] = {
     "A": "BTC·ETH·SOL", "B": "XRP·HYPE·BTR"}
-TRACKE_VARIANT_LABEL: str = "빠른 익절 변형 · 미검증 · 판정 권한 없음"
+
+
+def _tracke_variant_spec() -> tuple[
+        tuple[tuple[str, str, str], ...], dict[str, str], dict[str, str]]:
+    """변형 셀 명세를 엔진 동결 상수에서 읽는다 (데이터 주도 — 표시 전용).
+
+    carrybot.aggressive.scalp_farm 의 변형 그룹 상수 V<번호>CELLS(셀·전략·
+    바스켓 고정 순서)와 짝 라벨 V<번호>LABELS 를 그룹 번호 순으로 합친다 —
+    VCELLS(=1그룹, E11·E12)·V2CELLS(E13~E18), 이후 V3CELLS 등 그룹이
+    추가돼도 대시보드는 무수정으로 따라간다. 엔진이 바스켓 표기 dict 를
+    노출하면 그것을 우선 쓰고, 없으면 폴백 표기(A/B)를 쓴다. import/속성
+    오류 시 동결 폴백 E11·E12 를 반환한다 (크래시 금지). 상수만 읽는 순수
+    함수이며 엔진 상태·성과에는 일절 접근하지 않는다.
+
+    Returns:
+        (cells, labels, basket_labels) — cells 는 (id, strategy, basket)
+        그룹 번호 순·그룹 내 정의 순 튜플(성과순 정렬 금지),
+        labels 는 {셀 id: 라벨}, basket_labels 는 {바스켓: 구성 표기}.
+    """
+    try:
+        sf = importlib.import_module("carrybot.aggressive.scalp_farm")
+        groups: list[tuple[int, tuple, dict]] = []
+        for name in dir(sf):
+            m = re.fullmatch(r"V(\d*)CELLS", name)
+            if not m:
+                continue
+            raw_labels = getattr(sf, f"V{m.group(1)}LABELS", None)
+            groups.append((int(m.group(1) or 1), getattr(sf, name),
+                           raw_labels if isinstance(raw_labels, dict) else {}))
+        groups.sort(key=lambda g: g[0])
+        cells: list[tuple[str, str, str]] = []
+        labels: dict[str, str] = {}
+        for _, specs, raw in groups:
+            for s in specs:
+                cid = str(s.cell)
+                cells.append((cid, str(s.strategy), str(s.basket)))
+                labels[cid] = str(raw.get(cid, TRACKE_VARIANT_FALLBACK_LABEL))
+        if not cells:
+            raise ValueError("변형 셀 상수(V*CELLS) 비어 있음")
+        baskets = dict(TRACKE_VARIANT_BASKET_LABELS)
+        for name in ("VBASKET_LABELS", "VBASKETS", "BASKET_LABELS"):
+            eng = getattr(sf, name, None)
+            if isinstance(eng, dict):
+                baskets.update({str(k): "·".join(v) if isinstance(
+                    v, (list, tuple)) else str(v) for k, v in eng.items()})
+                break
+        return tuple(cells), labels, baskets
+    except (ImportError, AttributeError, TypeError, ValueError):
+        labels = {cid: TRACKE_VARIANT_FALLBACK_LABEL
+                  for cid, _, _ in TRACKE_VARIANT_FALLBACK_CELLS}
+        return (TRACKE_VARIANT_FALLBACK_CELLS, labels,
+                dict(TRACKE_VARIANT_BASKET_LABELS))
+
+
+def _tracke_variant_blocks(st: dict) -> list[dict]:
+    """상태 JSON 의 변형 병렬 블록(variant<번호>_cells)을 그룹 번호 순으로 찾는다.
+
+    variant_cells(=1그룹, E11·E12)·variant2_cells(E13~E18) 등 별도 t0 키를
+    가진 병렬 블록 구조 — 그룹이 늘어도 무수정. dict 가 아닌 블록은 손상으로
+    보고 건너뛴다 (크래시 금지).
+
+    Args:
+        st: tracke_state.json 파싱 결과 dict.
+
+    Returns:
+        블록 dict 목록 (그룹 번호 순) — 없으면 빈 목록.
+    """
+    out: list[tuple[int, dict]] = []
+    for k, v in st.items():
+        m = re.fullmatch(r"variant(\d*)_cells", str(k))
+        if m and isinstance(v, dict):
+            out.append((int(m.group(1) or 1), v))
+    out.sort(key=lambda t: t[0])
+    return [v for _, v in out]
 
 
 def _tracke_metric(cell_state: dict, names: tuple[str, ...]) -> float | None:
@@ -604,25 +683,31 @@ def _load_tracke(logs_dir: Path | None = None) -> dict:
 
 
 def _load_tracke_variant(logs_dir: Path | None = None) -> dict:
-    """빠른 익절 변형 셀(E11·E12) 표시 데이터 — 표시 전용 분리 소구역.
+    """변형 셀 표시 데이터 — 표시 전용 분리 소구역 (데이터 주도).
 
+    셀 목록·전략명·바스켓·라벨은 _tracke_variant_spec() (엔진 동결 상수,
+    폴백 E11·E12)에서 읽는다 — 엔진에 셀이 추가돼도 여기는 무수정.
     공식 판정 대상이 아니다: 본 셀(E01~E10) 표·"사후 최대값 — 선택 금지"
     태그 계산과 완전히 분리되며(_load_tracke 는 이 데이터를 일절 안 본다),
-    승급/실거래 게이트에도 입력하지 않는다. 수익률은 변형 이력
-    (tracke_variant_history.csv) 우선, 없으면 상태(variant_cells)의 셀
-    equity 로 계산한다. 파일·키 부재/손상 시 available=False ("대기" 표시,
-    크래시 금지).
+    승급/실거래 게이트에도 입력하지 않는다. 수익률은 통합 변형 이력
+    (tracke_variant_history.csv) 우선, 없으면 상태의 병렬 블록
+    (variant_cells·variant2_cells, ... — _tracke_variant_blocks)에서 셀
+    equity 로 계산한다. 아직 상태·이력이 없는 셀(별도 t0 키 미가동 포함)은
+    pct None ("대기" 표시)으로 남긴다. 파일·키 부재/손상 시
+    available=False ("대기" 표시, 크래시 금지).
 
     Args:
         logs_dir: 이력 디렉토리 (기본 ROOT/logs, 테스트 주입용).
 
     Returns:
-        {"available": bool, "cells": [E11, E12 고정 순서 — id/strategy/
+        {"available": bool, "cells": [엔진 명세 고정 순서 — id/strategy/
          basket/basket_label/label/pct/positions]} (JSON 직렬화 가능).
     """
+    vcells, vlabels, vbaskets = _tracke_variant_spec()
+    vids = tuple(c[0] for c in vcells)
     logs = logs_dir or (ROOT / "logs")
     series = _tracke_history_series(
-        logs / "tracke_variant_history.csv", cell_ids=TRACKE_VARIANT_IDS)
+        logs / "tracke_variant_history.csv", cell_ids=vids)
 
     try:
         st = json.loads((logs / "tracke_state.json").read_text(encoding="utf-8"))
@@ -630,17 +715,17 @@ def _load_tracke_variant(logs_dir: Path | None = None) -> dict:
             st = {}
     except (OSError, ValueError):
         st = {}
-    vc = st.get("variant_cells")
-    if not isinstance(vc, dict):
-        vc = {}
-    raw_cells = vc.get("cells")
-    if not isinstance(raw_cells, dict):
-        raw_cells = {}
-    cells_state = {k.upper(): v for k, v in raw_cells.items()
-                   if isinstance(v, dict)}
+    cells_state: dict[str, dict] = {}
+    for blk in _tracke_variant_blocks(st):        # 병렬 블록 전부 병합
+        raw_cells = blk.get("cells")
+        if not isinstance(raw_cells, dict):
+            continue
+        for k, v in raw_cells.items():
+            if isinstance(v, dict):
+                cells_state.setdefault(k.upper(), v)   # 그룹 번호 앞 블록 우선
 
     cells: list[dict] = []
-    for cid, strat, basket in TRACKE_VARIANT_CELLS:   # 고정 순서 (정렬 금지)
+    for cid, strat, basket in vcells:                 # 고정 순서 (정렬 금지)
         s = cells_state.get(cid, {})
         _, eqs = series.get(cid, ([], []))
         pct: float | None = None
@@ -663,8 +748,8 @@ def _load_tracke_variant(logs_dir: Path | None = None) -> dict:
                 positions.append(f"{sym} {'롱' if d_ > 0 else '숏'}")
         cells.append(dict(
             id=cid, strategy=strat, basket=basket,
-            basket_label=TRACKE_VARIANT_BASKET_LABELS[basket],
-            label=TRACKE_VARIANT_LABEL,
+            basket_label=vbaskets.get(basket, basket),
+            label=vlabels.get(cid, TRACKE_VARIANT_FALLBACK_LABEL),
             pct=pct, positions=positions,
         ))
     return {
@@ -1330,15 +1415,18 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
     Args:
         logs_dir: 상태 디렉토리 (기본 ROOT/logs, 테스트 주입용).
 
-    빠른 익절 변형 셀(E11·E12)은 같은 관례로 별도 평가해 variant 블록에만
-    싣는다 — 본 팜 합계·cells·n_pos·fallback 에는 절대 섞지 않는다
-    (분리 소구역 · 공식 판정 대상 아님).
+    변형 셀(_tracke_variant_spec 의 엔진 명세 — 폴백 E11·E12)은 같은
+    관례로 별도 평가해 variant 블록에만 싣는다 — 본 팜 합계·cells·n_pos·
+    fallback 에는 절대 섞지 않는다 (분리 소구역 · 공식 판정 대상 아님).
+    상태는 병렬 블록(variant_cells·variant2_cells, ...)을 모두 읽되 종가
+    폴백(ind)은 각 블록 자체 것만 쓴다. 상태에 아직 없는 변형 셀(별도 t0
+    미가동)은 variant 블록에서 빠진다 (프런트는 페이지 로드의 "대기" 유지).
 
     Returns:
         {"farm_equity": 팜 합계(USD), "farm_pct": 팜 수익률(%),
          "cells": {셀 id: 수익률 %}, "n_pos": 평가 포지션 수,
          "fallback": [현재가 폴백 심볼],
-         "variant": {"E11": %, "E12": %, "n_pos": 수} | None}
+         "variant": {가동 중인 변형 셀 id: %, ..., "n_pos": 합} | None}
         — 상태 없음/손상 시 None (프런트는 페이지 로드 값을 유지한다).
     """
     logs = logs_dir or (ROOT / "logs")
@@ -1374,28 +1462,30 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
     if not cells:
         return None
 
-    # 빠른 익절 변형 (E11·E12) — 별도 패스, 본 집계와 완전 분리
+    # 변형 셀 — 별도 패스, 본 집계와 완전 분리 (셀 목록은 엔진 명세,
+    # 상태는 병렬 블록 전부 — 폴백 ind·가격 캐시는 블록별 분리)
     variant: dict | None = None
-    vc = st.get("variant_cells")
-    v_state = vc.get("cells") if isinstance(vc, dict) else None
-    if isinstance(v_state, dict):
-        v_ind = vc.get("ind") if isinstance(vc.get("ind"), dict) else {}
-        v_px: dict[str, tuple[float, bool]] = {}
-        v_fb: list[str] = []
-        v_out: dict[str, float] = {}
-        v_npos = 0
-        for cid in TRACKE_VARIANT_IDS:             # 고정 순서
-            cs = v_state.get(cid)
+    v_blocks: list[tuple[dict, dict, dict, list]] = []
+    for blk in _tracke_variant_blocks(st):
+        b_cells = blk.get("cells")
+        if isinstance(b_cells, dict):
+            b_ind = blk.get("ind") if isinstance(blk.get("ind"), dict) else {}
+            v_blocks.append((b_cells, b_ind, {}, []))   # (+px 캐시, fb 목록)
+    v_out: dict[str, float] = {}
+    v_npos = 0
+    for cid, _, _ in _tracke_variant_spec()[0]:        # 고정 순서
+        for b_cells, b_ind, b_px, b_fb in v_blocks:
+            cs = b_cells.get(cid)
             if not isinstance(cs, dict):
                 continue
-            res = _tracke_mtm_cell(cs, v_ind, v_px, v_fb)
-            if res is None:
-                continue
-            mtm, cell_npos = res
-            v_out[cid] = round((mtm / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4)
-            v_npos += cell_npos
-        if v_out:
-            variant = {**v_out, "n_pos": v_npos}
+            res = _tracke_mtm_cell(cs, b_ind, b_px, b_fb)
+            if res is not None:
+                mtm, cell_npos = res
+                v_out[cid] = round((mtm / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4)
+                v_npos += cell_npos
+            break                                      # 그룹 번호 앞 블록 우선
+    if v_out:
+        variant = {**v_out, "n_pos": v_npos}
 
     return {
         "farm_equity": round(farm_equity, 2),
