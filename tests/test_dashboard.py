@@ -24,6 +24,8 @@ def client(tmp_path, monkeypatch):
             "qualified_count": 0, "watchlist": [],
         },
     )
+    # 실시간 가격 조회 차단 (네트워크 금지 — 폴백 경로로만 평가)
+    monkeypatch.setattr(dash, "_live_price", lambda s: None)
     dash.app.config["TESTING"] = True
     with dash.app.test_client() as c:
         yield c
@@ -548,6 +550,279 @@ class TestLoadTracke:
         assert "🏆".encode() not in resp.data            # 트로피 금지
 
 
+class TestTrackeLive:
+    """_tracke_live — Track E 단타 팜 초단위 시가평가 (표시 전용)."""
+
+    def _state(self, tmp_path, cells, ind=None):
+        (tmp_path / "tracke_state.json").write_text(json.dumps(
+            {"t0": 1787813928812, "cells": cells, "ind": ind or {}}),
+            encoding="utf-8")
+
+    def test_상태파일이_없으면_None(self, tmp_path):
+        assert dash._tracke_live(logs_dir=tmp_path) is None
+
+    def test_손상된_상태파일도_None(self, tmp_path):
+        (tmp_path / "tracke_state.json").write_text("{{{{", encoding="utf-8")
+        assert dash._tracke_live(logs_dir=tmp_path) is None
+        (tmp_path / "tracke_state.json").write_text(
+            json.dumps({"cells": "깨진값"}), encoding="utf-8")
+        assert dash._tracke_live(logs_dir=tmp_path) is None
+
+    def test_롱숏_시가평가와_팜_합계(self, tmp_path, monkeypatch):
+        # 엔진 계약: 셀 equity 는 실현 기준 현금 → 시가평가 = equity + Σu(px−e)d
+        self._state(tmp_path, {
+            "E01": dict(equity=10000.0,
+                        positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+            "E02": dict(equity=10000.0,
+                        positions={"SOL": dict(d=-1, u=100.0, e=100.0)}),
+        })
+        asked = []
+        px = {"BTC/USDT:USDT": 81000.0, "SOL/USDT:USDT": 95.0}
+        monkeypatch.setattr(dash, "_live_price",
+                            lambda s: (asked.append(s), px[s])[1])
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t["cells"]["E01"] == pytest.approx(1.0)   # 롱 +0.1×1000
+        assert t["cells"]["E02"] == pytest.approx(5.0)   # 숏 100×(95−100)×(−1)
+        assert t["farm_equity"] == pytest.approx(20600.0)
+        assert t["farm_pct"] == pytest.approx(3.0)       # 기준 = 셀 수 × $10,000
+        assert t["n_pos"] == 2
+        assert t["fallback"] == []
+        # 심볼 매핑: 엔진과 동일한 Bybit linear 관례 (바스켓 B 포함)
+        assert set(asked) == {"BTC/USDT:USDT", "SOL/USDT:USDT"}
+
+    def test_조회_실패는_마지막_종가로_폴백하고_표기한다(self, tmp_path, monkeypatch):
+        # HYPE 는 상태의 마지막 유효 종가(ind.pc), BTR 은 pc 도 없어 진입가(손익 0)
+        self._state(tmp_path, {
+            "E05": dict(equity=10000.0, positions={
+                "HYPE": dict(d=1, u=10.0, e=80.0),
+                "BTR": dict(d=1, u=5.0, e=2.0),
+            })}, ind={"HYPE": dict(pc=90.0)})
+        monkeypatch.setattr(dash, "_live_price", lambda s: None)
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t["cells"]["E05"] == pytest.approx(1.0)   # 10×(90−80)=+100, BTR 0
+        assert t["farm_equity"] == pytest.approx(10100.0)
+        assert t["n_pos"] == 2
+        assert sorted(t["fallback"]) == ["BTR", "HYPE"]  # 폴백 여부 표기
+
+    def test_포지션_없는_셀은_현금_자본으로_평가된다(self, tmp_path, monkeypatch):
+        self._state(tmp_path, {"E03": dict(equity=10120.0, positions={})})
+        monkeypatch.setattr(
+            dash, "_live_price",
+            lambda s: (_ for _ in ()).throw(AssertionError("가격 조회 금지")))
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t["cells"] == {"E03": pytest.approx(1.2)}
+        assert t["n_pos"] == 0 and t["fallback"] == []
+
+    def test_api_live_응답에_tracke_블록이_실린다(self, client, tmp_path, monkeypatch):
+        # 표시 전용 블록 — 가격 조회는 fixture 에서 차단(None) → 폴백 경로
+        self._state(tmp_path, {
+            "E01": dict(equity=10000.0,
+                        positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+        }, ind={"BTC": dict(pc=81000.0)})
+        orig = dash._tracke_live
+        monkeypatch.setattr(dash, "_tracke_live",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["tracke"]["cells"]["E01"] == pytest.approx(1.0)
+        assert data["tracke"]["farm_pct"] == pytest.approx(1.0)
+        assert data["tracke"]["n_pos"] == 1
+        assert data["tracke"]["fallback"] == ["BTC"]
+
+    def test_api_live는_tracke가_None이어도_뜬다(self, client, tmp_path, monkeypatch):
+        # 상태 파일 부재 → tracke: null, 나머지 페이로드는 정상 (크래시 금지)
+        orig = dash._tracke_live
+        monkeypatch.setattr(dash, "_tracke_live",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["tracke"] is None
+        assert "balance" in data and "tracks_live" in data
+
+
+class TestTrackeVariant:
+    """빠른 익절 변형 E11·E12 — 분리 소구역 표시 전용 (공식 판정 대상 아님)."""
+
+    VARIANT_ORDER = ["E11", "E12"]
+    MAIN_ORDER = [f"E{i:02d}" for i in range(1, 11)]
+
+    def _state(self, tmp_path, main_cells=None, variant=None):
+        """tracke_state.json 작성 — variant 는 variant_cells 블록 전체."""
+        st = {"t0": 1787813928812, "cells": main_cells or {}, "ind": {}}
+        if variant is not None:
+            st["variant_cells"] = variant
+        (tmp_path / "tracke_state.json").write_text(
+            json.dumps(st), encoding="utf-8")
+
+    def _main_hist(self, tmp_path):
+        """본 이력 — E05 만 +2% (사후최대 태그 대상)."""
+        cols = ["ts"] + self.MAIN_ORDER
+        base = {c: 10000.0 for c in self.MAIN_ORDER}
+        row2 = dict(base)
+        row2["E05"] = 10200.0
+        lines = [",".join(cols)]
+        for ts, r in [("2026-09-01T00:00:00Z", base),
+                      ("2026-09-01T01:00:00Z", row2)]:
+            lines.append(",".join([ts] + [str(r[c]) for c in self.MAIN_ORDER]))
+        (tmp_path / "tracke_history.csv").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+
+    def _patch_loaders(self, monkeypatch, tmp_path):
+        orig_t, orig_v = dash._load_tracke, dash._load_tracke_variant
+        monkeypatch.setattr(dash, "_load_tracke",
+                            lambda logs_dir=None: orig_t(logs_dir=tmp_path))
+        monkeypatch.setattr(dash, "_load_tracke_variant",
+                            lambda logs_dir=None: orig_v(logs_dir=tmp_path))
+
+    # ── 페이지 로드 로더 ──────────────────────────────────────────
+    def test_파일이_없으면_대기_구조(self, tmp_path):
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert v["available"] is False
+        assert [c["id"] for c in v["cells"]] == self.VARIANT_ORDER
+        assert all(c["pct"] is None for c in v["cells"])
+
+    def test_variant_키가_없거나_손상돼도_크래시_없이_대기(self, tmp_path):
+        self._state(tmp_path, main_cells={"E01": dict(equity=10000.0)})
+        assert dash._load_tracke_variant(logs_dir=tmp_path)["available"] is False
+        self._state(tmp_path, variant="깨진값")
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert v["available"] is False
+        assert all(c["pct"] is None for c in v["cells"])
+
+    def test_상태와_이력에서_수익률과_고정_라벨을_읽는다(self, tmp_path):
+        # 엔진 실스키마: 변형 이력은 소문자 e11/e12 (본 이력과 동일 관례)
+        (tmp_path / "tracke_variant_history.csv").write_text(
+            "day,ts,equity,e11,e12,n_pos,bars,fills\n"
+            "2026-08-28,1788829200000,20000,10000,10000,0,1,0\n"
+            "2026-08-28,1788832800000,20150,10200,9950,2,1,2\n",
+            encoding="utf-8")
+        self._state(tmp_path, variant={
+            "t0_variant": 1787881216290,
+            "cells": {
+                "E11": dict(equity=10200.0,
+                            positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+                "E12": dict(equity=9950.0,
+                            positions={"XRP": dict(d=-1, u=1000.0, e=2.0)}),
+            },
+        })
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert v["available"] is True
+        assert [c["id"] for c in v["cells"]] == self.VARIANT_ORDER
+        e11, e12 = v["cells"]
+        assert e11["pct"] == pytest.approx(2.0)
+        assert e12["pct"] == pytest.approx(-0.5)
+        assert e11["strategy"] == e12["strategy"] == "BRK24TP"
+        assert e11["label"] == e12["label"] == "빠른 익절 변형 · 미검증 · 판정 권한 없음"
+        assert e11["basket_label"] == "BTC·ETH·SOL"
+        assert e12["basket_label"] == "XRP·HYPE·BTR"
+        assert e11["positions"] == ["BTC 롱"]
+        assert e12["positions"] == ["XRP 숏"]
+
+    def test_변형_셀은_사후최대_태그_계산에_불포함(self, tmp_path):
+        # 본 셀 최고 E05 +2%, 변형 E11 +50% — max_cell 은 본 표에서만 나온다
+        self._main_hist(tmp_path)
+        self._state(tmp_path, variant={
+            "cells": {"E11": dict(equity=15000.0), "E12": dict(equity=14000.0)}})
+        t = dash._load_tracke(logs_dir=tmp_path)
+        assert t["max_cell"] == "E05"                        # 변형 +50% 무시
+        assert [c["id"] for c in t["cells"]] == self.MAIN_ORDER
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert all("is_max" not in c for c in v["cells"])    # 태그 플래그 자체가 없음
+        assert v["cells"][0]["pct"] == pytest.approx(50.0)
+
+    # ── 실시간 (/api/live) ───────────────────────────────────────
+    def test_변형_롱숏_시가평가는_variant_블록에만_실린다(self, tmp_path, monkeypatch):
+        self._state(
+            tmp_path,
+            main_cells={"E01": dict(equity=10000.0, positions={})},
+            variant={"cells": {
+                "E11": dict(equity=10000.0,
+                            positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+                "E12": dict(equity=10000.0,
+                            positions={"XRP": dict(d=-1, u=1000.0, e=2.0)}),
+            }})
+        px = {"BTC/USDT:USDT": 81000.0, "XRP/USDT:USDT": 1.9}
+        monkeypatch.setattr(dash, "_live_price", lambda s: px[s])
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t["variant"]["E11"] == pytest.approx(1.0)     # 롱 +0.1×1000
+        assert t["variant"]["E12"] == pytest.approx(1.0)     # 숏 1000×(1.9−2.0)×(−1)
+        assert t["variant"]["n_pos"] == 2
+        # 본 팜 집계와 완전 분리 — 변형이 farm/cells/n_pos/fallback 에 안 섞인다
+        assert t["farm_equity"] == pytest.approx(10000.0)
+        assert set(t["cells"]) == {"E01"}
+        assert t["n_pos"] == 0 and t["fallback"] == []
+
+    def test_변형_폴백은_variant_ind_종가를_쓴다(self, tmp_path, monkeypatch):
+        self._state(
+            tmp_path,
+            main_cells={"E01": dict(equity=10000.0, positions={})},
+            variant={"cells": {
+                "E11": dict(equity=10000.0,
+                            positions={"HYPE": dict(d=1, u=10.0, e=80.0)})},
+                "ind": {"HYPE": dict(pc=90.0)}})
+        monkeypatch.setattr(dash, "_live_price", lambda s: None)
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t["variant"]["E11"] == pytest.approx(1.0)     # 10×(90−80)
+        assert t["fallback"] == []                           # 본 블록 목록에 비혼입
+
+    def test_변형_상태가_없으면_variant는_None이고_본_블록은_정상(self, tmp_path, monkeypatch):
+        self._state(tmp_path,
+                    main_cells={"E01": dict(equity=10100.0, positions={})})
+        monkeypatch.setattr(dash, "_live_price", lambda s: None)
+        t = dash._tracke_live(logs_dir=tmp_path)
+        assert t is not None and t["variant"] is None
+        assert t["cells"]["E01"] == pytest.approx(1.0)
+
+    def test_api_live에_variant가_실린다(self, client, tmp_path, monkeypatch):
+        # fixture 가 가격 조회를 차단(None) → 변형 ind 종가 폴백 경로
+        self._state(
+            tmp_path,
+            main_cells={"E01": dict(equity=10000.0, positions={})},
+            variant={"cells": {
+                "E11": dict(equity=10000.0,
+                            positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+                "E12": dict(equity=10050.0, positions={})},
+                "ind": {"BTC": dict(pc=81000.0)}})
+        orig = dash._tracke_live
+        monkeypatch.setattr(dash, "_tracke_live",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["tracke"]["variant"]["E11"] == pytest.approx(1.0)
+        assert data["tracke"]["variant"]["E12"] == pytest.approx(0.5)
+        assert data["tracke"]["variant"]["n_pos"] == 1
+
+    # ── 렌더링 ───────────────────────────────────────────────────
+    def test_index에_변형_소구역이_렌더링되고_최대태그는_본_표에만(
+            self, client, tmp_path, monkeypatch):
+        self._main_hist(tmp_path)                            # 본 E05 +2% (max)
+        self._state(tmp_path, variant={
+            "cells": {"E11": dict(equity=15000.0),           # 변형 +50% > 본 최대
+                      "E12": dict(equity=10000.0)}})
+        self._patch_loaders(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "빠른 익절 변형 — 공식 판정 대상 아님".encode() in resp.data
+        assert b"trackeVarPct-E11" in resp.data
+        assert b"trackeVarPct-E12" in resp.data
+        assert b"BRK24TP" in resp.data
+        assert "빠른 익절 변형 · 미검증 · 판정 권한 없음".encode() in resp.data
+        # 변형이 더 커도 "사후 최대값 — 선택 금지" 태그는 본 표 최대 셀 1곳에만
+        assert resp.data.count("사후 최대값 — 선택 금지".encode()) == 1
+
+    def test_변형_부재시_소구역은_대기_표시(self, client, tmp_path, monkeypatch):
+        self._main_hist(tmp_path)                            # 본 표는 정상 렌더
+        self._patch_loaders(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "빠른 익절 변형 — 공식 판정 대상 아님".encode() in resp.data
+        assert "변형 상태·이력이 기록되면".encode() in resp.data   # "대기" 안내
+        assert b"trackeVarPct-E11" not in resp.data          # 행 없음, 크래시 없음
+
+
 class TestTrackeFirewall:
     """구조적 방화벽 — Track E 상태·이력이 승급/실거래 게이트에 못 들어간다."""
 
@@ -564,9 +839,12 @@ class TestTrackeFirewall:
         assert offenders == [], f"게이트 계층에서 Track E 파일 참조 발견: {offenders}"
 
     def test_게이트_함수_소스에_트랙E_참조가_없다(self):
+        # api_live 는 표시 전용 tracke 블록(_tracke_live)을 실을 수 있으나,
+        # 게이트 계산 함수(_promote_status/_tracks_live/_build_summary)는
+        # 여전히 Track E 를 일절 참조하지 않는다.
         import inspect
         for fn in (dash._promote_status, dash._tracks_live,
-                   dash._build_summary, dash.api_live):
+                   dash._build_summary):
             code = inspect.getsource(fn)
             assert "tracke_" not in code.lower(), fn.__name__
             assert "TRACKE" not in code, fn.__name__
@@ -588,16 +866,19 @@ class TestTrackeFirewall:
         assert set(t.keys()) == {"a", "b", "c", "d"}          # "e" 없음
         assert all(tr["labels"] == [] for tr in t.values())
 
-    def test_api_live_응답에_트랙E가_없다(self, client, tmp_path, monkeypatch):
-        # 트랙E 상태 파일이 존재해도 /api/live 페이로드에 절대 실리지 않는다
-        (tmp_path / "tracke_state.json").write_text(
-            json.dumps(dict(equity=2.0, positions={})), encoding="utf-8")
-        orig = dash._tracks_live
-        monkeypatch.setattr(dash, "_tracks_live",
-                            lambda logs_dir=None: orig(logs_dir=tmp_path))
-        resp = client.get("/api/live")
-        assert resp.status_code == 200
-        assert b"tracke" not in resp.data.lower()
+    def test_트랙E_실시간_평가는_상태_파일을_변경하지_않는다(self, tmp_path, monkeypatch):
+        # /api/live 의 tracke 블록은 읽기 전용 표시 경로다 —
+        # 판정·원장·상태 파일에 어떤 쓰기도 발생하지 않는다.
+        raw = json.dumps({"cells": {"E01": dict(
+            equity=10000.0,
+            positions={"BTC": dict(d=1, u=0.1, e=80000.0)})}})
+        (tmp_path / "tracke_state.json").write_text(raw, encoding="utf-8")
+        monkeypatch.setattr(dash, "_live_price", lambda s: 81000.0)
+        out = dash._tracke_live(logs_dir=tmp_path)
+        assert out is not None
+        assert (tmp_path / "tracke_state.json").read_text(
+            encoding="utf-8") == raw                  # 바이트 단위 불변
+        assert list(tmp_path.iterdir()) == [tmp_path / "tracke_state.json"]
 
     def test_요약_카드는_여전히_6개이고_트랙E_카드가_없다(self):
         s = dash._build_summary(1250.0, [], [], {}, {})

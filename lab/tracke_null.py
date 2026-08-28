@@ -148,8 +148,15 @@ def _numeric_strict(series: pd.Series, name: str) -> pd.Series:
 
 
 def _blankish(series: pd.Series) -> pd.Series:
-    """정규화된 문자열 열에서 공란·결측 표기를 찾는다."""
-    return series.str.lower().isin(("", "nan", "none", "null"))
+    """정규화된 문자열 열에서 공란·결측 표기를 찾는다.
+
+    pandas 3 의 str dtype 에서는 결측이 NA 로 유지되어 .str 연산을 통과하며
+    isin 이 False 가 되므로(가드 무력화), NA 를 먼저 공란으로 치환한다 —
+    판정 산식 무변경, fail-closed 가드의 환경 호환 버그픽스 (2026-08-28).
+    """
+    s = series.where(series.notna(), "")
+    return s.astype(str).str.strip().str.lower().isin(
+        ("", "nan", "none", "null", "<na>"))
 
 
 def load_ledger(path: Path, official: bool = False) -> pd.DataFrame:

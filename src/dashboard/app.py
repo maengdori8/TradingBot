@@ -358,6 +358,17 @@ TRACKE_VERDICT_DATES: tuple[str, ...] = (
     "2026-09-26", "2026-11-25", "2027-02-23")
 TRACKE_CELL_CAPITAL: float = 10_000.0        # 셀당 가상 자본 (USD)
 
+# 빠른 익절 변형 셀 (표시 전용 분리 소구역 — 공식 판정 대상 아님, 명세 동결)
+# 본 표(E01~E10)와 섞지 않으며 "사후 최대값" 태그 계산에도 절대 넣지 않는다.
+TRACKE_VARIANT_CELLS: tuple[tuple[str, str, str], ...] = (
+    ("E11", "BRK24TP", "A"),
+    ("E12", "BRK24TP", "B"),
+)
+TRACKE_VARIANT_IDS: tuple[str, ...] = tuple(c[0] for c in TRACKE_VARIANT_CELLS)
+TRACKE_VARIANT_BASKET_LABELS: dict[str, str] = {
+    "A": "BTC·ETH·SOL", "B": "XRP·HYPE·BTR"}
+TRACKE_VARIANT_LABEL: str = "빠른 익절 변형 · 미검증 · 판정 권한 없음"
+
 
 def _tracke_metric(cell_state: dict, names: tuple[str, ...]) -> float | None:
     """셀 상태 dict에서 후보 키 중 첫 유효 수치를 읽는다 (없으면 None)."""
@@ -394,11 +405,14 @@ def _tracke_ts_label(raw: str) -> str:
     return raw
 
 
-def _tracke_history_series(path: Path) -> dict[str, tuple[list[str], list[float]]]:
-    """tracke_history.csv 를 셀별 (원시 시각 키, 자본) 시리즈로 읽는다.
+def _tracke_history_series(
+    path: Path,
+    cell_ids: tuple[str, ...] = TRACKE_CELL_IDS,
+) -> dict[str, tuple[list[str], list[float]]]:
+    """tracke(_variant)_history.csv 를 셀별 (원시 시각 키, 자본) 시리즈로 읽는다.
 
     두 형식을 허용한다 (엔진 스키마 관용, 손상 행은 개별 스킵):
-    - wide: 시각 열(ts|day|bar_close|time) + 셀 열 E01~E10 (셀별 자본)
+    - wide: 시각 열(ts|day|bar_close|time) + 셀 열 (셀별 자본, 대소문자 무관)
     - long: 시각 열 + cell + equity
 
     시각 키는 포맷하지 않은 원시 문자열(epoch ms 그대로)로 반환한다 —
@@ -407,6 +421,7 @@ def _tracke_history_series(path: Path) -> dict[str, tuple[list[str], list[float]
 
     Args:
         path: 이력 CSV 경로.
+        cell_ids: 읽을 셀 id 집합 (기본 본 셀 E01~E10, 변형은 E11~E12).
 
     Returns:
         {셀 id: (원시 시각 키 리스트, 자본 리스트)} — 파일 없음/손상 시 빈 dict.
@@ -433,7 +448,7 @@ def _tracke_history_series(path: Path) -> dict[str, tuple[list[str], list[float]
 
     out: dict[str, tuple[list[str], list[float]]] = {}
     cell_cols = {fn.upper().strip(): fn for fn in fields
-                 if fn.upper().strip() in TRACKE_CELL_IDS}
+                 if fn.upper().strip() in cell_ids}
     if cell_cols:                               # wide 형식
         for r in rows:
             ts_key = (r.get(tkey) or "").strip()
@@ -449,7 +464,7 @@ def _tracke_history_series(path: Path) -> dict[str, tuple[list[str], list[float]
         ckey, ekey = lower["cell"], lower["equity"]
         for r in rows:
             cid = (r.get(ckey) or "").upper().strip()
-            if cid not in TRACKE_CELL_IDS:
+            if cid not in cell_ids:
                 continue
             try:
                 eq = float(r[ekey])
@@ -585,6 +600,76 @@ def _load_tracke(logs_dir: Path | None = None) -> dict:
         "farm": farm,
         "max_cell": max_cell,
         "verdicts": list(TRACKE_VERDICT_DATES),
+    }
+
+
+def _load_tracke_variant(logs_dir: Path | None = None) -> dict:
+    """빠른 익절 변형 셀(E11·E12) 표시 데이터 — 표시 전용 분리 소구역.
+
+    공식 판정 대상이 아니다: 본 셀(E01~E10) 표·"사후 최대값 — 선택 금지"
+    태그 계산과 완전히 분리되며(_load_tracke 는 이 데이터를 일절 안 본다),
+    승급/실거래 게이트에도 입력하지 않는다. 수익률은 변형 이력
+    (tracke_variant_history.csv) 우선, 없으면 상태(variant_cells)의 셀
+    equity 로 계산한다. 파일·키 부재/손상 시 available=False ("대기" 표시,
+    크래시 금지).
+
+    Args:
+        logs_dir: 이력 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    Returns:
+        {"available": bool, "cells": [E11, E12 고정 순서 — id/strategy/
+         basket/basket_label/label/pct/positions]} (JSON 직렬화 가능).
+    """
+    logs = logs_dir or (ROOT / "logs")
+    series = _tracke_history_series(
+        logs / "tracke_variant_history.csv", cell_ids=TRACKE_VARIANT_IDS)
+
+    try:
+        st = json.loads((logs / "tracke_state.json").read_text(encoding="utf-8"))
+        if not isinstance(st, dict):
+            st = {}
+    except (OSError, ValueError):
+        st = {}
+    vc = st.get("variant_cells")
+    if not isinstance(vc, dict):
+        vc = {}
+    raw_cells = vc.get("cells")
+    if not isinstance(raw_cells, dict):
+        raw_cells = {}
+    cells_state = {k.upper(): v for k, v in raw_cells.items()
+                   if isinstance(v, dict)}
+
+    cells: list[dict] = []
+    for cid, strat, basket in TRACKE_VARIANT_CELLS:   # 고정 순서 (정렬 금지)
+        s = cells_state.get(cid, {})
+        _, eqs = series.get(cid, ([], []))
+        pct: float | None = None
+        if eqs and eqs[0] > 0:
+            pct = round((eqs[-1] / eqs[0] - 1.0) * 100.0, 4)
+        else:
+            eq = _tracke_metric(s, ("equity", "eq"))
+            if eq is not None:
+                # 1.0 기준 정규화 자본과 USD($10,000 기준) 둘 다 허용
+                pct = (round((eq - 1.0) * 100.0, 4) if eq < 100.0
+                       else round((eq / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4))
+        positions: list[str] = []
+        pos = s.get("positions")
+        if isinstance(pos, dict):
+            for sym, pp in pos.items():
+                try:
+                    d_ = int(pp["d"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                positions.append(f"{sym} {'롱' if d_ > 0 else '숏'}")
+        cells.append(dict(
+            id=cid, strategy=strat, basket=basket,
+            basket_label=TRACKE_VARIANT_BASKET_LABELS[basket],
+            label=TRACKE_VARIANT_LABEL,
+            pct=pct, positions=positions,
+        ))
+    return {
+        "available": bool(series) or bool(cells_state),
+        "cells": cells,
     }
 
 
@@ -1033,6 +1118,7 @@ def index():
     trader_study = _load_trader_study()
     h2_study = _load_h2_study()
     tracke = _load_tracke()
+    tracke_variant = _load_tracke_variant()
     summary = _build_summary(balance, positions, trades, tracks, trader_study)
 
     return render_template(
@@ -1055,6 +1141,7 @@ def index():
         h2=h2_study,
         tracke=tracke,
         tracke_json=json.dumps(tracke),
+        tracke_variant=tracke_variant,
         summary=summary,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
@@ -1175,6 +1262,151 @@ def _tracks_live(logs_dir: Path | None = None) -> dict:
     return out
 
 
+def _tracke_mtm_cell(cs: dict, ind: dict,
+                     px_cache: dict[str, tuple[float, bool]],
+                     fallback: list[str]) -> tuple[float, int] | None:
+    """Track E 셀 하나를 현재가로 시가평가한다 (_tracke_live 공용 헬퍼).
+
+    셀 시가평가 = equity + Σ u×(px−e)×d. 현재가는 1초 캐시(_live_price)를
+    재사용하고, 실패 시 상태의 마지막 유효 종가(ind[sym].pc) → 진입가
+    (평가손익 0) 순으로 폴백한다. 읽기 전용 — 어디에도 쓰지 않는다.
+
+    Args:
+        cs: 셀 상태 dict (equity, positions{sym:{e,u,d}}).
+        ind: 폴백 종가 소스 ({sym: {"pc": ...}}).
+        px_cache: 심볼별 (가격, 폴백 여부) 캐시 (한 평가 패스 내 공유).
+        fallback: 현재가 폴백 심볼 목록 (in-place 추가).
+
+    Returns:
+        (시가평가 자본, 평가 포지션 수) — equity 손상 시 None (셀 스킵).
+    """
+    try:
+        mtm = float(cs.get("equity", TRACKE_CELL_CAPITAL))
+    except (TypeError, ValueError):
+        return None
+    n_pos = 0
+    positions = cs.get("positions")
+    if isinstance(positions, dict):
+        for sym, pp in positions.items():
+            try:
+                d_, u_, e_ = int(pp["d"]), float(pp["u"]), float(pp["e"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if sym in px_cache:
+                px, fb = px_cache[sym]
+            else:
+                live = _live_price(f"{sym}/USDT:USDT")
+                fb = live is None
+                if fb:
+                    pc = ind.get(sym)
+                    pc = pc.get("pc") if isinstance(pc, dict) else None
+                    px = (float(pc) if isinstance(pc, (int, float))
+                          and not isinstance(pc, bool) else e_)
+                else:
+                    px = live
+                px_cache[sym] = (px, fb)
+            if fb and sym not in fallback:
+                fallback.append(sym)
+            mtm += u_ * (px - e_) * d_
+            n_pos += 1
+    return mtm, n_pos
+
+
+def _tracke_live(logs_dir: Path | None = None) -> dict | None:
+    """Track E 단타 팜 실시간 시가평가 — 초단위 폴링용 (표시 전용).
+
+    logs/tracke_state.json 의 cells{...}.positions{sym:{e,u,d}} 를 현재가로
+    평가한다. 엔진 계약상 셀 equity 는 실현 기준 현금 자본이므로
+    셀 시가평가 = equity + Σ u×(px−e)×d (트랙 B/D 시가평가와 동일 관례).
+    현재가는 기존 1초 캐시(_live_price)를 그대로 재사용하며, 심볼 매핑은
+    엔진(scalp_farm_runner)과 동일한 Bybit linear "SYM/USDT:USDT" 다 —
+    바스켓 B(HYPE·BTR 포함)도 Bybit linear 티커에서 선정되므로 동일 경로.
+    조회 실패 심볼은 상태의 마지막 유효 종가(ind[sym].pc), 그것도 없으면
+    진입가(평가손익 0)로 폴백하고 fallback 목록에 표기한다.
+
+    읽기 전용 경로다: 판정·원장·상태 파일에 절대 쓰지 않으며, 결과는
+    승급/실거래 게이트(_promote_status, promote_checker)에 입력하지 않는다.
+
+    Args:
+        logs_dir: 상태 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    빠른 익절 변형 셀(E11·E12)은 같은 관례로 별도 평가해 variant 블록에만
+    싣는다 — 본 팜 합계·cells·n_pos·fallback 에는 절대 섞지 않는다
+    (분리 소구역 · 공식 판정 대상 아님).
+
+    Returns:
+        {"farm_equity": 팜 합계(USD), "farm_pct": 팜 수익률(%),
+         "cells": {셀 id: 수익률 %}, "n_pos": 평가 포지션 수,
+         "fallback": [현재가 폴백 심볼],
+         "variant": {"E11": %, "E12": %, "n_pos": 수} | None}
+        — 상태 없음/손상 시 None (프런트는 페이지 로드 값을 유지한다).
+    """
+    logs = logs_dir or (ROOT / "logs")
+    try:
+        st = json.loads((logs / "tracke_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(st, dict):
+        return None
+    cells_state = st.get("cells")
+    if not isinstance(cells_state, dict):
+        return None
+    ind = st.get("ind") if isinstance(st.get("ind"), dict) else {}
+
+    cells: dict[str, float] = {}
+    farm_equity = 0.0
+    base_total = 0.0
+    n_pos = 0
+    fallback: list[str] = []
+    px_cache: dict[str, tuple[float, bool]] = {}   # sym -> (가격, 폴백 여부)
+    for cid in TRACKE_CELL_IDS:                    # 고정 순서 (성과순 정렬 금지)
+        cs = cells_state.get(cid)
+        if not isinstance(cs, dict):
+            continue
+        res = _tracke_mtm_cell(cs, ind, px_cache, fallback)
+        if res is None:
+            continue
+        mtm, cell_npos = res
+        cells[cid] = round((mtm / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4)
+        farm_equity += mtm
+        base_total += TRACKE_CELL_CAPITAL
+        n_pos += cell_npos
+    if not cells:
+        return None
+
+    # 빠른 익절 변형 (E11·E12) — 별도 패스, 본 집계와 완전 분리
+    variant: dict | None = None
+    vc = st.get("variant_cells")
+    v_state = vc.get("cells") if isinstance(vc, dict) else None
+    if isinstance(v_state, dict):
+        v_ind = vc.get("ind") if isinstance(vc.get("ind"), dict) else {}
+        v_px: dict[str, tuple[float, bool]] = {}
+        v_fb: list[str] = []
+        v_out: dict[str, float] = {}
+        v_npos = 0
+        for cid in TRACKE_VARIANT_IDS:             # 고정 순서
+            cs = v_state.get(cid)
+            if not isinstance(cs, dict):
+                continue
+            res = _tracke_mtm_cell(cs, v_ind, v_px, v_fb)
+            if res is None:
+                continue
+            mtm, cell_npos = res
+            v_out[cid] = round((mtm / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4)
+            v_npos += cell_npos
+        if v_out:
+            variant = {**v_out, "n_pos": v_npos}
+
+    return {
+        "farm_equity": round(farm_equity, 2),
+        "farm_pct": round((farm_equity / base_total - 1.0) * 100.0, 4),
+        "cells": cells,
+        "n_pos": n_pos,
+        "fallback": fallback,
+        "variant": variant,
+    }
+
+
 @app.route("/api/live")
 def api_live():
     """초단위 폴링용 — 잔고 + 보유 포지션 실시간 평가손익."""
@@ -1213,6 +1445,7 @@ def api_live():
 
     return jsonify({
         "tracks_live": _tracks_live(),
+        "tracke": _tracke_live(),     # 표시 전용 — 승급/게이트 입력 아님
         "balance": round(balance, 2),
         "total_unrealized": round(total_upnl, 4),
         "equity": round(balance + total_upnl, 2),

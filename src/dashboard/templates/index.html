@@ -179,6 +179,12 @@
             background: rgba(255, 176, 32, 0.12); margin-left: 6px;
             white-space: nowrap; font-weight: 500;
         }
+        .tracke-livebadge {
+            font-size: 0.64rem; padding: 1px 7px; border-radius: 999px;
+            border: 1px solid #30363d; color: var(--muted);
+            background: rgba(139, 148, 158, 0.10); margin-left: 6px;
+            white-space: nowrap; font-weight: 500;
+        }
         .tracke-table td, .tracke-table th { font-size: 0.8rem; }
         .tracke-table .mono { color: #c9d1d9; }  /* 손익 색상 강조 없음 (중립) */
         .watch-item {
@@ -434,7 +440,12 @@
     <div class="row g-3 mb-3">
         <div class="col-lg-5">
             <div class="card p-3 h-100">
-                <div class="section-title">동일가중 팜 곡선 &middot; 셀 간 중앙값/IQR (누적 %)</div>
+                <div class="section-title">동일가중 팜 곡선 &middot; 셀 간 중앙값/IQR (누적 %)
+                    <span class="text-muted float-end mono" style="font-weight:400; font-size:0.75rem;">
+                        팜 <span id="trackeFarmEquity">{% if tracke.farm.mean %}${{ "{:,.0f}".format(100000 * (1 + tracke.farm.mean[-1] / 100)) }}{% else %}-{% endif %}</span>
+                        &middot; <span id="trackeFarmPct">{% if tracke.farm.mean %}{{ "%+.3f"|format(tracke.farm.mean[-1]) }}%{% else %}-{% endif %}</span>
+                    </span>
+                </div>
                 <canvas id="trackeChart" style="max-height: 280px;"></canvas>
             </div>
         </div>
@@ -442,6 +453,8 @@
             <div class="card p-3 h-100">
                 <div class="section-title">
                     가상계정 E01~E10 &mdash; 고정 순서 (성과순 정렬 없음)
+                    <span class="tracke-livebadge" id="trackeLiveBadge" title="초단위 시가평가 — 표시 전용, 판정 입력 아님">실시간</span>
+                    <span class="text-muted" id="trackeLiveNote" style="font-weight:400; font-size:0.68rem;"></span>
                     <span class="text-muted float-end" style="font-weight:400; font-size:0.75rem;">T0 {{ tracke.t0 or '-' }}</span>
                 </div>
                 <div class="table-responsive">
@@ -462,7 +475,7 @@
                             <td class="mono">{{ c.strategy }}</td>
                             <td>{{ c.basket }} <span class="text-muted" style="font-size:0.68rem;">{{ c.basket_label }}</span></td>
                             <td class="text-muted" style="font-size:0.72rem;">{{ c.label }}</td>
-                            <td class="text-end mono">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '-' }}</td>
+                            <td class="text-end mono"><span id="trackeCellPct-{{ c.id }}">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '-' }}</span></td>
                             <td class="text-end mono">{{ ("%.1f"|format(c.cost)) if c.cost is not none else '-' }}</td>
                             <td class="text-end mono">{{ ("%+.1f"|format(c.funding)) if c.funding is not none else '-' }}</td>
                             <td class="text-end mono">{{ ("%.0f"|format(c.turnover)) if c.turnover is not none else '-' }}</td>
@@ -478,6 +491,39 @@
                     비용·펀딩·회전 단위: USD 누적 (셀 자본 $10,000 기준, 펀딩 양수 = 지불) &middot; gross = 현재 명목/자본 배수.
                     바스켓 B는 T0 동결 &middot; 이후 교체 없음. 어떤 셀도 이 성과로 선발하지 않는다.
                 </div>
+
+                <!-- 빠른 익절 변형 (E11·E12) — 분리 소구역: 본 표·사후 최대값 태그와 무관 -->
+                <div class="section-divider" style="margin: 1.0rem 0 0.6rem 0;">
+                    <span class="sd-label">빠른 익절 변형 — 공식 판정 대상 아님</span>
+                    <span class="text-muted" id="trackeVarLiveNote" style="font-size:0.68rem;"></span>
+                    <div class="sd-line"></div>
+                </div>
+                {% if tracke_variant.available %}
+                <div class="table-responsive">
+                    <table class="table table-sm tracke-table mb-0">
+                        <thead>
+                        <tr>
+                            <th>셀</th><th>전략</th><th>바스켓</th><th>라벨</th>
+                            <th class="text-end">수익률</th><th>포지션</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for c in tracke_variant.cells %}
+                        <tr>
+                            <td class="mono fw-bold" style="white-space:nowrap;">{{ c.id }}</td>
+                            <td class="mono">{{ c.strategy }}</td>
+                            <td>{{ c.basket }} <span class="text-muted" style="font-size:0.68rem;">{{ c.basket_label }}</span></td>
+                            <td class="text-muted" style="font-size:0.72rem;">{{ c.label }}</td>
+                            <td class="text-end mono"><span id="trackeVarPct-{{ c.id }}">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '-' }}</span></td>
+                            <td class="text-muted" style="font-size:0.72rem;">{{ c.positions | join(' · ') if c.positions else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-muted" style="font-size: 0.8rem;">대기 &mdash; 변형 상태·이력이 기록되면 E11·E12가 여기에 표시됩니다.</div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -900,6 +946,35 @@
                     const el = document.getElementById('expVal-' + key);
                     if (!tl || !el) continue;
                     el.textContent = (tl.pct >= 0 ? '+' : '') + tl.pct.toFixed(3) + '%';
+                }
+            }
+            // Track E 팜 실시간 시가평가 (표시 전용 — 실패/부재 시 페이지 로드 값 유지)
+            if (d.tracke) {
+                const fe = document.getElementById('trackeFarmEquity');
+                if (fe && d.tracke.farm_equity != null)
+                    fe.textContent = '$' + Number(d.tracke.farm_equity).toLocaleString('en-US', {maximumFractionDigits: 0});
+                const fp = document.getElementById('trackeFarmPct');
+                if (fp && d.tracke.farm_pct != null)
+                    fp.textContent = signed(d.tracke.farm_pct, 3) + '%';
+                for (const [cid, pct] of Object.entries(d.tracke.cells || {})) {
+                    const el = document.getElementById('trackeCellPct-' + cid);
+                    if (el && pct != null) el.textContent = signed(pct, 2) + '%';
+                }
+                const note = document.getElementById('trackeLiveNote');
+                if (note) {
+                    const fb = d.tracke.fallback || [];
+                    note.textContent = '보유 ' + (d.tracke.n_pos ?? 0)
+                        + (fb.length ? ' · 종가 폴백: ' + fb.join('·') : '');
+                }
+                // 빠른 익절 변형 (E11·E12) — 분리 소구역만 갱신 (부재 시 페이지 로드 값 유지)
+                if (d.tracke.variant) {
+                    for (const cid of ['E11', 'E12']) {
+                        const el = document.getElementById('trackeVarPct-' + cid);
+                        const pct = d.tracke.variant[cid];
+                        if (el && pct != null) el.textContent = signed(pct, 2) + '%';
+                    }
+                    const vnote = document.getElementById('trackeVarLiveNote');
+                    if (vnote) vnote.textContent = '보유 ' + (d.tracke.variant.n_pos ?? 0);
                 }
             }
             if (dot) dot.style.color = 'var(--green)';

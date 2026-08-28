@@ -30,9 +30,36 @@
 봉 내 사건 순서 (인과 규약): 대기청산(시가) → 대기진입(시가, 마크는 직전 종가 —
 시가 시점에 이번 봉 종가는 미지) → 봉내 청산/관리 → 신호·봉내 진입(마크는 직전
 종가) → 펀딩(봉 종가 정산) → 일손실 판정. 시가 체결이 봉내 사건보다 먼저다.
+
+변형 셀 E11·E12 — BRK24TP (2026-08-28 사전 고정, 성과 조회 전 동결):
+- 지위: 공식 판정(lab/tracke_null.py 10셀 공동 null) 대상 아님. 라벨(동결):
+  "빠른 익절 변형 · 미검증 · 판정 권한 없음". E11=바스켓 A, E12=동결 바스켓 B 재사용.
+- 규칙: BRK24 와 진입·초기 스탑·사이징 완전 동일 (같은 내부 코드 경로 공유).
+  추가 규칙 둘뿐:
+  (a) 익절 1R: tgt = fill + 1×(fill − stop) = 2·fill − stop (롱/숏 공통식).
+      봉내 레벨 체결 (갭이 유리해도 레벨 — RSI-DIV #15 관례), 체결봉부터 검사
+      (같은 봉 same_bar_stop/same_bar_target — RSI-DIV #17 관례), 같은 봉에서
+      BRK 청산 레벨(스탑·역채널, 갭 악화)과 동시 도달 시 BRK 청산 우선(비관).
+  (b) 최대 보유 12×1h봉 (진입봉=1, 존재하는 봉만 카운트 — 결측 봉은 카운트·청산
+      모두 정지, 엔진 공통 fail-closed 관례): hold 12 도달 봉 **종가** 청산
+      (action "timeout"). 그 외 기존 BRK24 청산 규칙(역채널 추적·갭 악화) 유지.
+- 청산 우선순위 동결: BRK 스탑/역채널 → 1R 목표 → 12봉 타임아웃.
+- 청산이 발생한 봉의 종가 시각 펀딩 정산은 이미 청산된 포지션에 적용되지 않는다
+  (봉 내 사건 순서상 관리가 펀딩보다 먼저 — 전 전략 공통 기존 관례, 변형 동일).
+- 상태: 본 상태 JSON(tracke_state.json)의 variant_cells 키. t0_variant = 변형
+  서브상태의 최초 원자적 기록에 성공한 러너 실행 시각 (write-once, 이후 불변).
+  지표는 초기화 시 본 팜 '시장 전용 지표 상태'의 깊은 스냅숏을 상속하고
+  last_ts 를 본 팜과 정렬한다 — t0_variant 이전 봉 재생·주문 생성이 구조적으로
+  불가능 (워밍업 무주문, 기존 T0 원칙 그대로).
+- 원장·이력 분리: tracke_variant_ledger.csv / tracke_variant_history.csv 전용.
+  본 원장 tracke_ledger.csv 기록 금지 — 공식 로더의 미지 셀 거부 계약 보호.
+- E01~E10 불변 보증: 본 셀은 step()/CELLS 경로만 사용하며 변형은 step_variant()/
+  VCELLS 별도 상태로만 돈다 — 동일 합성 시퀀스에서 본 원장 바이트 동일
+  (tests/test_scalp_farm.py 회귀 테스트).
 """
 from __future__ import annotations
 
+import copy
 import logging
 import math
 from dataclasses import asdict, dataclass, field
@@ -68,6 +95,10 @@ DIV_TGT_R = 2.0
 BASKET_A = ("BTC", "ETH", "SOL")
 WARMUP_1H = 420                # 워밍업 조회 깊이 (완전한 4h 창 최소 104개 확보)
 
+# --- 변형 셀(E11·E12) 동결 상수 — 본 판정 비대상, 규칙은 모듈 docstring ---
+VAR_TP_R = 1.0                 # BRK24TP 익절 배수 (1R)
+VAR_MAX_HOLD = 12              # 최대 보유 1h봉 수 (진입봉 = 1)
+
 
 @dataclass(frozen=True)
 class CellSpec:
@@ -87,6 +118,11 @@ CELLS: tuple[CellSpec, ...] = (
     CellSpec("E09", "RSIDIV", "A", 0), CellSpec("E10", "RSIDIV", "B", 0),
 )
 
+# 변형 셀 — 본 CELLS 와 분리 (공식 판정·대시보드의 고정 10셀 계약 불변)
+VCELLS: tuple[CellSpec, ...] = (
+    CellSpec("E11", "BRK24TP", "A", 24), CellSpec("E12", "BRK24TP", "B", 24),
+)
+
 # 셀별 고정 라벨 (대시보드 표기용 — 성과와 무관, 변경 금지)
 LABELS: dict = {
     "E01": "역사적 탈락", "E02": "역사적 탈락 · OOD",
@@ -94,6 +130,12 @@ LABELS: dict = {
     "E05": "격자 1/8 선택 · Track D 중복 · 선택할인", "E06": "격자 1/8 · OOD",
     "E07": "역사적 탈락", "E08": "역사적 탈락 · OOD",
     "E09": "미검증 가설 U1", "E10": "미검증 가설 U1 · OOD",
+}
+
+# 변형 셀 고정 라벨 (동결 문구 — 성과와 무관, 변경 금지)
+VLABELS: dict = {
+    "E11": "빠른 익절 변형 · 미검증 · 판정 권한 없음",
+    "E12": "빠른 익절 변형 · 미검증 · 판정 권한 없음",
 }
 
 
@@ -196,6 +238,10 @@ class FarmState:
     delisted: list = field(default_factory=list)    # 영구 공석 슬롯
     ind: dict = field(default_factory=dict)         # sym -> 지표 상태
     cells: dict = field(default_factory=dict)       # cell_id -> CellState
+    # 변형(E11·E12) 서브상태 — 본 경로는 절대 읽지 않는 불투명 dict.
+    # None = 미초기화(초기화 가능), dict = variant_to_dict() 산출물.
+    # {} 등 손상값은 variant_from_dict 가 fail-closed (재초기화로 t0 이동 금지).
+    variant_cells: dict | None = None
 
     def to_dict(self) -> dict:
         """JSON 직렬화 (셀 gross 계산용 마지막 유효 종가 마크맵 주입)."""
@@ -203,14 +249,16 @@ class FarmState:
               if i_.get("pc") is not None}
         return dict(t0=self.t0, last_ts=self.last_ts, basket_b=list(self.basket_b),
                     delisted=list(self.delisted), ind=self.ind,
-                    cells={c: s.to_dict(px) for c, s in self.cells.items()})
+                    cells={c: s.to_dict(px) for c, s in self.cells.items()},
+                    variant_cells=self.variant_cells)
 
     @classmethod
     def from_dict(cls, d: dict) -> "FarmState":
         """JSON 역직렬화."""
         st = cls(t0=d.get("t0", 0), last_ts=d.get("last_ts", 0),
                  basket_b=list(d.get("basket_b", [])),
-                 delisted=list(d.get("delisted", [])), ind=dict(d.get("ind", {})))
+                 delisted=list(d.get("delisted", [])), ind=dict(d.get("ind", {})),
+                 variant_cells=d.get("variant_cells"))
         st.cells = {c: CellState.from_dict(s) for c, s in d.get("cells", {}).items()}
         return st
 
@@ -219,6 +267,56 @@ def new_farm(basket_b: list, t0: int) -> FarmState:
     """T0 초기화 — 바스켓 B 동결, 셀 10개 생성."""
     return FarmState(t0=t0, basket_b=list(basket_b),
                      cells={spec.cell: CellState() for spec in CELLS})
+
+
+def new_variant(state: FarmState, t0: int) -> FarmState:
+    """변형 서브팜(E11·E12) 초기화 — t0_variant 동결 시점에 1회 호출 (write-once).
+
+    본 팜의 동결 바스켓 B·폐지 목록을 재사용하고, 지표는 본 팜 '시장 전용 지표
+    상태'의 깊은 스냅숏을 상속한다 (_new_ind 주석대로 시장 데이터의 순수 함수 —
+    셀 간 공유 가능. 이후 갱신은 완전 분리). last_ts 를 본 팜과 정렬해
+    t0_variant 이전 봉 재생(과거 주문 생성)을 구조적으로 차단한다
+    (워밍업 무주문 — 기존 T0 원칙 그대로).
+
+    Args:
+        state: 본 팜 상태 (변형되지 않음).
+        t0: t0_variant (epoch ms) — 기록 후 불변.
+    """
+    return FarmState(t0=t0, last_ts=state.last_ts,
+                     basket_b=list(state.basket_b),
+                     delisted=list(state.delisted),
+                     ind=copy.deepcopy(state.ind),
+                     cells={spec.cell: CellState() for spec in VCELLS})
+
+
+def variant_to_dict(v: FarmState) -> dict:
+    """변형 서브상태 직렬화 — 상태 JSON 'variant_cells' 키 계약 (t0_variant 명명)."""
+    d = v.to_dict()
+    d.pop("variant_cells", None)          # 중첩 없음 (변형 안의 변형 금지)
+    d["t0_variant"] = d.pop("t0")
+    return d
+
+
+def variant_from_dict(d: dict | None) -> FarmState:
+    """'variant_cells' 키 역직렬화 — 손상 시 fail-closed.
+
+    부재(None)와 손상({}·키 누락·셀 구성 오류)을 구분한다: 부재만 초기화
+    대상이고, 손상은 예외다 — 조용한 재초기화로 t0_variant 가 이동하는 것 금지.
+
+    Raises:
+        ValueError: t0_variant 부재/0 또는 셀 구성이 정확히 {E11, E12}가 아닐 때.
+    """
+    t0 = d.get("t0_variant") if isinstance(d, dict) else None
+    if not isinstance(t0, (int, float)) or isinstance(t0, bool) or t0 <= 0:
+        raise ValueError(
+            f"변형 서브상태 손상 — t0_variant 부재/비정상 (재초기화 금지): {t0!r}")
+    want = {spec.cell for spec in VCELLS}
+    have = set(d.get("cells", {}))
+    if have != want:
+        raise ValueError(f"변형 셀 구성 불일치: {sorted(have)} != {sorted(want)}")
+    d = copy.deepcopy(d)                  # 저장된 dict 와의 중첩 별칭 차단
+    d["t0"] = d.pop("t0_variant")
+    return FarmState.from_dict(d)
 
 
 def cell_syms(spec: CellSpec, state: FarmState) -> tuple:
@@ -235,10 +333,20 @@ def _cell_mtm(cell: CellState, px: dict) -> float:
     return v
 
 
-def farm_equities(state: FarmState) -> dict:
-    """셀별 시가평가 (마지막 유효 종가 기준)."""
+def _equities(state: FarmState, cells: tuple) -> dict:
+    """셀별 시가평가 (마지막 유효 종가 기준) — 내부 공용 구현."""
     px = {s: i_["pc"] for s, i_ in state.ind.items() if i_.get("pc") is not None}
-    return {spec.cell: _cell_mtm(state.cells[spec.cell], px) for spec in CELLS}
+    return {spec.cell: _cell_mtm(state.cells[spec.cell], px) for spec in cells}
+
+
+def farm_equities(state: FarmState) -> dict:
+    """본 셀(E01~E10) 시가평가 (마지막 유효 종가 기준)."""
+    return _equities(state, CELLS)
+
+
+def variant_equities(v: FarmState) -> dict:
+    """변형 셀(E11·E12) 시가평가 — 변형 서브상태 전용."""
+    return _equities(v, VCELLS)
 
 
 def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
@@ -320,8 +428,9 @@ def _post_fill_check(cell: CellState, spec: CellSpec, s: str, b: BarE,
     if (p.d > 0 and b.low <= p.stop) or (p.d < 0 and b.high >= p.stop):
         _close(cell, spec, s, ts_close, p.stop, "same_bar_stop", fills)
         return
-    if p.kind == "RSIDIV" and ((p.d > 0 and b.high >= p.tgt)
-                               or (p.d < 0 and b.low <= p.tgt)):
+    # 목표 레벨 보유 종류(RSIDIV 2R, 변형 BRKTP 1R)만 같은 봉 목표 검사
+    if p.kind in ("RSIDIV", "BRKTP") and ((p.d > 0 and b.high >= p.tgt)
+                                          or (p.d < 0 and b.low <= p.tgt)):
         _close(cell, spec, s, ts_close, p.tgt, "same_bar_target", fills)
 
 
@@ -468,6 +577,18 @@ def _manage(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
             if b.high >= lvl:
                 _close(cell, spec, s, ts_close, max(lvl, b.open), "exit", fills)
                 return True
+        if spec.strategy == "BRK24TP":
+            # 변형 (a) 익절 1R — 레벨 체결 (갭 유리해도 레벨), BRK 청산(위)이
+            # 먼저 검사되므로 같은 봉 동시 도달 시 스탑/역채널 우선 (비관)
+            if (p.d > 0 and b.high >= p.tgt) or (p.d < 0 and b.low <= p.tgt):
+                _close(cell, spec, s, ts_close, p.tgt, "target", fills)
+                return True
+            # 변형 (b) 최대 보유 12×1h봉 (진입봉=1, 결측 봉은 카운트 정지) —
+            # 도달 봉 '종가' 청산 (MR 처럼 다음 봉 시가가 아님 — 동결 규칙)
+            p.hold += 1
+            if p.hold >= VAR_MAX_HOLD:
+                _close(cell, spec, s, ts_close, b.close, "timeout", fills)
+                return True
     elif spec.strategy == "MR":
         if p.d > 0 and b.low <= p.stop:
             _close(cell, spec, s, ts_close, min(p.stop, b.open), "stop", fills)
@@ -513,8 +634,13 @@ def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
             d, fill = -1, min(b.open, lo)
         else:
             return
-        if _try_open(cell, spec, s, b, d, fill, fill - d * BRK_ATR_MULT * a,
-                     "BRK", px, fills):
+        stop = fill - d * BRK_ATR_MULT * a
+        # 변형 BRK24TP: 진입·스탑·사이징은 위와 완전 동일 경로 — 목표만 추가
+        # (1R: tgt = fill + 1×(fill − stop), 롱/숏 공통식. 본 BRK는 tgt=0.0 기본값)
+        variant = spec.strategy == "BRK24TP"
+        tgt = fill + VAR_TP_R * (fill - stop) if variant else 0.0
+        if _try_open(cell, spec, s, b, d, fill, stop,
+                     "BRKTP" if variant else "BRK", px, fills, tgt=tgt):
             _post_fill_check(cell, spec, s, b, fills)   # 같은 봉 스탑 비관 (봉내 진입)
     elif spec.strategy == "MR":
         cl = ind["cl"]                       # shift(1) — 현재 봉 제외 24봉
@@ -534,16 +660,39 @@ def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
 
 
 def step(state: FarmState, bars: dict, funding: dict | None = None) -> list:
-    """닫힌 1h 봉 1개(전 심볼)를 10셀 전부에 처리한다 — 백테스트·라이브 공용 유일 경로.
+    """닫힌 1h 봉 1개(전 심볼)를 본 셀 10개 전부에 처리한다 — 백테스트·라이브 공용.
+
+    본 셀(E01~E10) 전용 진입점 — 변형(E11·E12)은 step_variant() 로만 돈다
+    (셀 목록을 공개 인자로 받지 않아 상태·셀 조합 오용을 차단).
 
     Args:
-        state: 팜 상태 (변형됨).
+        state: 본 팜 상태 (변형됨).
         bars: sym -> BarE (동일 ts 필수).
         funding: sym -> 이 봉 종가 시각에 정산되는 펀딩률 합 (없으면 0).
 
     Returns:
         체결 이벤트 목록 (유일키: cell, sym, strategy, bar_close, action).
     """
+    return _step_cells(state, bars, funding, CELLS)
+
+
+def step_variant(state: FarmState, bars: dict, funding: dict | None = None) -> list:
+    """변형 서브팜(E11·E12) 전용 step — 본 셀과 같은 내부 경로, 상태·셀만 분리.
+
+    Args:
+        state: 변형 서브상태 (variant_from_dict 결과, 변형됨).
+        bars: sym -> BarE (동일 ts 필수).
+        funding: sym -> 이 봉 종가 시각에 정산되는 펀딩률 합 (없으면 0).
+
+    Returns:
+        체결 이벤트 목록 (cell 은 E11/E12 만).
+    """
+    return _step_cells(state, bars, funding, VCELLS)
+
+
+def _step_cells(state: FarmState, bars: dict, funding: dict | None,
+                cells: tuple) -> list:
+    """닫힌 1h 봉 1개를 cells 전체에 처리하는 내부 공용 구현 (인과 규약 준수)."""
     if not bars:
         return []
     ts_set = {b.ts for b in bars.values()}
@@ -579,7 +728,7 @@ def step(state: FarmState, bars: dict, funding: dict | None = None) -> list:
     cur_px = dict(prev_px)
     cur_px.update({s: b.close for s, b in ok_bars.items()})
 
-    for spec in CELLS:
+    for spec in cells:
         cell = state.cells[spec.cell]
         if cell.day != day_key:                    # UTC 일 경계
             cell.day, cell.halted = day_key, False
@@ -655,18 +804,33 @@ def step(state: FarmState, bars: dict, funding: dict | None = None) -> list:
 
 
 def mark_delisted(state: FarmState, sym: str, last_px: float | None = None) -> list:
-    """폐지·데이터 단절 — 마지막 유효가로 전 셀 청산 후 해당 슬롯 영구 공석 (교체 없음).
+    """폐지·데이터 단절 — 마지막 유효가로 본 셀 전체 청산 후 슬롯 영구 공석.
 
     Args:
         last_px: 러너가 아는 더 최신의 마지막 유효 종가 (없으면 상태의 직전 종가).
     """
+    return _delist_cells(state, sym, last_px, CELLS)
+
+
+def variant_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
+    """변형 셀(E11·E12) 폐지 처리 — 본 팜 폐지의 미러 (관례 동일, 상태 분리).
+
+    청산가는 변형 상태의 마지막 처리 종가 — 본 셀 청산 시점과 어긋날 수 있다
+    (변형이 뒤처진 채 폐지가 미러되면; fail-closed 관례로 동결).
+    """
+    return _delist_cells(v, sym, last_px, VCELLS)
+
+
+def _delist_cells(state: FarmState, sym: str, last_px: float | None,
+                  cells: tuple) -> list:
+    """폐지 내부 공용 구현 — cells 의 포지션을 마지막 유효가로 강제 청산."""
     if sym in state.delisted:
         return []
     state.delisted.append(sym)
     px = last_px if last_px is not None else state.ind.get(sym, {}).get("pc")
     ts_close = state.last_ts + H1
     fills: list = []
-    for spec in CELLS:
+    for spec in cells:
         if sym not in cell_syms(spec, state):
             continue
         cell = state.cells[spec.cell]

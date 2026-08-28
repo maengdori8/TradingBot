@@ -35,7 +35,7 @@ jobs:
           # 파일별 개별 add — 하나라도 없으면 전체 add가 실패해 상태 커밋이 통째로
           # 유실되는 git pathspec 함정 방지. tracke_last_error.txt 는 중단 관측성
           # 마커 (성공 실행이 삭제 — add가 삭제도 스테이징한다)
-          for f in logs/tracke_state.json logs/tracke_history.csv logs/tracke_ledger.csv logs/tracke_last_error.txt; do
+          for f in logs/tracke_state.json logs/tracke_history.csv logs/tracke_ledger.csv logs/tracke_variant_ledger.csv logs/tracke_variant_history.csv logs/tracke_last_error.txt; do
             git add -f "$f" 2>/dev/null || true
           done
           git diff --staged --quiet || git commit -m "[tracke] $(date -u +%Y-%m-%dT%H:%MZ) 단타 팜 처리"
