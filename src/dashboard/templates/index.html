@@ -187,6 +187,27 @@
         }
         .tracke-table td, .tracke-table th { font-size: 0.8rem; }
         .tracke-table .mono { color: #c9d1d9; }  /* 손익 색상 강조 없음 (중립) */
+        /* 셀 행 펼침 상세 — 정보 표시 전용 (강조·정렬 없음).
+           미실현·개별 평가손익만 기존 수익률 칸 관례대로 pos/neg 색 허용 */
+        .tracke-row { cursor: pointer; }
+        .tracke-caret {
+            display: inline-block; width: 1em; color: var(--muted);
+            font-size: 0.68rem; user-select: none;
+        }
+        .tracke-detail-cell {
+            background: #10141a; padding: 8px 12px 10px 26px !important;
+        }
+        .tracke-detail-summary {
+            display: flex; flex-wrap: wrap; gap: 4px 22px;
+            font-size: 0.74rem; margin-bottom: 6px;
+        }
+        .tracke-detail-summary .td-k { color: var(--muted); margin-right: 5px; }
+        .tracke-mini { max-width: 560px; }
+        .tracke-mini td, .tracke-mini th {
+            font-size: 0.72rem; padding: 2px 8px; white-space: nowrap;
+        }
+        .tracke-detail-cell .mono.positive { color: var(--green); }
+        .tracke-detail-cell .mono.negative { color: var(--red); }
         .watch-item {
             background: #161b22;
             border: 1px solid #21262d;
@@ -436,6 +457,41 @@
         일손실 &minus;5%는 당일 신규 진입 정지 <em>트리거</em>이며 손실 상한이 아님.
         판정은 사전 지정 시점만: {{ tracke.verdicts | join(' · ') }} (lab/tracke_null.py — 공동 max-stat null).
     </div>
+    {# 셀 행 펼침 상세 — 정보 표시 전용 (강조·정렬 없음). 실현 = equity − 셀 초기자본.
+       초기 렌더는 이 매크로, 이후 매초 갱신은 pollLive(trackeDetailHtml)가 동일 구조로 수행 #}
+    {% macro tracke_detail_body(det, capital) -%}
+    {% if det %}
+    <div class="tracke-detail-summary">
+        <span><span class="td-k">실현 $</span><span class="mono">{{ "%+.2f"|format(det.equity - capital) }}</span></span>
+        <span><span class="td-k">미실현 $</span><span class="mono {{ 'positive' if det.unrealized >= 0 else 'negative' }}">{{ "%+.2f"|format(det.unrealized) }}</span></span>
+        <span><span class="td-k">수수료 $</span><span class="mono">{{ ("%.2f"|format(det.cost)) if det.cost is not none else '-' }}</span></span>
+        <span><span class="td-k">펀딩 $</span><span class="mono">{{ ("%+.2f"|format(det.fund)) if det.fund is not none else '-' }}</span></span>
+    </div>
+    {% if det.positions %}
+    <div style="overflow-x:auto;">
+        <table class="table table-sm tracke-mini mb-0">
+            <thead><tr><th>코인</th><th>방향</th><th class="text-end">진입가</th><th class="text-end">현재가</th><th class="text-end">평가손익 $</th><th class="text-end">%</th></tr></thead>
+            <tbody>
+            {% for p in det.positions %}
+            <tr>
+                <td class="mono">{{ p.sym }}</td>
+                <td>{{ p.dir }}</td>
+                <td class="text-end mono">{{ ("%.6f"|format(p.entry)).rstrip('0').rstrip('.') }}</td>
+                <td class="text-end mono">{{ ("%.6f"|format(p.mark)).rstrip('0').rstrip('.') }}</td>
+                <td class="text-end mono {{ 'positive' if p.upnl >= 0 else 'negative' }}">{{ "%+.2f"|format(p.upnl) }}</td>
+                <td class="text-end mono {{ 'positive' if p.upnl >= 0 else 'negative' }}">{{ "%+.2f"|format(p.upnl_pct) }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-muted" style="font-size:0.74rem;">보유 없음</div>
+    {% endif %}
+    {% else %}
+    <div class="text-muted" style="font-size:0.74rem;">대기 &mdash; 셀 상태가 기록되면 상세가 표시됩니다.</div>
+    {% endif %}
+    {%- endmacro %}
     {% if tracke.available %}
     <div class="row g-3 mb-3">
         <div class="col-lg-5">
@@ -470,8 +526,8 @@
                         </thead>
                         <tbody>
                         {% for c in tracke.cells %}
-                        <tr>
-                            <td class="mono fw-bold" style="white-space:nowrap;">{{ c.id }}{% if c.is_max %}<span class="tracke-maxtag">사후 최대값 — 선택 금지</span>{% endif %}</td>
+                        <tr class="tracke-row" onclick="toggleTrackeDetail('{{ c.id }}')" title="클릭하면 계정 상세가 펼쳐집니다">
+                            <td class="mono fw-bold" style="white-space:nowrap;"><span class="tracke-caret" id="trackeCaret-{{ c.id }}">&#9656;</span>{{ c.id }}{% if c.is_max %}<span class="tracke-maxtag">사후 최대값 — 선택 금지</span>{% endif %}</td>
                             <td class="mono">{{ c.strategy }}</td>
                             <td>{{ c.basket }} <span class="text-muted" style="font-size:0.68rem;">{{ c.basket_label }}</span></td>
                             <td class="text-muted" style="font-size:0.72rem;">{{ c.label }}</td>
@@ -482,6 +538,9 @@
                             <td class="text-end mono">{{ ("%.2f"|format(c.gross)) ~ 'x' if c.gross is not none else '-' }}</td>
                             <td class="text-end mono">{{ ("%.1f"|format(c.mdd)) ~ '%' if c.mdd is not none else '-' }}</td>
                             <td class="text-end mono">{{ c.halts if c.halts is not none else '-' }}</td>
+                        </tr>
+                        <tr class="tracke-detail-row" id="trackeDetail-{{ c.id }}" data-cell="{{ c.id }}" style="display:none;">
+                            <td colspan="11" class="tracke-detail-cell"><div id="trackeDetailBody-{{ c.id }}">{{ tracke_detail_body(tracke_detail.get(c.id), tracke_cell_capital) }}</div></td>
                         </tr>
                         {% endfor %}
                         </tbody>
@@ -510,13 +569,16 @@
                         </thead>
                         <tbody>
                         {% for c in tracke_variant.cells %}
-                        <tr>
-                            <td class="mono fw-bold" style="white-space:nowrap;">{{ c.id }}</td>
+                        <tr class="tracke-row" onclick="toggleTrackeDetail('{{ c.id }}')" title="클릭하면 계정 상세가 펼쳐집니다">
+                            <td class="mono fw-bold" style="white-space:nowrap;"><span class="tracke-caret" id="trackeCaret-{{ c.id }}">&#9656;</span>{{ c.id }}</td>
                             <td class="mono">{{ c.strategy }}</td>
                             <td>{{ c.basket }} <span class="text-muted" style="font-size:0.68rem;">{{ c.basket_label }}</span></td>
                             <td class="text-muted" style="font-size:0.72rem;">{{ c.label }}</td>
                             <td class="text-end mono"><span id="trackeVarPct-{{ c.id }}">{{ ("%+.2f"|format(c.pct)) ~ '%' if c.pct is not none else '대기' }}</span></td>
                             <td class="text-muted" style="font-size:0.72rem;">{{ c.positions | join(' · ') if c.positions else '-' }}</td>
+                        </tr>
+                        <tr class="tracke-detail-row" id="trackeDetail-{{ c.id }}" data-cell="{{ c.id }}" style="display:none;">
+                            <td colspan="6" class="tracke-detail-cell"><div id="trackeDetailBody-{{ c.id }}">{{ tracke_detail_body(tracke_detail.get(c.id), tracke_cell_capital) }}</div></td>
                         </tr>
                         {% endfor %}
                         </tbody>
@@ -900,6 +962,54 @@
     const KRW = (n) => Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     const signed = (n, d=2) => (n >= 0 ? '+' : '') + Number(n).toFixed(d);
 
+    // ── Track E 셀 행 펼침 상세 (정보 표시 전용 — 정렬·강조 없음) ──
+    // 실현 = equity − 셀 초기자본(동결 상수). 서버 초기 렌더(매크로)와 동일 구조.
+    const TRACKE_CELL_CAPITAL = {{ tracke_cell_capital }};
+    let trackeDetailLast = {{ tracke_detail_json | safe }};
+    const fmtPx = (n) => Number(n).toFixed(6).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+    function trackeDetailHtml(det) {
+        if (!det) return '<div class="text-muted" style="font-size:0.74rem;">대기 — 셀 상태가 기록되면 상세가 표시됩니다.</div>';
+        const box = (k, v, cls='') =>
+            `<span><span class="td-k">${k}</span><span class="mono ${cls}">${v}</span></span>`;
+        let html = '<div class="tracke-detail-summary">'
+            + box('실현 $', signed(det.equity - TRACKE_CELL_CAPITAL))
+            + box('미실현 $', signed(det.unrealized), det.unrealized >= 0 ? 'positive' : 'negative')
+            + box('수수료 $', det.cost != null ? Number(det.cost).toFixed(2) : '-')
+            + box('펀딩 $', det.fund != null ? signed(det.fund) : '-')
+            + '</div>';
+        if (!det.positions || !det.positions.length) {
+            html += '<div class="text-muted" style="font-size:0.74rem;">보유 없음</div>';
+        } else {
+            html += '<div style="overflow-x:auto;"><table class="table table-sm tracke-mini mb-0">'
+                + '<thead><tr><th>코인</th><th>방향</th><th class="text-end">진입가</th>'
+                + '<th class="text-end">현재가</th><th class="text-end">평가손익 $</th>'
+                + '<th class="text-end">%</th></tr></thead><tbody>'
+                + det.positions.map(p => {
+                    const cls = p.upnl >= 0 ? 'positive' : 'negative';
+                    return `<tr><td class="mono">${p.sym}</td><td>${p.dir}</td>`
+                        + `<td class="text-end mono">${fmtPx(p.entry)}</td>`
+                        + `<td class="text-end mono">${fmtPx(p.mark)}</td>`
+                        + `<td class="text-end mono ${cls}">${signed(p.upnl)}</td>`
+                        + `<td class="text-end mono ${cls}">${signed(p.upnl_pct)}%</td></tr>`;
+                }).join('')
+                + '</tbody></table></div>';
+        }
+        return html;
+    }
+    function renderTrackeDetail(cid) {
+        const body = document.getElementById('trackeDetailBody-' + cid);
+        if (body) body.innerHTML = trackeDetailHtml(trackeDetailLast[cid]);
+    }
+    function toggleTrackeDetail(cid) {
+        const row = document.getElementById('trackeDetail-' + cid);
+        const caret = document.getElementById('trackeCaret-' + cid);
+        if (!row) return;
+        const open = row.style.display === 'none';
+        row.style.display = open ? '' : 'none';
+        if (caret) caret.innerHTML = open ? '&#9662;' : '&#9656;';
+        if (open) renderTrackeDetail(cid);      // 열 때 최신값으로 즉시 렌더
+    }
+
     async function pollLive() {
         const dot = document.getElementById('liveDot');
         try {
@@ -966,6 +1076,14 @@
                     const fb = d.tracke.fallback || [];
                     note.textContent = '보유 ' + (d.tracke.n_pos ?? 0)
                         + (fb.length ? ' · 종가 폴백: ' + fb.join('·') : '');
+                }
+                // 셀 펼침 상세 — 펼쳐진 행만 매초 갱신 (접힌 행은 열 때 렌더)
+                if (d.tracke.cells_detail) {
+                    trackeDetailLast = d.tracke.cells_detail;
+                    document.querySelectorAll('.tracke-detail-row').forEach(r => {
+                        if (r.style.display !== 'none' && r.dataset.cell)
+                            renderTrackeDetail(r.dataset.cell);
+                    });
                 }
                 // 변형 셀 — 분리 소구역만 갱신, 셀 목록은 서버 응답 주도
                 // (부재/미가동 셀은 페이지 로드 값 "대기" 유지)

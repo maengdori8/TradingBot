@@ -945,6 +945,175 @@ class TestTrackeVariant:
         assert by_id["E12"]["pct"] is None
 
 
+class TestTrackeCellsDetail:
+    """cells_detail — 셀 행 펼침 상세 (표시 전용 · /api/live 탑재 · 강조 없음)."""
+
+    def _state(self, tmp_path, cells, ind=None, variant=None):
+        st = {"t0": 1787813928812, "cells": cells, "ind": ind or {}}
+        if variant is not None:
+            st["variant_cells"] = variant
+        (tmp_path / "tracke_state.json").write_text(
+            json.dumps(st), encoding="utf-8")
+
+    def _patch_all(self, monkeypatch, tmp_path):
+        """페이지 로드 로더 + 실시간 평가를 임시 디렉토리로 돌린다."""
+        orig_t, orig_v, orig_l = (dash._load_tracke, dash._load_tracke_variant,
+                                  dash._tracke_live)
+        monkeypatch.setattr(dash, "_load_tracke",
+                            lambda logs_dir=None: orig_t(logs_dir=tmp_path))
+        monkeypatch.setattr(dash, "_load_tracke_variant",
+                            lambda logs_dir=None: orig_v(logs_dir=tmp_path))
+        monkeypatch.setattr(dash, "_tracke_live",
+                            lambda logs_dir=None: orig_l(logs_dir=tmp_path))
+
+    # ── 계산 ─────────────────────────────────────────────────────
+    def test_롱숏_개별_미실현과_합계가_계산된다(self, tmp_path, monkeypatch):
+        self._state(tmp_path, {
+            "E01": dict(equity=10050.0, cost_cum=12.5, funding_cum=-1.25,
+                        positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+            "E02": dict(equity=10000.0,
+                        positions={"SOL": dict(d=-1, u=100.0, e=100.0)}),
+        })
+        px = {"BTC/USDT:USDT": 81000.0, "SOL/USDT:USDT": 95.0}
+        monkeypatch.setattr(dash, "_live_price", lambda s: px[s])
+        det = dash._tracke_live(logs_dir=tmp_path)["cells_detail"]
+        e01 = det["E01"]
+        assert e01["equity"] == pytest.approx(10050.0)
+        # 실현손익 = equity − 셀 초기자본($10,000 동결 상수)
+        assert e01["equity"] - dash.TRACKE_CELL_CAPITAL == pytest.approx(50.0)
+        assert e01["unrealized"] == pytest.approx(100.0)   # 롱 0.1×(81000−80000)
+        assert e01["cost"] == pytest.approx(12.5)
+        assert e01["fund"] == pytest.approx(-1.25)
+        p = e01["positions"][0]
+        assert (p["sym"], p["dir"]) == ("BTC", "롱")
+        assert p["entry"] == pytest.approx(80000.0)
+        assert p["mark"] == pytest.approx(81000.0)
+        assert p["qty"] == pytest.approx(0.1)
+        assert p["upnl"] == pytest.approx(100.0)
+        assert p["upnl_pct"] == pytest.approx(1.25)
+        sp = det["E02"]["positions"][0]
+        assert sp["dir"] == "숏"
+        assert sp["upnl"] == pytest.approx(500.0)          # 100×(95−100)×(−1)
+        assert sp["upnl_pct"] == pytest.approx(5.0)        # 방향 반영 +5%
+        assert det["E02"]["unrealized"] == pytest.approx(500.0)
+
+    def test_조회_실패시_폴백_마크가_상세에_실린다(self, tmp_path, monkeypatch):
+        self._state(tmp_path, {
+            "E05": dict(equity=10000.0, positions={
+                "HYPE": dict(d=1, u=10.0, e=80.0),
+                "BTR": dict(d=1, u=5.0, e=2.0)})},
+            ind={"HYPE": dict(pc=90.0)})
+        monkeypatch.setattr(dash, "_live_price", lambda s: None)
+        det = dash._tracke_live(logs_dir=tmp_path)["cells_detail"]["E05"]
+        by_sym = {p["sym"]: p for p in det["positions"]}
+        assert by_sym["HYPE"]["mark"] == pytest.approx(90.0)   # ind.pc 폴백
+        assert by_sym["BTR"]["mark"] == pytest.approx(2.0)     # 진입가 폴백
+        assert by_sym["BTR"]["upnl"] == pytest.approx(0.0)     # 손익 0
+        assert det["unrealized"] == pytest.approx(100.0)
+
+    def test_포지션_없는_셀은_빈_상세(self, tmp_path, monkeypatch):
+        self._state(tmp_path, {"E03": dict(equity=10120.0, positions={})})
+        monkeypatch.setattr(dash, "_live_price", lambda s: None)
+        det = dash._tracke_live(logs_dir=tmp_path)["cells_detail"]["E03"]
+        assert det["positions"] == []
+        assert det["unrealized"] == pytest.approx(0.0)
+        assert det["cost"] is None and det["fund"] is None
+
+    def test_변형_셀도_cells_detail에_포함되고_집계는_분리(self, tmp_path, monkeypatch):
+        self._state(tmp_path,
+                    cells={"E01": dict(equity=10000.0, positions={})},
+                    variant={"cells": {"E11": dict(
+                        equity=9900.0, cost_cum=3.0,
+                        positions={"XRP": dict(d=-1, u=1000.0, e=2.0)})}})
+        monkeypatch.setattr(dash, "_live_price",
+                            lambda s: {"XRP/USDT:USDT": 2.1}.get(s))
+        t = dash._tracke_live(logs_dir=tmp_path)
+        det = t["cells_detail"]
+        assert set(det) == {"E01", "E11"}                  # 본 + 변형 전부
+        e11 = det["E11"]
+        assert e11["equity"] == pytest.approx(9900.0)      # 실현 −100
+        assert e11["unrealized"] == pytest.approx(-100.0)  # 숏 1000×(2.1−2.0)×(−1)
+        assert e11["cost"] == pytest.approx(3.0)
+        assert e11["positions"][0]["dir"] == "숏"
+        assert e11["positions"][0]["upnl_pct"] == pytest.approx(-5.0)
+        # 본 팜 집계에는 변형 비혼입 (기존 방화벽 유지)
+        assert set(t["cells"]) == {"E01"}
+        assert t["farm_equity"] == pytest.approx(10000.0)
+
+    # ── /api/live 페이로드 ───────────────────────────────────────
+    def test_api_live_페이로드에_cells_detail이_실린다(self, client, tmp_path,
+                                                monkeypatch):
+        # fixture 가 가격 조회를 차단(None) → ind 종가 폴백 마크
+        self._state(tmp_path, {"E01": dict(
+            equity=10000.0, positions={"BTC": dict(d=1, u=0.1, e=80000.0)})},
+            ind={"BTC": dict(pc=81000.0)})
+        orig = dash._tracke_live
+        monkeypatch.setattr(dash, "_tracke_live",
+                            lambda logs_dir=None: orig(logs_dir=tmp_path))
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        d = data["tracke"]["cells_detail"]["E01"]
+        assert d["unrealized"] == pytest.approx(100.0)
+        assert d["positions"][0]["sym"] == "BTC"
+        assert d["positions"][0]["dir"] == "롱"
+        assert d["positions"][0]["mark"] == pytest.approx(81000.0)
+
+    # ── 렌더링 (행 클릭 펼침 상세 — 페이지 로드 시 전부 접힘) ────
+    def test_상세_행이_전부_접힘으로_렌더된다(self, client, tmp_path, monkeypatch):
+        import re as _re
+        self._state(tmp_path, {"E01": dict(equity=10000.0, positions={})})
+        self._patch_all(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        for cid in dash.TRACKE_CELL_IDS:                   # 본 셀 10개 전부
+            assert f'id="trackeDetail-{cid}"' in html
+            assert f'id="trackeDetailBody-{cid}"' in html
+        for m in _re.finditer(r'<tr class="tracke-detail-row"[^>]*', html):
+            assert "display:none" in m.group(0)            # 로드 시 접힘
+
+    def test_상세는_포지션_유무를_렌더한다(self, client, tmp_path, monkeypatch):
+        # E01 보유 (ind 종가 폴백 마크) · E02 보유 없음 — 실현 = equity − 10000
+        self._state(tmp_path, {
+            "E01": dict(equity=10000.0,
+                        positions={"BTC": dict(d=1, u=0.1, e=80000.0)}),
+            "E02": dict(equity=10120.0, positions={}),
+        }, ind={"BTC": dict(pc=81000.0)})
+        self._patch_all(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        e01 = html.split('id="trackeDetailBody-E01"')[1].split(
+            'id="trackeDetail-E02"')[0]
+        assert "코인" in e01 and "방향" in e01             # 미니 표 헤더
+        assert "BTC" in e01 and "롱" in e01
+        assert "80000" in e01 and "81000" in e01           # 진입가·폴백 마크
+        assert "+100.00" in e01                            # 개별 미실현 $
+        e02 = html.split('id="trackeDetailBody-E02"')[1].split(
+            'id="trackeDetail-E03"')[0]
+        assert "보유 없음" in e02
+        assert "+120.00" in e02                            # 실현 = 10120 − 10000
+
+    def test_변형_셀_상세_행도_렌더된다(self, client, tmp_path, monkeypatch):
+        self._state(tmp_path,
+                    cells={"E01": dict(equity=10000.0)},
+                    variant={"cells": {"E11": dict(
+                        equity=10050.0,
+                        positions={"XRP": dict(d=-1, u=1000.0, e=2.0)})},
+                        "ind": {"XRP": dict(pc=1.9)}})
+        self._patch_all(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="trackeDetail-E11"' in html
+        e11 = html.split('id="trackeDetailBody-E11"')[1].split(
+            'id="trackeDetail-E12"')[0]
+        assert "XRP" in e11 and "숏" in e11
+        assert "+100.00" in e11                            # 1000×(1.9−2.0)×(−1)
+        assert "+50.00" in e11                             # 실현 = 10050 − 10000
+
+
 class TestTrackeFirewall:
     """구조적 방화벽 — Track E 상태·이력이 승급/실거래 게이트에 못 들어간다."""
 

@@ -1204,6 +1204,9 @@ def index():
     h2_study = _load_h2_study()
     tracke = _load_tracke()
     tracke_variant = _load_tracke_variant()
+    # 셀 펼침 상세 초기값 — 표시 전용 스냅샷 (읽기 전용, 이후 pollLive 갱신).
+    # 가격은 1초 캐시(_live_price)라 /api/live 폴링과 비용을 공유한다.
+    tracke_detail = (_tracke_live() or {}).get("cells_detail", {})
     summary = _build_summary(balance, positions, trades, tracks, trader_study)
 
     return render_template(
@@ -1227,6 +1230,9 @@ def index():
         tracke=tracke,
         tracke_json=json.dumps(tracke),
         tracke_variant=tracke_variant,
+        tracke_detail=tracke_detail,
+        tracke_detail_json=json.dumps(tracke_detail),
+        tracke_cell_capital=TRACKE_CELL_CAPITAL,
         summary=summary,
         now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
@@ -1349,7 +1355,7 @@ def _tracks_live(logs_dir: Path | None = None) -> dict:
 
 def _tracke_mtm_cell(cs: dict, ind: dict,
                      px_cache: dict[str, tuple[float, bool]],
-                     fallback: list[str]) -> tuple[float, int] | None:
+                     fallback: list[str]) -> dict | None:
     """Track E 셀 하나를 현재가로 시가평가한다 (_tracke_live 공용 헬퍼).
 
     셀 시가평가 = equity + Σ u×(px−e)×d. 현재가는 1초 캐시(_live_price)를
@@ -1363,13 +1369,19 @@ def _tracke_mtm_cell(cs: dict, ind: dict,
         fallback: 현재가 폴백 심볼 목록 (in-place 추가).
 
     Returns:
-        (시가평가 자본, 평가 포지션 수) — equity 손상 시 None (셀 스킵).
+        {"mtm": 시가평가 자본, "n_pos": 평가 포지션 수,
+         "detail": {equity(실현 기준 현금)/unrealized(미실현 합 $)/
+                    cost(누적 수수료)/fund(누적 펀딩)/positions(개별 상세)}}
+        — equity 손상 시 None (셀 스킵). detail 은 행 펼침 상세 표시 전용이며
+        positions 항목은 {sym, dir(롱/숏), entry, mark(현재가 or 폴백), qty,
+        upnl(개별 미실현 $), upnl_pct(진입가 대비 방향 반영 %)} 이다.
     """
     try:
-        mtm = float(cs.get("equity", TRACKE_CELL_CAPITAL))
+        equity = float(cs.get("equity", TRACKE_CELL_CAPITAL))
     except (TypeError, ValueError):
         return None
-    n_pos = 0
+    unrealized = 0.0
+    pos_detail: list[dict] = []
     positions = cs.get("positions")
     if isinstance(positions, dict):
         for sym, pp in positions.items():
@@ -1392,9 +1404,27 @@ def _tracke_mtm_cell(cs: dict, ind: dict,
                 px_cache[sym] = (px, fb)
             if fb and sym not in fallback:
                 fallback.append(sym)
-            mtm += u_ * (px - e_) * d_
-            n_pos += 1
-    return mtm, n_pos
+            upnl = u_ * (px - e_) * d_
+            unrealized += upnl
+            pos_detail.append(dict(
+                sym=sym, dir=("롱" if d_ > 0 else "숏"),
+                entry=e_, mark=round(px, 6), qty=u_,
+                upnl=round(upnl, 4),
+                upnl_pct=(round((px / e_ - 1.0) * 100.0
+                                * (1 if d_ > 0 else -1), 4)
+                          if e_ > 0 else 0.0),
+            ))
+    return dict(
+        mtm=equity + unrealized,
+        n_pos=len(pos_detail),
+        detail=dict(
+            equity=round(equity, 4),
+            unrealized=round(unrealized, 4),
+            cost=_tracke_metric(cs, ("cost_cum", "costs", "cost", "fees")),
+            fund=_tracke_metric(cs, ("funding_cum", "funding", "fund")),
+            positions=pos_detail,
+        ),
+    )
 
 
 def _tracke_live(logs_dir: Path | None = None) -> dict | None:
@@ -1426,8 +1456,11 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
         {"farm_equity": 팜 합계(USD), "farm_pct": 팜 수익률(%),
          "cells": {셀 id: 수익률 %}, "n_pos": 평가 포지션 수,
          "fallback": [현재가 폴백 심볼],
-         "variant": {가동 중인 변형 셀 id: %, ..., "n_pos": 합} | None}
-        — 상태 없음/손상 시 None (프런트는 페이지 로드 값을 유지한다).
+         "variant": {가동 중인 변형 셀 id: %, ..., "n_pos": 합} | None,
+         "cells_detail": {셀 id: _tracke_mtm_cell 의 detail}}
+        — cells_detail 은 본 셀 + 변형 셀 전부를 담는 행 펼침 상세
+        (표시 전용 — 팜 합계·max 태그 등 어떤 집계에도 입력하지 않는다).
+        상태 없음/손상 시 None (프런트는 페이지 로드 값을 유지한다).
     """
     logs = logs_dir or (ROOT / "logs")
     try:
@@ -1442,6 +1475,7 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
     ind = st.get("ind") if isinstance(st.get("ind"), dict) else {}
 
     cells: dict[str, float] = {}
+    cells_detail: dict[str, dict] = {}             # 셀별 펼침 상세 (표시 전용)
     farm_equity = 0.0
     base_total = 0.0
     n_pos = 0
@@ -1454,8 +1488,9 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
         res = _tracke_mtm_cell(cs, ind, px_cache, fallback)
         if res is None:
             continue
-        mtm, cell_npos = res
+        mtm, cell_npos = res["mtm"], res["n_pos"]
         cells[cid] = round((mtm / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4)
+        cells_detail[cid] = res["detail"]
         farm_equity += mtm
         base_total += TRACKE_CELL_CAPITAL
         n_pos += cell_npos
@@ -1480,8 +1515,9 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
                 continue
             res = _tracke_mtm_cell(cs, b_ind, b_px, b_fb)
             if res is not None:
-                mtm, cell_npos = res
+                mtm, cell_npos = res["mtm"], res["n_pos"]
                 v_out[cid] = round((mtm / TRACKE_CELL_CAPITAL - 1.0) * 100.0, 4)
+                cells_detail[cid] = res["detail"]      # 상세만 공유 (집계 분리)
                 v_npos += cell_npos
             break                                      # 그룹 번호 앞 블록 우선
     if v_out:
@@ -1494,6 +1530,7 @@ def _tracke_live(logs_dir: Path | None = None) -> dict | None:
         "n_pos": n_pos,
         "fallback": fallback,
         "variant": variant,
+        "cells_detail": cells_detail,
     }
 
 
