@@ -1,0 +1,99 @@
+testnet: true
+
+exchange:
+  name: bybit
+  symbols:                      # scan.mode=static 일 때만 사용하는 고정 목록
+    - "BTC/USDT:USDT"
+    - "ETH/USDT:USDT"
+    - "SOL/USDT:USDT"
+    - "XRP/USDT:USDT"
+    - "DOGE/USDT:USDT"
+    - "AVAX/USDT:USDT"
+  leverage: 5                   # auto_leverage=false 일 때 사용하는 고정 레버리지
+  auto_leverage: true           # 포지션별 손절 거리 기반 레버리지 자동 설정
+  max_leverage: 10              # 자동 레버리지 상한
+  min_leverage: 1               # 자동 레버리지 하한
+  liq_buffer: 2.0               # 청산거리 / 손절거리 배수 (클수록 보수적, 청산 여유↑)
+  timeframes:
+    - "15m"
+    - "1h"
+    - "4h"
+
+# 진입 실행 방식 (출혈=거래비용 누적 감소용)
+# 연구 H-001(A1): 테이커 시장가 OOS -0.077R → 메이커 지정가 +0.053R (비용 부호반전).
+# ★주의: 메이커는 "덜 잃는" 것(출혈↓)이지 "버는" 게 아니다. cost=0에서도 신호는 노이즈 이하(H-002).
+# 정직한 모델: 지정가는 가격이 와야만 체결(미체결=거래없음), 만료 시 취소. 슬리피지 없음(지정가 정확체결).
+execution:
+  mode: maker                   # maker(지정가, 출혈↓) | taker(시장가, 기존 동작)
+  limit_offset_r: 0.10          # 지정가 = 진입가 ∓ offset × |진입가-손절가| (유리한 오프셋)
+  fill_expiry_bars: 8           # 미체결 만료 (15m봉 수 = 2h). 내 미체결 시 신호 폐기
+  maker_fee: 0.00035            # 메이커 수수료 0.035% (테이커 0.055% 대비 출혈↓)
+
+runner:
+  interval_sec: 300             # 로컬 주기 실행 간격(초). 5분마다 전체 스캔
+
+scan:
+  mode: dynamic                 # dynamic=거래량 상위 자동 스캔 / static=위 symbols 목록
+  top_n: 40                     # 스캔할 거래량 상위 코인 수
+  min_volume_usdt: 5000000      # 24h 거래대금 최소 필터 (저유동성 배제)
+  min_score: 70                 # 진입 확정 최소 컨플루언스 점수 (70+ 진입, 차등 리스크)
+  watchlist_min_score: 40       # 관심종목 표시 최소 점수
+  watchlist_size: 12            # 대시보드 관심종목 최대 표시 수
+  require_volume: false         # 거래량 게이트 해제 (연구: 검출력 내 차이 없음, 0.047R < 클러스터 SE)
+
+capital:
+  total_capital: 5000        # 전체 자산 USDT
+  trading_allocation: 0.25   # 트레이딩 투입 비율 (25% = 1250 USDT)
+  risk_per_trade: 0.005      # 기본 리스크 (risk_tiers 미적용 시 fallback)
+
+risk:
+  min_rr_ratio: 2.5          # 신호연구: 2.0ATR손절 기준 RR2.5가 순R 최적 (RR2.0 = -0.01R → 2.5 = +0.07R)
+  max_positions: 4           # 동시 최대 포지션 수
+  max_per_symbol: 1          # 심볼당 최대 1포지션 (분산 강제)
+  max_same_direction: 3      # 같은 방향 최대 3포지션 (한쪽 쏠림 방지)
+  max_exposure_pct: 0.80     # 총 담보금 < 트레이딩 자본 80%
+  daily_loss_limit: 0.05     # 트레이딩 자본 5% 손실 시 당일 중단
+  weekly_loss_limit: 0.12    # 트레이딩 자본 12% 손실 시 주간 중단
+  # 그레이디드 손실 대응층 (2026-06 행동재무 패치 — 자체 시뮬: 수익↑ MDD 38→15%)
+  streak_risk_decay: true    # 연패마다 리스크 절반 (하한 1/4, 승리 시 복귀)
+  soft_daily_loss_pct: 0.02  # 일중 -2% 도달 시 잔여 진입 리스크 절반 (브레이커 전 중간층)
+  reentry_cooldown_hours: 8  # 손절된 심볼 재진입 금지 시간 (복수매매 차단)
+  max_notional_mult: 3.0     # 합산 명목노출 ≤ 자본 3배 (Heimer&Simsek 2019)
+  max_consecutive_losses: 7  # 7연패 시 1일 강제 휴식 — 신체제(승률~40%)에서 5연패는
+                             # 확률 7.8%의 일상 변동이라 오발동. 7연패(2.8%)가 구설계의
+                             # 희귀도(~2%)와 동급. 7연패×0.7% = -4.9% < 일일한도 5%로 정합
+  # 컨플루언스 점수별 차등 리스크 (강한 셋업 크게, 약한 셋업 작게)
+  risk_tiers:
+    - {min_score: 85, risk_pct: 0.007}   # A급: 풀 컨플루언스
+    - {min_score: 75, risk_pct: 0.005}   # B급: 표준
+    - {min_score: 70, risk_pct: 0.003}   # C급: 가볍게
+
+# 실전 전환 기준 — 2026-06 전략 개정(RR 2.5, 설계 승률 37~42%)에 맞춰 재보정.
+# 구기준(승률 55%/MDD 5%)은 RR 2.0×고승률 체제용이라 신체제에선 구조적으로 도달 불가였음.
+promote:
+  min_trades: 50             # 운/실력 구분에 필요한 표본 (Barber 2014: 지속수익 <1% — 점추정 불충분)
+  min_win_rate: 0.38         # RR2.5 손익분기 28.6% + 약 10%p 마진 (0.55는 신체제 도달불가)
+  min_profit_factor: 1.5     # 유지 — 40%승률×순2.4R이면 PF≈1.6으로 달성 가능한 기준
+  max_mdd: 0.10              # 5%→10%: 40% 승률에서 연패발 5% MDD는 정상 변동 범위
+  min_sharpe: 1.0
+  min_return_pct: 0.0
+  require_wilson_gate: true  # 승률의 Wilson 95% 신뢰하한 > 손익분기여야 전환 (운 차단)
+  breakeven_winrate: 0.286   # 1/(1+RR2.5)
+
+# 자동 학습 (청산거래 분석 → 진입기준 자동 조정)
+# 이 파일은 자동으로 수정되지 않음. 학습 결과는 logs/learned_params.yaml 오버레이에 기록되어
+# 로드 시 병합된다. 학습을 끄려면 enabled: false.
+learning:
+  enabled: true                 # 자동 학습 on/off
+  dry_run: false                # true면 제안만(오버레이 미적용)
+  epoch_start: "2026-06-10T00:00:00+00:00"  # 전략 체제 전환 시각 — 이전 청산거래는 학습 제외
+                                            # (출구기하/킬존 변경으로 구체제 R과 단위가 다름)
+  min_trades_to_learn: 20       # 전역 최소 청산 거래 수 (미달 시 학습 보류)
+  every_n_trades: 5             # 직전 평가 이후 신규 청산 N건 쌓여야 재평가
+  cooldown_trades: 10           # 같은 파라미터 재조정 전 최소 신규 청산 수
+  lookback_trades: 0            # 분석 윈도우 (0=전체)
+  deadband_R: 0.05              # 기대값 노이즈 무시 폭 (R)
+  bucket_min_n: 12              # 점수버킷 조정 최소 표본 (안전=축소 방향)
+  bucket_min_n_expand: 24       # 위험확대 방향 최소 표본 (소표본 행운 버킷 차단 — 축소의 2배)
+  session_min_n: 10             # 세션 세그먼트 최소 표본
+  global_min_n_for_min_score: 20  # min_score 조정 전역 최소 표본
