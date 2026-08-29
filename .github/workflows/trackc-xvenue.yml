@@ -28,6 +28,7 @@ jobs:
       - name: 일일 기록
         run: PYTHONPATH=. python -m carrybot.live.xvenue_paper
       - name: 상태 커밋
+        if: always()
         run: |
           git config user.name  "trackc-xvenue"
           git config user.email "noreply@github.com"
