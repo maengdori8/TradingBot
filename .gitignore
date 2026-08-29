@@ -17,3 +17,4 @@ research/out/
 
 # 연구 파생 데이터 (동결본 lab/frozen만 커밋)
 lab/data/
+logs/h2_fills/2026-08-27/fills.jsonl.gz

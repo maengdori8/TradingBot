@@ -148,6 +148,19 @@
         .exp-value.green { color: var(--green); } .exp-value.gold { color: var(--gold); } .exp-value.blue { color: var(--blue); } .exp-value.red { color: var(--red); }
         .exp-unit { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
         .exp-sub { font-size: 0.72rem; color: var(--muted); word-break: break-all; }
+        /* 병기 수치 줄 (Track C 명목/ROE) — 라벨과 값을 같은 줄에 못박는다 */
+        .exp-roe {
+            display: flex; justify-content: space-between; align-items: baseline;
+            gap: 8px; font-size: 0.74rem; color: #c9d1d9;
+            border-top: 1px dashed #21262d; padding-top: 5px;
+        }
+        .exp-roe .exp-roe-k { color: var(--muted); }
+        .exp-caveat {
+            font-size: 0.68rem; line-height: 1.45; color: #ffb020;
+            background: rgba(255, 176, 32, 0.08);
+            border: 1px solid rgba(255, 176, 32, 0.35);
+            border-radius: 7px; padding: 4px 7px;
+        }
         .section-divider {
             display: flex; align-items: center; gap: 12px;
             margin: 1.4rem 0 0.9rem 0;
@@ -287,8 +300,15 @@
                     <span class="exp-name">{{ c.name }}</span>
                     <span class="exp-badge {{ c.color if c.color != 'muted' else '' }}">{{ c.badge }}</span>
                 </div>
-                <div class="exp-value {{ c.color if c.color != 'muted' else '' }}" id="expVal-{{ c.key }}" data-static="{{ c.value }}">{{ c.value }}{% if c.unit %} <span class="exp-unit">{{ c.unit }}</span>{% endif %}</div>
+                <div class="exp-value {{ c.color if c.color != 'muted' else '' }}" id="expVal-{{ c.key }}" data-static="{{ c.value }}" data-unit="{{ c.unit }}">{{ c.value }}{% if c.unit %} <span class="exp-unit">{{ c.unit }}</span>{% endif %}</div>
+                {% if c.roe %}
+                <div class="exp-roe">
+                    <span class="exp-roe-k">{{ c.roe_label }}</span>
+                    <span class="mono" id="expRoe-{{ c.key }}">{{ c.roe }}</span>
+                </div>
+                {% endif %}
                 <div class="exp-sub">{{ c.sub }}</div>
+                {% if c.caveat %}<div class="exp-caveat">&#9888; {{ c.caveat }}</div>{% endif %}
             </div>
         </div>
         {% endfor %}
@@ -311,6 +331,12 @@
             <div class="card p-3">
                 <div class="section-title">투 트랙 검증 — 실코인 페이퍼 (누적 수익률 %)</div>
                 <canvas id="tracksChart" style="max-height: 260px;"></canvas>
+                <div class="text-muted mt-2" style="font-size: 0.72rem; line-height: 1.5;">
+                    기준 표기: A·B·D 실선은 <strong>자본</strong> 수익률,
+                    Track C 실선은 <strong>{{ tracks.c.basis if tracks.c else '명목' }}</strong>,
+                    점선은 <strong>{{ tracks.c.roe_label if tracks.c else 'ROE' }}</strong> — 같은 축의 서로 다른 기준이다.
+                    {% if tracks.c and tracks.c.caveat %}<br>&#9888; Track C: {{ tracks.c.caveat }}{% endif %}
+                </div>
             </div>
         </div>
         <div class="col-lg-4">
@@ -1112,14 +1138,24 @@
                     </tr>`;
                 }).join('');
             }
-            // 트랙 카드 실시간 수익률
+            // 트랙 카드 실시간 수익률 — 기준 표기(data-unit)를 갱신 후에도 유지하고,
+            // 병기 수치(Track C 의 ROE)는 자기 라벨이 붙은 줄에서 따로 갱신한다.
             if (d.tracks_live) {
                 const map = {a: 'carry', b: 'turtle', c: 'xvenue', d: 'swing'};
                 for (const [k, key] of Object.entries(map)) {
                     const tl = d.tracks_live[k];
                     const el = document.getElementById('expVal-' + key);
                     if (!tl || !el) continue;
-                    el.textContent = (tl.pct >= 0 ? '+' : '') + tl.pct.toFixed(3) + '%';
+                    el.textContent = signed(tl.pct, 3) + '%';
+                    if (el.dataset.unit) {
+                        const u = document.createElement('span');
+                        u.className = 'exp-unit';
+                        u.textContent = el.dataset.unit;
+                        el.append(' ', u);
+                    }
+                    const rel = document.getElementById('expRoe-' + key);
+                    if (rel && tl.roe_pct != null)
+                        rel.textContent = signed(tl.roe_pct, 3) + '%';
                 }
             }
             // Track E 팜 실시간 시가평가 (표시 전용 — 실패/부재 시 페이지 로드 값 유지)
@@ -1311,25 +1347,32 @@
                 'Track A: ' + ((a.labels || []).length) + '일 &middot; Track B: ' + ((b.labels || []).length) + '일 축적됨</div>';
             return;
         }
-        const align = t => allDays.map(d => {
+        const align = (t, field) => allDays.map(d => {
             const i = (t.labels || []).indexOf(d);
-            return i >= 0 ? t.pct[i] : null;
+            const s = t[field || 'pct'] || [];
+            return i >= 0 && s[i] != null ? s[i] : null;
         });
+        const pt = allDays.length > 30 ? 0 : 3;
+        const datasets = [
+            { label: 'Track A 캐리 (자본)', data: align(a), borderColor: '#00d68f',
+              borderWidth: 2, tension: 0.25, pointRadius: pt, spanGaps: true },
+            { label: 'Track B 터틀 (자본)', data: align(b), borderColor: '#f0b429',
+              borderWidth: 2, tension: 0.25, pointRadius: pt, spanGaps: true },
+            // Track C 는 이력 자체가 명목(양다리 차익) 기준 — 라벨에 못박고
+            // 담보 이중을 반영한 ROE(÷2)를 점선으로 함께 그린다 (병기).
+            { label: 'Track C 차익 (명목)', data: align(cc), borderColor: '#4da6ff',
+              borderWidth: 2, tension: 0.25, pointRadius: pt, spanGaps: true },
+            { label: 'Track D 스윙 (자본)', data: align(dd), borderColor: '#ff4d4d',
+              borderWidth: 2, tension: 0.25, pointRadius: pt, spanGaps: true },
+        ];
+        if (cc.roe_pct && cc.roe_pct.length) {      // 이력 없으면 빈 범례 금지
+            datasets.push({ label: 'Track C ROE (명목÷2)', data: align(cc, 'roe_pct'),
+                borderColor: '#4da6ff', borderDash: [5, 4], borderWidth: 1.5,
+                tension: 0.25, pointRadius: 0, spanGaps: true });
+        }
         new Chart(el.getContext('2d'), {
             type: 'line',
-            data: {
-                labels: allDays,
-                datasets: [
-                    { label: 'Track A 캐리', data: align(a), borderColor: '#00d68f',
-                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
-                    { label: 'Track B 터틀', data: align(b), borderColor: '#f0b429',
-                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
-                    { label: 'Track C 차익', data: align(cc), borderColor: '#4da6ff',
-                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
-                    { label: 'Track D 스윙', data: align(dd), borderColor: '#ff4d4d',
-                      borderWidth: 2, tension: 0.25, pointRadius: allDays.length > 30 ? 0 : 3, spanGaps: true },
-                ]
-            },
+            data: { labels: allDays, datasets: datasets },
             options: {
                 responsive: true, maintainAspectRatio: false,
                 plugins: {

@@ -344,6 +344,84 @@ class TestTracksLive:
 
 
 # ------------------------------------------------------------------
+# Track C 표기 정직성 — 명목/ROE 병기 (÷2 표기만으로는 오독)
+# ------------------------------------------------------------------
+
+class TestTrackCNotation:
+    """Track C 는 명목(양다리 차익) 기준이라 ROE(÷2)를 반드시 병기한다."""
+
+    CAVEAT = "2024-12 인샘플 청산 발견 — 과거 수치는 상한(정정 공시 참조)"
+
+    def _curves(self, tmp_path):
+        (tmp_path / "trackc_history.csv").write_text(
+            "day,equity,day_diff,n_coins\n"
+            "2026-08-25,1.0,0.00010,37\n"
+            "2026-08-26,1.02,0.00013,31\n", encoding="utf-8")
+        return dash._load_track_curves(logs_dir=tmp_path)
+
+    def test_이력_로더가_명목과_ROE를_함께_싣는다(self, tmp_path):
+        c = self._curves(tmp_path)["c"]
+        assert c["pct"] == pytest.approx([0.0, 2.0])          # 명목 (equity 기준)
+        assert c["roe_pct"] == pytest.approx([0.0, 1.0])      # 담보 이중 → ÷2
+        assert "명목" in c["basis"] and "ROE" in c["roe_label"]
+        assert c["caveat"] == self.CAVEAT
+
+    def test_라벨이_어떤_수치인지_말한다(self, tmp_path):
+        c = self._curves(tmp_path)["c"]
+        assert "명목" in c["label"] and "ROE" in c["label"]
+        assert "÷2" in c["roe_label"]                # 변환식이 라벨에 남는다
+
+    def test_다른_트랙은_자본_기준이며_ROE_시리즈가_없다(self, tmp_path):
+        t = self._curves(tmp_path)
+        for k in ("a", "b", "d"):
+            assert t[k]["basis"] == "자본"
+            assert t[k]["roe_pct"] is None
+            assert t[k]["roe_label"] is None and t[k]["caveat"] is None
+
+    def test_요약_카드가_명목과_ROE를_모두_담는다(self, tmp_path):
+        tracks = self._curves(tmp_path)
+        s = dash._build_summary(1250.0, [], [], tracks, {})
+        card = next(c for c in s["cards"] if c["key"] == "xvenue")
+        assert card["value"] == "+2.000%"             # 큰 값 = 명목
+        assert card["unit"] == "명목"                  # 값 옆에 기준 표기
+        assert card["roe"] == "+1.000%"               # 병기된 ROE
+        assert "ROE" in card["roe_label"] and "÷2" in card["roe_label"]
+        assert card["caveat"] == self.CAVEAT
+        assert "ROE는 표시값 ÷2" not in card["sub"]     # 옛 오독 표기 제거
+
+    def test_이력이_없어도_카드가_뜬다(self):
+        s = dash._build_summary(1250.0, [], [], {}, {})
+        card = next(c for c in s["cards"] if c["key"] == "xvenue")
+        assert card["value"] == "+0.000%" and card["roe"] == "+0.000%"
+
+    def test_실시간_트랙C에_ROE가_병기된다(self, tmp_path):
+        (tmp_path / "trackc_state.json").write_text(
+            json.dumps(dict(equity=1.02)), encoding="utf-8")
+        t = dash._tracks_live(logs_dir=tmp_path)
+        assert t["c"]["pct"] == pytest.approx(2.0)
+        assert t["c"]["roe_pct"] == pytest.approx(1.0)
+        assert "명목" in t["c"]["basis"]
+
+    def test_실시간_다른_트랙에는_ROE키가_없다(self, tmp_path):
+        (tmp_path / "tracka_state.json").write_text(
+            json.dumps(dict(equity=1.01)), encoding="utf-8")
+        t = dash._tracks_live(logs_dir=tmp_path)
+        assert "roe_pct" not in t["a"]                # 자본 기준 — 변환 대상 아님
+
+    def test_페이지에_두_수치와_주의문구가_보인다(self, client, monkeypatch, tmp_path):
+        tracks = self._curves(tmp_path)
+        monkeypatch.setattr(dash, "_load_track_curves", lambda *a, **k: tracks)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"+2.000%" in resp.data                      # 명목
+        assert b"+1.000%" in resp.data                      # ROE
+        assert "명목".encode() in resp.data
+        assert self.CAVEAT.encode() in resp.data
+        assert "Track C ROE".encode() in resp.data          # 차트 점선 라벨
+        assert "ROE는 표시값 ÷2".encode() not in resp.data   # 옛 표기 잔존 금지
+
+
+# ------------------------------------------------------------------
 # Track E — 단타 팜 (표시 전용 로더 + 구조적 방화벽)
 # ------------------------------------------------------------------
 

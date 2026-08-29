@@ -285,6 +285,17 @@ def _fetch_circuit_breaker_status() -> dict:
 # 투 트랙 페이퍼 검증 (Track A 캐리 / Track B 터틀)
 # ------------------------------------------------------------------
 
+# Track C 표기 규율 (docs/XVENUE_ARBITRAGE_2026-08.md 사전등록: "ROE = 차익/2 병기")
+# trackc_history.csv 의 equity 는 **명목(양다리 차익) 기준**이다. 담보가 두
+# 거래소에 이중 소요되므로 자기자본 수익률(ROE)은 명목 수익률의 1/2 이다.
+# 표시할 때는 둘 다 명시한다 — 한쪽만 그리고 "÷2" 만 적으면 오독을 부른다.
+TRACKC_ROE_DIVISOR: float = 2.0
+TRACKC_NOTIONAL_LABEL: str = "명목 (양다리 차익 기준)"
+TRACKC_ROE_LABEL: str = "ROE (담보 이중 · 명목÷2)"
+# 사후 발견 결함 공시 — 카드에 상시 노출 (숨기지 않는다)
+TRACKC_CAVEAT: str = "2024-12 인샘플 청산 발견 — 과거 수치는 상한(정정 공시 참조)"
+
+
 def _load_track_curves(logs_dir: Path | None = None) -> dict:
     """Track A/B 페이퍼 검증 이력 CSV를 차트 데이터로 변환한다.
 
@@ -293,7 +304,11 @@ def _load_track_curves(logs_dir: Path | None = None) -> dict:
 
     Returns:
         {"a": {...}, "b": {...}} — 각 트랙의 labels/pct/현재 상태.
-        파일이 없거나 비어 있으면 빈 시리즈를 반환한다 (대시보드는 항상 뜬다).
+        pct 는 각 트랙의 기준(basis)에 따른 수익률이다: Track C 만 명목
+        (양다리 차익) 기준이라 roe_pct(=pct÷TRACKC_ROE_DIVISOR)를 함께 싣고
+        caveat(정정 공시)을 붙인다 — 나머지 트랙은 자본 기준이라 roe_pct 는
+        None 이다. 파일이 없거나 비어 있으면 빈 시리즈를 반환한다
+        (대시보드는 항상 뜬다).
     """
     import csv as _csv
 
@@ -301,7 +316,8 @@ def _load_track_curves(logs_dir: Path | None = None) -> dict:
     spec = {
         "a": ("tracka_history.csv", "Track A — 캐리 (검증 트랙)", "events"),
         "b": ("trackb_history.csv", "Track B — 터틀 (페이퍼 전용)", "fills"),
-        "c": ("trackc_history.csv", "Track C — 교차거래소 차익 (ROE는 ÷2)", "day_diff"),
+        "c": ("trackc_history.csv",
+              "Track C — 교차거래소 차익 (명목 기준 · ROE 병기)", "day_diff"),
         "d": ("trackd_history.csv", "Track D — 1h 스윙 돌파 (고위험)", "fills"),
     }
     out: dict = {}
@@ -321,10 +337,17 @@ def _load_track_curves(logs_dir: Path | None = None) -> dict:
                 last = rows[-1]
         except (FileNotFoundError, ValueError, KeyError, IndexError):
             pass
+        is_c = key == "c"
         out[key] = {
             "label": label,
             "labels": labels,
             "pct": pct,
+            # 이 트랙의 pct 가 "무엇에 대한 수익률"인지 — 라벨이 정확히 말한다
+            "basis": TRACKC_NOTIONAL_LABEL if is_c else "자본",
+            "roe_pct": ([round(p / TRACKC_ROE_DIVISOR, 4) for p in pct]
+                        if is_c else None),
+            "roe_label": TRACKC_ROE_LABEL if is_c else None,
+            "caveat": TRACKC_CAVEAT if is_c else None,
             "equity": float(last["equity"]) if last.get("equity") else None,
             "n_pos": int(last["n_pos"]) if last.get("n_pos") else 0,
             "note": (last.get(note_col) or "-")[:120],
@@ -1137,12 +1160,16 @@ def _build_summary(balance: float, positions: list[dict], trades: list[dict],
     """상단 요약 스트립 데이터 — '지금 한 줄' + 실험 4개 카드.
 
     모든 값은 이미 로드된 데이터에서 조립한다 (외부 호출 없음 → 페이지 항상 뜬다).
+    Track C 카드만 두 수치를 병기한다: 큰 값은 명목(양다리 차익) 수익률,
+    roe 줄은 ROE(=명목÷TRACKC_ROE_DIVISOR). 각 줄의 라벨이 어떤 수치인지
+    정확히 말한다 (unit/roe_label). caveat 는 정정 공시 한 줄이다.
     """
     a, b = tracks.get("a", {}), tracks.get("b", {})
     c, dd_ = tracks.get("c", {}), tracks.get("d", {})
     def _pct(tr):
         return (tr.get("pct") or [0.0])[-1] if tr.get("pct") else 0.0
     a_pct, b_pct, c_pct, d_pct = _pct(a), _pct(b), _pct(c), _pct(dd_)
+    c_roe = c_pct / TRACKC_ROE_DIVISOR
     a_pos, b_pos = int(a.get("n_pos") or 0), int(b.get("n_pos") or 0)
     b_syms = _read_track_positions("trackb_state.json")
     d_syms = _read_track_positions("trackd_state.json")
@@ -1185,10 +1212,12 @@ def _build_summary(balance: float, positions: list[dict], trades: list[dict],
                  active=bool(b_pos),
                  sub=(b.get("note") or "-")[:60]),
             dict(key="xvenue", name="Track C · 차익", color="blue",
-                 value=f"{c_pct:+.3f}%", unit="",
+                 value=f"{c_pct:+.3f}%", unit="명목",
+                 roe=f"{c_roe:+.3f}%", roe_label=TRACKC_ROE_LABEL,
                  badge=("수취 중" if c.get("labels") else "준비"),
                  active=bool(c.get("labels")),
-                 sub="교차거래소 펀딩 · ROE는 표시값 ÷2"),
+                 sub=f"교차거래소 펀딩 · 큰 값 = {TRACKC_NOTIONAL_LABEL}",
+                 caveat=TRACKC_CAVEAT),
             dict(key="swing", name="Track D · 스윙", color="red",
                  value=f"{d_pct:+.3f}%", unit="",
                  badge=("·".join(d_syms) if d_syms else "대기"),
@@ -1419,6 +1448,10 @@ def _tracks_live(logs_dir: Path | None = None) -> dict:
 
     B/D는 보유 포지션을 실시간 가격으로 평가하고, A/C는 상태 자본(펀딩형이라
     가격 틱 없음)을 그대로 반환한다. 표시값 = (시가평가자본 − 1) × 100 (%).
+
+    Track C 의 pct 는 명목(양다리 차익) 기준이라 담보 이중 소요를 반영한
+    roe_pct(=pct÷TRACKC_ROE_DIVISOR)와 basis 라벨을 함께 싣는다 — 프런트가
+    두 수치를 각각 정확한 라벨로 갱신하게 한다 (÷2 표기만으로는 오독).
     """
     logs = logs_dir or (ROOT / "logs")
     out: dict = {}
@@ -1450,7 +1483,14 @@ def _tracks_live(logs_dir: Path | None = None) -> dict:
                 details.append(dict(sym=sym, direction=("long" if d_ > 0 else "short"),
                                     entry=e_, price=round(px, 6),
                                     upnl_pct=round(upnl * 100, 4)))
-        out[key] = dict(pct=round((mtm - 1.0) * 100, 4), positions=details)
+        pct = round((mtm - 1.0) * 100, 4)
+        out[key] = dict(pct=pct, positions=details)
+        if key == "c":                       # 명목 기준 → ROE 병기
+            out[key].update(
+                basis=TRACKC_NOTIONAL_LABEL,
+                roe_pct=round(pct / TRACKC_ROE_DIVISOR, 4),
+                roe_label=TRACKC_ROE_LABEL,
+            )
     return out
 
 
