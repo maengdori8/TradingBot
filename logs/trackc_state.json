@@ -1,1 +1,32 @@
-{"equity": 0.9990353242174801, "month": "2026-08"}
+{
+ "equity": 0.999280051926,
+ "month": "2026-08",
+ "legacy": {
+  "reason": "정정 공시 C4 (24h 유니버스·k접두 누락·재구성비용 0·베이시스 미기록)",
+  "phase": "legacy_invalid",
+  "source": "logs/trackc_history.csv",
+  "sha256": "b1eb062f68e4f3613633c4a681ef1308b3307dc77f618af7c06f40686d84afeb",
+  "rows": [
+   {
+    "day": "2026-08-25",
+    "equity": 0.99890525,
+    "day_diff": 0.00010538,
+    "n_coins": 37
+   },
+   {
+    "day": "2026-08-28",
+    "equity": 0.99903532,
+    "day_diff": 0.00013022,
+    "n_coins": 31
+   }
+  ]
+ },
+ "spec_t0": "2026-08-28",
+ "binding": "equity = funding + basis − costs (ROE = ÷2)",
+ "rule": "median30d_ntl_5m_v2",
+ "equity_funding": 0.998996878731,
+ "universe_id": "b682c62b04207658a438f4529b2416f1a90faca47d098d4968255f4c56ad8e83",
+ "last_day": "2026-08-28",
+ "n_coins": 23,
+ "verdict_day": "2026-11-26"
+}
