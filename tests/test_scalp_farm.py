@@ -83,6 +83,7 @@ from carrybot.aggressive.scalp_farm_runner import (
     _clear_abort,
     _finalize_variant,
     _finalize_variant2,
+    _migrate_vhist_schema,
     _run_variant,
     _run_variant2,
     _run_variant3,
@@ -124,6 +125,22 @@ def warm(state: FarmState, sym: str, atr: float = 2.0, hi: float = 100.0,
     ind["pc"] = pc
     state.ind[sym] = ind
     return ind
+
+
+def ledger_lines_raw(path, cells: tuple) -> bytes:
+    """원장 CSV 의 헤더 + 지정 셀 물리 행을 **원문 바이트 그대로** 뽑는다.
+
+    회귀 계약이 "바이트 동일"이므로 pandas 왕복(read_csv→to_csv)으로 비교하면
+    안 된다 — 기본 파서가 correctly-rounded 가 아니라 비교 양쪽에 파서 오차를
+    덧씌우고(플랫폼 의존), 열 dtype 추론이 다른 행 때문에 바뀌면 값과 무관하게
+    표기가 갈린다. 줄바꿈·행 순서까지 원문으로 비교한다.
+    """
+    lines = path.read_bytes().splitlines(keepends=True)
+    # 첫 열이 셀 ID 라는 가정을 조용히 두지 않는다 (Codex 검토)
+    assert lines[0].decode().strip().split(",") == LEDGER_COLS, "원장 스키마 가정"
+    want = tuple(c.encode() for c in cells)
+    return lines[0] + b"".join(ln for ln in lines[1:]
+                               if ln.split(b",", 1)[0] in want)
 
 
 class TestCausality:
@@ -766,6 +783,112 @@ class TestHistoryKeep:
         out = pd.read_csv(led)
         assert len(out) == 1
         assert out["price"].iloc[0] == pytest.approx(100.0), "멱등 계약 keep='first'"
+
+
+class TestLedgerByteImmutability:
+    """무결성 교정 2026-08-29 — append 재작성이 기존 행 바이트를 못 바꾼다.
+
+    예전 append_csv_atomic 은 파일 전체를 `pd.read_csv` 기본 파서로 되읽어
+    재작성했다. 그 파서(float_precision='high')는 correctly-rounded 가 아니라
+    왕복마다 값이 ±1 ULP 흔들렸고, 이동 방향이 플랫폼마다 달라 "같은 파일에
+    몇 번 append 되었나"(= 변형 그룹 활성 수)가 산출 바이트를 바꾸는 그룹 간
+    결합을 만들었다. 아래 값들은 그 드리프트를 실제로 유발했던 값이다.
+    """
+
+    DRIFTY = dict(price=100.0, qty=16.666666666666668, pnl=-183.33333333333334,
+                  cost=1.3333333333333335, direction=1,
+                  funding=-0.17333333333333334)
+
+    def _row(self, ts: int, **kw) -> pd.DataFrame:
+        d = dict(cell="E01", sym="BTC", strategy="BRK24", bar_close=ts,
+                 action="enter", **self.DRIFTY)
+        d.update(kw)
+        return pd.DataFrame([d])[LEDGER_COLS]
+
+    def test_새_행_추가는_기존_바이트에_새_줄만_덧붙인다(self, tmp_path):
+        led = tmp_path / "ledger.csv"
+        append_csv_atomic(led, self._row(BASE + H1), LEDGER_KEY)
+        before = led.read_bytes()
+        assert b"-183.33333333333334" in before, "쓰인 값 자체가 계산값 그대로"
+        assert append_csv_atomic(led, self._row(BASE + 2 * H1), LEDGER_KEY) == 1
+        after = led.read_bytes()
+        assert after.startswith(before), "기존 바이트 앞부분 그대로 보존"
+        assert after[len(before):].count(b"\n") == 1, "덧붙은 건 새 줄 하나뿐"
+
+    def test_빈_append도_파일_바이트를_바꾸지_않는다(self, tmp_path):
+        led = tmp_path / "ledger.csv"
+        append_csv_atomic(led, self._row(BASE + H1), LEDGER_KEY)
+        before = led.read_bytes()
+        assert append_csv_atomic(led, pd.DataFrame([], columns=LEDGER_COLS),
+                                 LEDGER_KEY) == 0
+        assert led.read_bytes() == before, "체결 0인 시간의 재작성도 무변화"
+
+    def test_같은_키_재실행은_바이트_단위로_멱등이다(self, tmp_path):
+        led = tmp_path / "ledger.csv"
+        append_csv_atomic(led, self._row(BASE + H1), LEDGER_KEY)
+        before = led.read_bytes()
+        assert append_csv_atomic(led, self._row(BASE + H1, price=999.0),
+                                 LEDGER_KEY) == 0
+        assert led.read_bytes() == before, "keep='first' — 값까지 불변"
+
+    def test_신규_행이_기존_정수열을_실수로_승격시키지_못한다(self, tmp_path):
+        # 기존 price 토큰이 "100" 인 파일에 89.5 가 들어오면 열 dtype 추론이
+        # int64→float64 로 올라가 기존 행이 "100.0" 으로 다시 쓰이는 사고
+        led = tmp_path / "ledger.csv"
+        append_csv_atomic(led, self._row(BASE + H1, price=100), LEDGER_KEY)
+        assert b",100," in led.read_bytes()
+        append_csv_atomic(led, self._row(BASE + 2 * H1, price=89.5), LEDGER_KEY)
+        lines = led.read_bytes().splitlines()
+        assert lines[1].split(b",")[5] == b"100", "기존 정수 토큰 보존"
+        assert lines[2].split(b",")[5] == b"89.5"
+
+    def test_헤더만_있는_파일도_바이트가_보존된다(self, tmp_path):
+        # 체결 0으로 시작한 T0 실행이 만든 헤더 전용 파일 (감사 — git add 함정)
+        led = tmp_path / "ledger.csv"
+        append_csv_atomic(led, pd.DataFrame([], columns=LEDGER_COLS), LEDGER_KEY)
+        head = led.read_bytes()
+        assert head.decode().strip().split(",") == LEDGER_COLS
+        assert append_csv_atomic(led, pd.DataFrame([], columns=LEDGER_COLS),
+                                 LEDGER_KEY) == 0
+        assert led.read_bytes() == head, "헤더 전용 파일 재작성 무변화"
+        assert append_csv_atomic(led, self._row(BASE + H1), LEDGER_KEY) == 1
+        assert led.read_bytes().startswith(head), "헤더 바이트 그대로 prefix"
+
+    def test_이력_keep_last_교체는_무관한_행을_건드리지_않는다(self, tmp_path):
+        # 이력은 keep='last' upsert — 갱신 대상 외 행의 원문·순서가 불변이어야
+        hist = tmp_path / "hist.csv"
+        cols = ["ts", "equity", "e01"]
+
+        def row(ts, eq):
+            return pd.DataFrame([dict(ts=ts, equity=eq, e01=eq)])[cols]
+        append_csv_atomic(hist, row(BASE, 9999.99999999), ["ts"], keep="last")
+        append_csv_atomic(hist, row(BASE + H1, 1.3333333333333335), ["ts"],
+                          keep="last")
+        before = hist.read_bytes().splitlines()
+        assert append_csv_atomic(hist, row(BASE + H1, 7.0), ["ts"],
+                                 keep="last") == 0, "교체는 행 증가 0"
+        after = hist.read_bytes().splitlines()
+        assert len(after) == 3
+        assert after[0] == before[0] and after[1] == before[1], "무관한 행 불변"
+        assert after[2].decode().split(",")[1] == "7.0", "대상 행만 교체"
+
+    def test_이력_스키마_정렬은_기존_토큰을_보존한다(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "logs").mkdir()
+        old_cols = ["day", "ts", "equity", "e11", "e12", "n_pos", "bars", "fills"]
+        (tmp_path / VHIST).write_text(
+            ",".join(old_cols) + "\n"
+            "2026-01-01,1767225600000,20000.0,10000.0,"
+            "9999.99999999,0,3,2\n")
+        _migrate_vhist_schema()
+        lines = (tmp_path / VHIST).read_bytes().splitlines()
+        assert lines[0].decode().split(",") == VHIST_COLS
+        cells = dict(zip(VHIST_COLS, lines[1].decode().split(",")))
+        assert cells["e12"] == "9999.99999999", "구 스키마 토큰 원문 보존"
+        assert cells["equity"] == "20000.0" and cells["fills"] == "2"
+        assert all(cells[c] == "0.0" for c in
+                   ("e13", "e14", "e15", "e16", "e17", "e18",
+                    "e19", "e20", "e21")), "결여 열은 0.0 이월"
 
 
 class TestNullContract:
@@ -2074,14 +2197,13 @@ class TestV2Runner:
             fills2 = step(st2, {"BTC": bar(3, 89, 90, 88.8, 89.5)})
             _save_all(st2, fills2, BASE + 3 * H1, 1)
             raw = json.loads((root / "logs/tracke_state.json").read_text())
-            vled = pd.read_csv(root / VLEDGER)
-            v1rows = vled[vled["cell"].isin(["E11", "E12"])].reset_index(drop=True)
+            v1rows = ledger_lines_raw(root / VLEDGER, ("E11", "E12"))
             vcells = json.dumps(raw.pop("variant_cells"), sort_keys=True)
             raw.pop("variant2_cells")
             return ((root / LEDGER).read_bytes(),
                     (root / "logs/tracke_history.csv").read_bytes(),
                     json.dumps(raw, sort_keys=True), vcells,
-                    v1rows.to_csv(index=False), len(f2))
+                    v1rows, len(f2))
         a_dir, b_dir = tmp_path / "a", tmp_path / "b"
         a_dir.mkdir(), b_dir.mkdir()
         ra = scenario(a_dir, with_v2=False)
@@ -2090,7 +2212,7 @@ class TestV2Runner:
         assert ra[1] == rb[1], "본 이력 바이트 동일"
         assert ra[2] == rb[2], "본 상태(변형 키 제외) 동일"
         assert ra[3] == rb[3], "E11/E12 서브상태(variant_cells) 동일"
-        assert ra[4] == rb[4], "변형 원장 내 E11/E12 행 동일"
+        assert ra[4] == rb[4], "변형 원장 내 E11/E12 행 원문 바이트 동일"
         assert rb[5] > 0, "변형2가 실제 체결을 냈다 (공허한 비교 아님)"
 
 
@@ -2733,17 +2855,15 @@ class TestV3Runner:
             fills2 = step(st2, {"BTC": bar(3, 89, 90, 88.8, 89.5)})
             _save_all(st2, fills2, BASE + 3 * H1, 1)
             raw = json.loads((root / "logs/tracke_state.json").read_text())
-            vled = pd.read_csv(root / VLEDGER)
-            prior = vled[vled["cell"].isin(
-                ["E11", "E12", "E13", "E14", "E15", "E16", "E17", "E18"]
-            )].reset_index(drop=True)
+            prior = ledger_lines_raw(root / VLEDGER, (
+                "E11", "E12", "E13", "E14", "E15", "E16", "E17", "E18"))
             vcells = json.dumps(raw.pop("variant_cells"), sort_keys=True)
             v2cells = json.dumps(raw.pop("variant2_cells"), sort_keys=True)
             raw.pop("variant3_cells")
             return ((root / LEDGER).read_bytes(),
                     (root / "logs/tracke_history.csv").read_bytes(),
                     json.dumps(raw, sort_keys=True), vcells, v2cells,
-                    prior.to_csv(index=False), len(f3))
+                    prior, len(f3))
         a_dir, b_dir = tmp_path / "a", tmp_path / "b"
         a_dir.mkdir(), b_dir.mkdir()
         ra = scenario(a_dir, with_v3=False)
@@ -2753,7 +2873,7 @@ class TestV3Runner:
         assert ra[2] == rb[2], "본 상태(변형3 키 제외 projection) 동일"
         assert ra[3] == rb[3], "E11/E12 서브상태 동일"
         assert ra[4] == rb[4], "E13~E18 서브상태 동일"
-        assert ra[5] == rb[5], "변형 원장 내 E11~E18 행 동일"
+        assert ra[5] == rb[5], "변형 원장 내 E11~E18 행 원문 바이트 동일"
         assert rb[6] > 0, "변형3이 실제 체결을 냈다 (공허한 비교 아님)"
 
     def test_통합_이력_행은_세_그룹_수치를_담는다(self, tmp_path, monkeypatch):

@@ -47,6 +47,7 @@
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import math
@@ -314,9 +315,54 @@ def _clear_abort() -> None:
         pass
 
 
+def _read_csv_text(path_or_buf) -> pd.DataFrame:
+    """CSV를 필드 문자열 그대로 읽는다 — **수치형 재해석 금지**.
+
+    무결성 교정 2026-08-29 — `append_csv_atomic` 은 append 마다 파일 전체를
+    재작성한다. 예전에는 기존 행을 `pd.read_csv` 기본 파싱(float_precision
+    ='high' = precise_xstrtod)으로 float 복원한 뒤 다시 직렬화했는데, 그
+    파서는 correctly-rounded 가 아니라서 왕복마다 값이 ±1 ULP 흔들렸다.
+    실제로 커밋된 라이브 원장에서 기존 행 113건이 그렇게 변조됐다
+    (tracke_ledger 71 + tracke_variant_ledger 42) — keep="first" 가 약속한
+    "기존 이벤트 불변" 계약 위반. 게다가 이동 방향이 플랫폼(Linux x86-64 /
+    macOS arm64)마다 달라, 같은 파일에 append 하는 변형 그룹 수(=재작성
+    횟수)가 다른 두 재생이 서로 다른 바이트를 내는 그룹 간 결합을 만들었다.
+
+    dtype=str + NA 추론 해제는 그 재해석 단계를 없앤다. 부수적으로 dtype
+    승격 사고(정수 열이 float 로 올라가 "100" → "100.0" 이 되는 것)도 사라진다.
+
+    **보장 범위 (Codex 검토 반영)**: 이건 raw-byte copy-on-write 가 아니다.
+    보장은 "pandas `to_csv` 가 만든 정규형 CSV(LF 개행, 불필요한 인용 없음,
+    결측은 빈 필드)"에 한정된다 — 손으로 넣은 인용부호·CRLF·BOM 은 재작성에서
+    정규화된다. Track E 의 네 CSV 는 전부 이 함수 계열이 생성·관리하는
+    정규형이고, 라이브 4개 파일 전부에 대해 재작성 바이트 동일이 실측됐다.
+    """
+    return pd.read_csv(path_or_buf, dtype=str, keep_default_na=False,
+                       na_filter=False, engine="c")
+
+
+def _text_frame(rows: pd.DataFrame) -> pd.DataFrame:
+    """신규 행을 to_csv 직렬화 결과 문자열 프레임으로 정규화.
+
+    기존 행(_read_csv_text)과 같은 표현 공간에 두어 유일키 비교가 어긋나지
+    않게 한다 (int 1767… vs str "1767…" 불일치 → 중복 제거 실패 방지).
+
+    직렬화기는 예전 경로와 같은 `to_csv` 지만 **단독** 직렬화라, 예전처럼
+    기존 열과 concat 되며 받던 dtype 강제가 없다 (예전: float 열에 정수 100 이
+    섞이면 "100.0", 지금: "100"). 현재 원장 스키마에서는 price·qty·pnl·cost·
+    funding 이 항상 float, bar_close·direction 이 항상 int 라 신규 행 바이트는
+    실측상 예전과 동일하다 — "언제나 동일"은 아니다 (Codex 검토 반영).
+    """
+    return _read_csv_text(io.StringIO(rows.to_csv(index=False)))
+
+
 def append_csv_atomic(path: Path, rows: pd.DataFrame, key: list | None = None,
                       keep: str = "first") -> int:
     """CSV에 행 추가 — 유일키 중복 처리 후 임시파일→rename.
+
+    기존 행은 문자열 그대로 옮겨진다 (_read_csv_text — 수치 재해석 없음)
+    — 재작성이 기존 이벤트의 값을 바꾸지 못한다는 멱등 계약의 이행.
+    보장 범위(정규형 CSV 한정)는 _read_csv_text docstring 참조.
 
     Args:
         path: CSV 경로.
@@ -330,14 +376,15 @@ def append_csv_atomic(path: Path, rows: pd.DataFrame, key: list | None = None,
         추가된 행 수 (대체는 0).
     """
     path.parent.mkdir(exist_ok=True)
+    new = _text_frame(rows)
     if path.exists():
-        old = pd.read_csv(path)
-        for c in rows.columns:              # 구 스키마 이월 — NaN 오염 방지
+        old = _read_csv_text(path)
+        for c in new.columns:               # 구 스키마 이월 — NaN 오염 방지
             if c not in old.columns:
-                old[c] = 0.0
-        merged = pd.concat([old, rows], ignore_index=True) if len(rows) else old
+                old[c] = "0.0"
+        merged = pd.concat([old, new], ignore_index=True) if len(new) else old
     else:
-        old, merged = None, rows.copy()
+        old, merged = None, new.copy()
     if key:
         merged = merged.drop_duplicates(subset=key, keep=keep)
     added = len(merged) - (0 if old is None else len(old))
@@ -759,10 +806,11 @@ def _migrate_vhist_schema() -> None:
     변형2 초기화 시 1회 정렬해 파일을 선언 스키마와 일치시킨다 (행 값 불변,
     Codex 검토 반영). 파일이 없으면 헤더만 만든다 (git add pathspec 함정 방지).
     """
-    old = pd.read_csv(VHIST) if VHIST.exists() else pd.DataFrame(columns=VHIST_COLS)
+    old = _read_csv_text(VHIST) if VHIST.exists() \
+        else pd.DataFrame(columns=VHIST_COLS, dtype=str)
     for c in VHIST_COLS:
         if c not in old.columns:
-            old[c] = 0.0
+            old[c] = "0.0"
     _atomic_write(VHIST, old[VHIST_COLS].to_csv(index=False))
 
 
