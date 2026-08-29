@@ -18,10 +18,11 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-import yaml
+# sys.path 보정·스트림 인코딩 설정 이후에 import 해야 하므로 E402 를 의도적으로 허용한다.
+import yaml  # noqa: E402
 
-from src.exchange.bybit_client import MarketDataClient
-from src.paper_trading.backtester import Backtester
+from src.exchange.bybit_client import MarketDataClient  # noqa: E402
+from src.paper_trading.backtester import Backtester  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,

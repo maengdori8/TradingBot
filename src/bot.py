@@ -20,7 +20,8 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-from dotenv import load_dotenv
+# sys.path 보정·스트림 인코딩 설정 이후에 import 해야 하므로 E402 를 의도적으로 허용한다.
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 

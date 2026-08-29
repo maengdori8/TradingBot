@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """H2 트랙 A(빠른 H2) 스크린·평가기 단위 테스트 — 합성 곡선으로 사전등록 산식 고정.
 
 검증 대상 (명세 §트랙 A / §테스트):
@@ -13,10 +11,11 @@ from __future__ import annotations
 - 스냅샷 라벨 필터링 (같은 파일의 daily 재시도가 t0 기준선을 덮는 경로 차단)
 """
 
+from __future__ import annotations
+
 import argparse
 import gzip
 import json
-import math
 from collections import Counter
 
 import numpy as np
@@ -78,7 +77,9 @@ def make_wallet(n_weeks: int = 30, phase_h: float = PHASE_H, acct0: float = 2000
         pnl.append(cum)
         acct.append(acct0 + cum + dep)
     for (t, p, a) in extra_points:
-        ts.append(float(t)); pnl.append(float(p)); acct.append(float(a))
+        ts.append(float(t))
+        pnl.append(float(p))
+        acct.append(float(a))
     order = np.argsort(ts, kind='mergesort')
     ts = np.asarray(ts, dtype=float)[order]
     pnl = np.asarray(pnl, dtype=float)[order]

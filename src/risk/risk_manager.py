@@ -5,7 +5,7 @@ config.yaml에서 모든 파라미터를 읽어오며, 거래 결과 콜백 패�
 from __future__ import annotations
 
 import logging
-from typing import Callable, Literal
+from typing import Callable
 
 from src.paper_trading import Position
 from src.risk.circuit_breaker import CircuitBreaker

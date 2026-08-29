@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """H1 판정 평가기(lab/h1_verdict.py) 단위 테스트 — 합성 데이터로 동결 산식 고정.
 
 검증 대상 (동결 전 고정 — 첫 판정일 2026-09-24 이전):
@@ -13,6 +11,8 @@ from __future__ import annotations
 - 감도·진단 실패 격리 (1차 판정 보존), RFC 준수 JSON (NaN 금지)
 - 최종 게이트 결합 (정준화·자기일관성 재계산·fail > indeterminate > pass)
 """
+
+from __future__ import annotations
 
 import copy
 import gzip

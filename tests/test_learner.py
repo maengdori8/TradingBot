@@ -1,9 +1,7 @@
 """자동 파라미터 튜너(learner) 테스트 — 통계/의사결정/오버레이/병합/안전성"""
 from __future__ import annotations
 
-import sqlite3
 
-import pytest
 
 import src.config_loader as cl
 import src.risk.learner as L

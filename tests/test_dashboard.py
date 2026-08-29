@@ -13,7 +13,6 @@ def client(tmp_path, monkeypatch):
     """격리된 임시 DB를 사용하는 Flask 테스트 클라이언트."""
     db = tmp_path / "paper.db"
     cb_db = tmp_path / "cb.db"
-    scan = tmp_path / "scan_state.json"
     monkeypatch.setattr(dash, "DB_PATH", db)
     monkeypatch.setattr(dash, "CB_DB_PATH", cb_db)
     # 스캔 상태 로더가 임시 경로를 보도록 패치
@@ -153,17 +152,21 @@ class TestLoadTraderStudy:
     """_load_trader_study — 지속성 연구 데이터 로더."""
 
     def _cohort(self, tmp_path, wallets):
-        import gzip, json
+        import gzip
+        import json
         with gzip.open(tmp_path / "trader_cohort.json.gz", "wt", encoding="utf-8") as f:
             json.dump(dict(locked_at="2026-08-25", n=len(wallets), wallets=wallets), f)
 
     def _daily(self, tmp_path, day, rows):
-        import gzip, csv
-        d = tmp_path / "trader_daily"; d.mkdir(exist_ok=True)
+        import gzip
+        import csv
+        d = tmp_path / "trader_daily"
+        d.mkdir(exist_ok=True)
         with gzip.open(d / f"{day}.csv.gz", "wt", encoding="utf-8", newline="") as f:
             w = csv.DictWriter(f, fieldnames=["address", "day_pnl"])
             w.writeheader()
-            for r in rows: w.writerow(r)
+            for r in rows:
+                w.writerow(r)
 
     def test_데이터_없으면_빈_구조(self, tmp_path):
         from src.dashboard.app import _load_trader_study
@@ -201,14 +204,16 @@ class TestLoadH2Study:
     """_load_h2_study — H2 꾸준함 가설 연구 상태 카드 로더."""
 
     def _cohort(self, tmp_path, n=136, mde=0.2429):
-        import gzip, json
+        import gzip
+        import json
         with gzip.open(tmp_path / "h2_cohort.json.gz", "wt", encoding="utf-8") as f:
             json.dump({"header": {"counts": {"eligible_primary": n},
                                   "mde": {"n_primary": n, "ic": mde}},
                        "wallets": []}, f)
 
     def _snapshot(self, tmp_path, day="2026-08-27", rows=3):
-        import gzip, json
+        import gzip
+        import json
         d = tmp_path / "h2_snapshots"
         d.mkdir(exist_ok=True)
         with gzip.open(d / f"{day}.jsonl.gz", "wt", encoding="utf-8") as f:
@@ -510,8 +515,10 @@ class TestLoadTracke:
             return int(datetime(*a, tzinfo=timezone.utc).timestamp() * 1000)
 
         base = {c: 10000.0 for c in self.FIXED_ORDER}
-        row2 = dict(base); row2["E01"] = 10100.0
-        row3 = dict(base); row3["E01"] = 10200.0
+        row2 = dict(base)
+        row2["E01"] = 10100.0
+        row3 = dict(base)
+        row3["E01"] = 10200.0
         self._hist_wide(tmp_path, [
             dict(ts=ms(2026, 12, 31, 23), **base),
             dict(ts=ms(2027, 1, 1, 0), **row2),
@@ -537,7 +544,8 @@ class TestLoadTracke:
 
     def test_데이터가_있으면_사후최대_태그가_뜬다(self, client, tmp_path, monkeypatch):
         base = {c: 10000.0 for c in self.FIXED_ORDER}
-        row2 = dict(base); row2["E05"] = 10200.0
+        row2 = dict(base)
+        row2["E05"] = 10200.0
         self._hist_wide(tmp_path, [dict(ts="2026-09-01T00:00:00Z", **base),
                                    dict(ts="2026-09-01T01:00:00Z", **row2)])
         orig = dash._load_tracke

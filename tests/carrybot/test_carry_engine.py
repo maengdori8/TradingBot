@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """캐리 백테스트 엔진 테스트 — 룩어헤드 차단을 최우선으로 검증한다.
 
 이 저장소의 과거 연구는 '결정 시점에 아직 닫히지 않은 봉'을 사용해 전량
 오염된 전력이 있다. 동일 실패를 구조적으로 막기 위해 합성 데이터로
 미래 정보 유입을 직접 검사한다.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -61,7 +61,8 @@ class TestNoLookahead:
         """신호는 룩백 창을 채워야 하므로 즉시 진입할 수 없다."""
         spike_at = 250
         idx = pd.date_range("2022-01-01", periods=400, freq="D", tz="utc")
-        f = pd.Series(0.0, index=idx); f.iloc[spike_at:] = 0.01
+        f = pd.Series(0.0, index=idx)
+        f.iloc[spike_at:] = 0.01
         fund, perp, spot, uni = make_data(funding_by_day={"AAA": f})
         c = cfg(lookback_days=30)
         res = backtest(fund, perp, spot, uni, c)

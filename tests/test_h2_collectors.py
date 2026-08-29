@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """H2 트랙 B 수집기 테스트 — 네트워크 없이 목/픽스처로 검증.
 
 대상: carrybot/live/portfolio_snapshot.py, carrybot/live/fills_recorder.py
@@ -8,6 +6,8 @@ from __future__ import annotations
 - 잘린 gzip 멤버 recover-and-rewrite 후 이어받기 (스냅샷·fills 원본/요약 공통).
 - 최초 폴링 만석 initial_window_truncated 플래그 / T0 단일 초기화(--t0-init) 순서.
 """
+
+from __future__ import annotations
 
 import calendar
 import gzip

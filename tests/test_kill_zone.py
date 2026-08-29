@@ -5,7 +5,6 @@
 """
 from datetime import datetime, timezone, timedelta
 
-import pytest
 
 from src.strategy.kill_zone import is_in_kill_zone, get_active_session
 

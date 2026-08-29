@@ -1,7 +1,6 @@
 """Order Block detection tests."""
 import pandas as pd
 import numpy as np
-import pytest
 
 from src.strategy.order_block import detect_order_blocks, is_price_in_ob, OrderBlock
 

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Track B 터틀 엔진 테스트 — 체결 모델·래치·상태 직렬화."""
+
+from __future__ import annotations
 
 import numpy as np
 import pytest
@@ -197,7 +197,7 @@ class TestSwingStep:
     def test_돌파_스탑주문_체결(self):
         from carrybot.aggressive.swing import step_bar
         st = self._st()
-        fills = step_bar(st, {"BTC": self._bar(high=112, low=108, open=108, close=111)}, "d1")
+        step_bar(st, {"BTC": self._bar(high=112, low=108, open=108, close=111)}, "d1")
         assert st.positions["BTC"].e == 110.0      # max(open, 채널)
 
     def test_같은봉_스탑은_비관_처리(self):

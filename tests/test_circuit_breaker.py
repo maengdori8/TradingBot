@@ -1,7 +1,6 @@
 """Circuit Breaker tests — daily/weekly loss limits and consecutive-loss management."""
 import pytest
 from unittest.mock import patch
-from datetime import datetime, timezone, timedelta
 
 import src.risk.circuit_breaker as cb_module
 from src.risk.circuit_breaker import CircuitBreaker

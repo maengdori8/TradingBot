@@ -3,7 +3,6 @@ import sys
 sys.path.insert(0, "/home/claude/trading-bot")
 
 import pandas as pd
-import numpy as np
 import pytest
 from src.strategy.fvg_detector import detect_fvg, is_price_in_fvg, update_fvg_fills
 

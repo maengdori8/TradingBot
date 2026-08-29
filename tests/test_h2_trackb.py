@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """H2 트랙 B 랭커·게이트 단위 테스트 — 합성 스냅샷 시퀀스로 사전등록 산식 고정.
 
 검증 대상 (명세 §3.2 / §5 테스트):
@@ -12,6 +10,8 @@ from __future__ import annotations
 - 게이트 누적·멱등(판정일 중복 기록 거부)·stage2 판정 (충족/미충족)
 - verdict --out-json → gate 파이프라인 (공용 판정 평가기 연동)
 """
+
+from __future__ import annotations
 
 import argparse
 import gzip
@@ -72,7 +72,9 @@ def weekly_series(a0: float = A0, pnl0: float = 1000.0, pnl_steps=None,
         pnl.append(pnl0 + cum)
         acct.append(a0 + cum + dep)
     for (t, p, a) in extra:
-        ts.append(float(t)); pnl.append(float(p)); acct.append(float(a))
+        ts.append(float(t))
+        pnl.append(float(p))
+        acct.append(float(a))
     order = np.argsort(ts, kind='mergesort')
     return (np.asarray(ts, dtype=float)[order],
             np.asarray(pnl, dtype=float)[order],

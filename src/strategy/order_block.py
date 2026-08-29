@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Order Block (OB) 탐지 — 강한 이동 직전 마지막 반대 캔들
 """
+
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

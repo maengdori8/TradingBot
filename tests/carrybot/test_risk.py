@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """캐리 리스크 모듈 단위 테스트."""
+
+from __future__ import annotations
 
 import pytest
 

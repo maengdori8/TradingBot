@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """
 멀티 타임프레임 신호 통합 엔진
 4H -> 1H -> 15m 조건 모두 충족 시 신호 발생
 """
+
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
@@ -332,7 +332,7 @@ def scan_symbol(
     # ── 킬존 태깅/가점 (게이트 아님 — stage와 무관) ───────────────────
     now = datetime.now(timezone.utc)
     kz_active = is_in_kill_zone(now)
-    active_session = get_active_session(now)
+    get_active_session(now)  # 세션 태깅 훅 — 스캔 결과에는 아직 미반영
     if kz_active:
         score += _W_KZ
         checks["kill_zone"] = True

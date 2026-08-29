@@ -447,8 +447,8 @@ class TestExecutionDataIntegrity:
         cfg["execution"] = {"mode": "maker"}
         now = datetime.now(timezone.utc)
         eng = PaperEngine(initial_balance=5000.0, db_path=pe_module.DB_PATH)
-        pos = eng.open_position("BTC/USDT:USDT", "long", 50000.0, 0.05, 49000.0, 50400.0,
-                                entry_time=now - timedelta(minutes=75))
+        eng.open_position("BTC/USDT:USDT", "long", 50000.0, 0.05, 49000.0, 50400.0,
+                          entry_time=now - timedelta(minutes=75))
         eng.place_pending_limit("ETH/USDT:USDT", "long", 49900.0, 0.01, 49000.0, 52000.0,
                                 place_time=now - timedelta(minutes=45))
         eng.conn.close()

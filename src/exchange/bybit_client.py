@@ -77,7 +77,7 @@ def _retry_call(func: Any, *args: Any, **kwargs: Any) -> Any:
                     "최대 재시도 초과 (%d회): %s — %s",
                     MAX_RETRIES, type(exc).__name__, str(exc)[:200],
                 )
-        except Exception as exc:
+        except Exception:
             # 네트워크 이외 오류는 즉시 전파
             raise
     raise last_exc  # type: ignore[misc]

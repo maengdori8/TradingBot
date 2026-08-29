@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 시장 구조 분석 — BOS / CHoCH 탐지
 """
+
+from __future__ import annotations
 
 import logging
 from typing import Literal

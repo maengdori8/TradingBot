@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Optimal Trade Entry (OTE) — 피보나치 되돌림 존
 """
+
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

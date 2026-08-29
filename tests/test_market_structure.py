@@ -3,7 +3,6 @@ import sys
 sys.path.insert(0, "/home/claude/trading-bot")
 import pandas as pd
 import numpy as np
-import pytest
 from src.strategy.market_structure import (
     detect_swing_points,
     detect_bos,

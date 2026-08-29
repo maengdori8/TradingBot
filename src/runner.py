@@ -21,9 +21,10 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-import yaml
+# sys.path 보정 이후에 import 해야 하므로 E402 를 의도적으로 허용한다.
+import yaml  # noqa: E402
 
-from src.bot import run
+from src.bot import run  # noqa: E402
 
 logger = logging.getLogger("runner")
 

@@ -1,8 +1,8 @@
-from __future__ import annotations
-
 """
 Fair Value Gap (FVG) 탐지 — 3봉 패턴
 """
+
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

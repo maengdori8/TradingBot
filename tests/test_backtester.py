@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 import numpy as np
 import pandas as pd
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.paper_trading.backtester import Backtester, BacktestResult
 

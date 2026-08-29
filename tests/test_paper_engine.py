@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 import src.paper_trading.paper_engine as pe_module
-from src.paper_trading.paper_engine import PaperEngine, SLIPPAGE, TAKER_FEE
+from src.paper_trading.paper_engine import PaperEngine, SLIPPAGE
 from src.paper_trading import Position
 
 
@@ -143,7 +142,7 @@ def test_partial_close(tmp_path):
     assert pos is not None
     original_qty = pos.qty
 
-    pnl = engine.close_position(pos, exit_price=51000, reason="partial", qty=0.01)
+    engine.close_position(pos, exit_price=51000, reason="partial", qty=0.01)
 
     # 포지션이 여전히 남아 있음
     assert pos in engine.positions
@@ -151,7 +150,7 @@ def test_partial_close(tmp_path):
     assert pos.margin > 0
 
     # 나머지 전량 청산
-    pnl2 = engine.close_position(pos, exit_price=52000, reason="TP")
+    engine.close_position(pos, exit_price=52000, reason="TP")
     assert pos not in engine.positions
 
 
@@ -161,7 +160,7 @@ def test_partial_close_exceeding_qty(engine):
         "BTC/USDT", "long", entry_price=50000, qty=0.01,
         stop_loss=49000, take_profit=52000,
     )
-    pnl = engine.close_position(pos, exit_price=51000, reason="manual", qty=0.05)
+    engine.close_position(pos, exit_price=51000, reason="manual", qty=0.05)
     # 초과 수량이므로 전량 청산됨
     assert pos not in engine.positions
 
@@ -384,8 +383,8 @@ def test_funding_cost_deducted(engine):
     # 고정 타임스탬프로 펀딩 3회 통과 보장 (now() 위상 의존 플레이키 제거):
     # (01:00, 다음날 02:00] 25h 창 = 08:00·16:00·익일 00:00 = 정확히 3회
     pos.entry_time = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
-    pnl = engine.close_position(pos, 50000, "manual",
-                                exit_time=datetime(2026, 1, 2, 2, 0, tzinfo=timezone.utc))
+    engine.close_position(pos, 50000, "manual",
+                          exit_time=datetime(2026, 1, 2, 2, 0, tzinfo=timezone.utc))
     row = engine.conn.execute(
         "SELECT funding_cost FROM trades WHERE id=?", (pos.id,)
     ).fetchone()

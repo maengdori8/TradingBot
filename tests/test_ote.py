@@ -1,7 +1,7 @@
 """Optimal Trade Entry (OTE) zone tests."""
 import pytest
 
-from src.strategy.ote import calculate_ote_zone, is_price_in_ote, OTEZone
+from src.strategy.ote import calculate_ote_zone, is_price_in_ote
 
 
 # ── Bullish OTE ──────────────────────────────────────────────────────
