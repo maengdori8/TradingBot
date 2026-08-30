@@ -28,5 +28,19 @@
  "universe_id": "b682c62b04207658a438f4529b2416f1a90faca47d098d4968255f4c56ad8e83",
  "last_day": "2026-08-28",
  "n_coins": 23,
- "verdict_day": "2026-11-26"
+ "verdict_day": "2026-11-26",
+ "blocked": {
+  "reason_code": "DAY_INCOMPLETE",
+  "day": "2026-08-29",
+  "unknown_coins": [
+   "AAVE"
+  ],
+  "last_attempt_utc": "2026-08-30T05:41:16.907159+00:00",
+  "pending_days": [
+   "2026-08-29"
+  ],
+  "last_success_day": "2026-08-28",
+  "blocked_since": "2026-08-30T05:41:16.907159+00:00",
+  "retry_count": 1
+ }
 }
