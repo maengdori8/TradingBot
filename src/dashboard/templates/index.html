@@ -296,6 +296,73 @@
         }
         .chart-btn.active { outline: 2px solid var(--blue); }
         .tf-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+        /* 코인 차트 모달 — 관측 도구 (자체 canvas, 외부 라이브러리 없음) */
+        .scan-row { cursor: pointer; }
+        .scan-row:hover td { background: rgba(77, 166, 255, 0.05); }
+        .coin-link { cursor: pointer; border-bottom: 1px dotted #30363d; }
+        .coin-link:hover { color: var(--blue); border-bottom-color: var(--blue); }
+        .cc-overlay {
+            position: fixed; inset: 0; z-index: 1050;
+            background: rgba(0, 0, 0, 0.62);
+            display: flex; align-items: center; justify-content: center;
+            padding: 18px;
+        }
+        .cc-panel {
+            background: var(--bg-card); border: 1px solid #30363d;
+            border-radius: 12px; width: min(940px, 100%);
+            max-height: 94vh; overflow-y: auto; padding: 14px 16px;
+        }
+        .cc-head {
+            display: flex; align-items: baseline; gap: 12px;
+            border-bottom: 1px solid #21262d; padding-bottom: 8px;
+            margin-bottom: 10px;
+        }
+        .cc-close {
+            margin-left: auto; background: none; border: 1px solid #30363d;
+            border-radius: 6px; color: var(--muted); font-size: 1rem;
+            line-height: 1; padding: 2px 9px 4px; cursor: pointer;
+        }
+        .cc-close:hover { color: #e6edf3; border-color: var(--muted); }
+        .cc-gaugewrap {
+            display: flex; align-items: center; gap: 10px; margin-bottom: 4px;
+        }
+        .cc-score { font-size: 1.15rem; font-weight: 700; min-width: 52px; text-align: right; }
+        .cc-track {
+            position: relative; flex-grow: 1; height: 12px;
+            background: #161b22; border: 1px solid #21262d; border-radius: 6px;
+        }
+        .cc-mid {
+            position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px;
+            background: #8b949e;
+        }
+        .cc-fill {
+            position: absolute; top: 2px; bottom: 2px;
+            background: var(--blue); opacity: 0.8; border-radius: 4px;
+        }
+        .cc-scale { font-size: 0.62rem; white-space: nowrap; }
+        .cc-parts {
+            display: flex; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px;
+        }
+        .cc-part {
+            font-size: 0.7rem; border: 1px solid #21262d; border-radius: 6px;
+            padding: 2px 8px; background: #161b22;
+        }
+        .cc-part .cc-part-k { color: var(--muted); margin-right: 6px; }
+        .cc-canvas { display: block; width: 100%; }
+        .cc-levels {
+            font-size: 0.72rem; color: #c9d1d9; margin-top: 8px;
+            display: flex; flex-direction: column; gap: 3px;
+        }
+        .cc-lv-dot {
+            display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+            margin-right: 5px; vertical-align: baseline;
+        }
+        .cc-note {
+            font-size: 0.7rem; line-height: 1.5; color: #ffb020;
+            background: rgba(255, 176, 32, 0.08);
+            border: 1px solid rgba(255, 176, 32, 0.35);
+            border-radius: 7px; padding: 5px 8px; margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -554,7 +621,7 @@
             <tbody>
             {% for p in det.positions %}
             <tr>
-                <td class="mono">{{ p.sym }}</td>
+                <td class="mono"><span class="coin-link" onclick="openCoinChart('{{ p.sym }}')" title="코인 차트 (관측 도구)">{{ p.sym }}</span></td>
                 <td>{{ p.dir }}</td>
                 <td class="text-end mono">{{ ("%.6f"|format(p.entry)).rstrip('0').rstrip('.') }}</td>
                 <td class="text-end mono">{{ ("%.6f"|format(p.mark)).rstrip('0').rstrip('.') }}</td>
@@ -730,7 +797,7 @@
                 </thead>
                 <tbody>
                 {% for c in market_scan.coins %}
-                <tr>
+                <tr class="scan-row" onclick="openCoinChart('{{ c.coin }}')" title="클릭하면 코인 차트가 열립니다 (관측 도구)">
                     <td class="mono fw-bold">{{ c.coin }}</td>
                     <td class="text-end mono">{{ ("%.8f"|format(c.price)).rstrip('0').rstrip('.') if c.price is not none else '-' }}</td>
                     <td class="text-end mono {{ 'positive' if c.chg24h_pct is not none and c.chg24h_pct >= 0 else ('negative' if c.chg24h_pct is not none else '') }}">{{ ("%+.2f"|format(c.chg24h_pct)) ~ '%' if c.chg24h_pct is not none else '-' }}</td>
@@ -1119,6 +1186,25 @@
     </div>
 </div>
 
+<!-- 코인 차트 모달 — 관측 도구 (표시 전용 · 자체 canvas, 외부 라이브러리 없음).
+     스캐너 행 클릭·Track E 상세 코인명 클릭으로 열린다. 데이터는 /api/chart/<coin>
+     (서버 5분 캐시) — 실패 시 "차트 데이터 대기" 표시 (크래시 금지). -->
+<div id="ccModal" class="cc-overlay" style="display:none;">
+    <div class="cc-panel">
+        <div class="cc-head">
+            <span><strong id="ccTitle" class="mono" style="font-size:1.05rem;">-</strong>
+                <span class="text-muted" style="font-size:0.72rem;">1h &middot; 확정봉 &middot; Bybit</span></span>
+            <span id="ccMeta" class="text-muted mono" style="font-size:0.7rem;"></span>
+            <button class="cc-close" onclick="closeCoinChart()" title="닫기 (ESC)">&times;</button>
+        </div>
+        <div id="ccGauge"></div>
+        <div id="ccBody">
+            <div class="text-muted text-center py-4" style="font-size:0.85rem;">차트 데이터 대기&hellip;</div>
+        </div>
+        <div class="cc-note" id="ccNote">&#9432; 관측 도구 — 이 지표 조합의 예측력은 검증 결과 우연 수준(SWEEP-2026-08-31). 레벨&middot;상태 표시용이며 매매 신호가 아님. &middot; PAPER ONLY</div>
+    </div>
+</div>
+
 <script>
     // ── 매초 실시간 갱신 (/api/live 폴링) ──────────────────────────
     const KRW = (n) => Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -1176,7 +1262,7 @@
                 + '<th class="text-end">%</th></tr></thead><tbody>'
                 + det.positions.map(p => {
                     const cls = p.upnl >= 0 ? 'positive' : 'negative';
-                    return `<tr><td class="mono">${p.sym}</td><td>${p.dir}</td>`
+                    return `<tr><td class="mono"><span class="coin-link" onclick="openCoinChart('${p.sym}')" title="코인 차트 (관측 도구)">${p.sym}</span></td><td>${p.dir}</td>`
                         + `<td class="text-end mono">${fmtPx(p.entry)}</td>`
                         + `<td class="text-end mono">${fmtPx(p.mark)}</td>`
                         + `<td class="text-end mono">${lvlCell(p.stop, p.stop_pct)}</td>`
@@ -1595,6 +1681,291 @@
             }
         });
     })();
+
+    // ── 코인 차트 모달 — 관측 도구 (표시 전용 · 자체 canvas, 외부 라이브러리 없음) ──
+    // 스캐너 행·Track E 상세 코인명 클릭 → /api/chart/<coin>.
+    // 실패·부재는 전부 "차트 데이터 대기" 표시로 흡수 (크래시 금지).
+    const CC_AMBER = '#ffb020', CC_RED = '#ff4d4d', CC_GREEN = '#00d68f',
+          CC_BLUE = '#4da6ff', CC_MUTED = '#8b949e', CC_GOLD = '#f0b429';
+    let ccToken = 0;        // 연타/코인 전환 레이스 방지
+    let ccLastData = null;  // 리사이즈 재렌더용
+
+    function closeCoinChart() {
+        document.getElementById('ccModal').style.display = 'none';
+        ccToken++;                                   // 진행 중 렌더 무효화
+    }
+    document.getElementById('ccModal').addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) closeCoinChart();   // 백드롭 클릭
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeCoinChart();
+    });
+    window.addEventListener('resize', () => {
+        const m = document.getElementById('ccModal');
+        if (m.style.display !== 'none' && ccLastData) renderCoinChart(ccLastData);
+    });
+
+    const ccWaitingHtml =
+        '<div class="text-muted text-center py-4" style="font-size:0.85rem;">차트 데이터 대기 &mdash; 시세 조회가 복구되면 표시됩니다.</div>';
+
+    async function openCoinChart(coin) {
+        const modal = document.getElementById('ccModal');
+        modal.style.display = 'flex';
+        document.getElementById('ccTitle').textContent = coin;
+        document.getElementById('ccMeta').textContent = '';
+        document.getElementById('ccGauge').innerHTML = '';
+        document.getElementById('ccBody').innerHTML =
+            '<div class="text-muted text-center py-4" style="font-size:0.85rem;">불러오는 중&hellip;</div>';
+        const tok = ++ccToken;
+        try {
+            const r = await fetch('/api/chart/' + encodeURIComponent(coin), {cache: 'no-store'});
+            const d = await r.json();
+            if (tok !== ccToken) return;             // 닫혔거나 다른 코인으로 전환
+            if (!d || !d.available) {
+                document.getElementById('ccBody').innerHTML = ccWaitingHtml;
+                if (d && d.label) document.getElementById('ccNote').textContent = 'ⓘ ' + d.label + ' · PAPER ONLY';
+                return;
+            }
+            renderCoinChart(d);
+        } catch (err) {
+            if (tok === ccToken)
+                document.getElementById('ccBody').innerHTML = ccWaitingHtml;
+        }
+    }
+
+    // 컴포짓 게이지 — 수평 바(−100~+100, 중앙 0) + 요소별 기여 5칸 (중립 파랑 단색)
+    function ccGaugeHtml(comp) {
+        if (!comp) return '';
+        const s = Math.max(-100, Math.min(100, comp.score || 0));
+        const half = Math.abs(s) / 2;                // 트랙 좌우 각 50% = 100점
+        const left = s >= 0 ? 50 : 50 - half;
+        const names = {trend: '추세', momentum: '모멘텀', band: '밴드',
+                       volume: '거래량', breakout: '돌파'};
+        const chips = Object.entries(names).map(([k, n]) => {
+            const v = (comp.parts || {})[k];
+            return `<span class="cc-part"><span class="cc-part-k">${n}</span><span class="mono">${v == null ? '-' : signed(v, 1)}</span></span>`;
+        }).join('');
+        return `<div class="cc-gaugewrap">
+            <span class="cc-score mono">${signed(s, 0)}</span>
+            <div class="cc-track"><div class="cc-fill" style="left:${left}%; width:${half}%"></div><div class="cc-mid"></div></div>
+            <span class="cc-scale text-muted mono">&minus;100&nbsp;&middot;&nbsp;+100</span>
+        </div><div class="cc-parts">${chips}
+            <span class="cc-part" style="border-color:rgba(255,176,32,0.4);"><span class="cc-part-k" style="color:#ffb020;">컴포짓 −100~+100</span><span class="text-muted">각 요소 ±20 · 관측용</span></span>
+        </div>`;
+    }
+
+    // 레벨 수평선 목록 — 진입 앰버 · 손절 적 · 목표 녹 · 추매 청 (표시 전용)
+    function ccLevelLines(levels) {
+        const out = [];
+        const push = (px, color, label, dashed) => {
+            if (typeof px === 'number' && isFinite(px) && px > 0)
+                out.push({px, color, label, dashed: !!dashed});
+        };
+        if (!levels) return out;
+        if (levels.mode === 'positions') {
+            for (const g of levels.positions || []) {
+                const who = (g.cells || []).join('·');
+                push(g.entry, CC_AMBER, `진입 ${who}`);
+                push(g.stop, CC_RED, `손절 ${who}`);
+                push(g.tgt, CC_GREEN, `목표 ${who}`);
+                push(g.add, CC_BLUE, `추매 ${who}`);
+            }
+        } else if (levels.mode === 'strategy') {
+            push(levels.brk_entry, CC_AMBER, '돌파 진입 (24h 상단)', true);
+            push(levels.mr_entry, CC_AMBER, '평균회귀 진입 (BB 하단)', true);
+            if (typeof levels.brk_entry === 'number' && levels.brk_entry > 0
+                && typeof levels.stop_dist === 'number' && levels.stop_dist > 0)
+                push(levels.brk_entry - levels.stop_dist, CC_RED,
+                     '6×ATR 스탑 (돌파 가정)', true);
+        }
+        return out;
+    }
+
+    function ccLegendHtml(levels) {
+        const dot = (c) => `<span class="cc-lv-dot" style="background:${c};"></span>`;
+        if (!levels) return '';
+        if (levels.mode === 'positions') {
+            const rows = (levels.positions || []).map(g => {
+                const who = (g.cells || []).join('·');
+                const f = (v) => v == null ? '—' : fmtPx(v);
+                return `<span>${dot(CC_AMBER)}<span class="mono">${who}</span> ${g.dir} ${g.kind || ''}
+                    &mdash; 진입 <span class="mono">${f(g.entry)}</span>
+                    · ${dot(CC_RED)}손절 <span class="mono">${f(g.stop)}</span>
+                    · ${dot(CC_GREEN)}목표 <span class="mono">${f(g.tgt)}</span>
+                    · ${dot(CC_BLUE)}추매 <span class="mono">${f(g.add)}</span></span>`;
+            }).join('');
+            return `<div class="cc-levels">${rows}</div>`;
+        }
+        const f = (v) => v == null ? '—' : fmtPx(v);
+        return `<div class="cc-levels"><span>팜 보유 없음 &mdash; 전략 기준 레벨(표기용):
+            ${dot(CC_AMBER)}돌파 진입(24h 상단) <span class="mono">${f(levels.brk_entry)}</span>
+            · ${dot(CC_AMBER)}평균회귀 진입(BB 하단) <span class="mono">${f(levels.mr_entry)}</span>
+            · ${dot(CC_RED)}스탑 거리 6×ATR = <span class="mono">${f(levels.stop_dist)}</span></span></div>`;
+    }
+
+    function renderCoinChart(d) {
+        ccLastData = d;
+        document.getElementById('ccTitle').textContent = d.coin;
+        document.getElementById('ccMeta').textContent =
+            (d.bars.ts.length) + '봉 · ' + (d.generated_at || '') +
+            (d.atr24 != null ? ' · ATR24 ' + fmtPx(d.atr24) : '');
+        if (d.label) document.getElementById('ccNote').textContent = 'ⓘ ' + d.label + ' · PAPER ONLY';
+        document.getElementById('ccGauge').innerHTML = ccGaugeHtml(d.composite);
+        const body = document.getElementById('ccBody');
+        body.innerHTML = '<canvas id="ccPrice" class="cc-canvas" style="height:330px;"></canvas>'
+            + '<canvas id="ccRsi" class="cc-canvas" style="height:92px; margin-top:2px;"></canvas>'
+            + ccLegendHtml(d.levels);
+        const lvls = ccLevelLines(d.levels);
+        ccDrawPrice(document.getElementById('ccPrice'), d, lvls);
+        ccDrawRsi(document.getElementById('ccRsi'), d);
+    }
+
+    // 캔들 + BB 음영 + SMA20/200 + 채널 점선 + 레벨 수평선 (우측 가격 라벨)
+    function ccDrawPrice(cv, d, lvls) {
+        const dpr = window.devicePixelRatio || 1;
+        const W = cv.clientWidth || 860, H = 330;
+        cv.width = W * dpr; cv.height = H * dpr;
+        const ctx = cv.getContext('2d');
+        ctx.scale(dpr, dpr);
+        const padL = 4, padR = 74, padT = 8, padB = 6;
+        const plotW = W - padL - padR, plotH = H - padT - padB;
+        const b = d.bars, s = d.series || {};
+        const n = b.close.length;
+        if (!n) return;
+
+        // y 범위: 캔들 + 레벨 (전부 포함 — 정직한 축)
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < n; i++) {
+            if (b.low[i] != null) lo = Math.min(lo, b.low[i]);
+            if (b.high[i] != null) hi = Math.max(hi, b.high[i]);
+        }
+        for (const lv of lvls) { lo = Math.min(lo, lv.px); hi = Math.max(hi, lv.px); }
+        if (!(hi > lo)) { hi = lo + 1; }
+        const span = hi - lo; lo -= span * 0.04; hi += span * 0.04;
+        const Y = (p) => padT + (hi - p) / (hi - lo) * plotH;
+        const X = (i) => padL + (i + 0.5) * plotW / n;
+        const bw = Math.max(1, plotW / n * 0.62);
+
+        // 그리드 + 우측 가격 축
+        ctx.font = '10px SF Mono, Consolas, monospace';
+        for (let g = 0; g <= 4; g++) {
+            const p = lo + (hi - lo) * g / 4, y = Y(p);
+            ctx.strokeStyle = '#21262d'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+            ctx.fillStyle = CC_MUTED;
+            ctx.fillText(fmtPx(p), padL + plotW + 6, y + 3);
+        }
+
+        // 선분 그리기 헬퍼 — None 구간은 끊는다
+        const line = (arr, color, width, dash) => {
+            ctx.strokeStyle = color; ctx.lineWidth = width;
+            ctx.setLineDash(dash || []);
+            ctx.beginPath();
+            let pen = false;
+            for (let i = 0; i < n; i++) {
+                if (arr[i] == null) { pen = false; continue; }
+                const x = X(i), y = Y(arr[i]);
+                if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+            }
+            ctx.stroke(); ctx.setLineDash([]);
+        };
+
+        // BB 밴드 음영 (연속 구간별 폴리곤)
+        ctx.fillStyle = 'rgba(139,148,158,0.10)';
+        let segStart = -1;
+        const bbFlush = (from, to) => {
+            if (from < 0 || to <= from) return;
+            ctx.beginPath();
+            for (let i = from; i <= to; i++) ctx.lineTo(X(i), Y(s.bb_up[i]));
+            for (let i = to; i >= from; i--) ctx.lineTo(X(i), Y(s.bb_low[i]));
+            ctx.closePath(); ctx.fill();
+        };
+        for (let i = 0; i < n; i++) {
+            const ok = s.bb_up && s.bb_up[i] != null && s.bb_low[i] != null;
+            if (ok && segStart < 0) segStart = i;
+            if (!ok && segStart >= 0) { bbFlush(segStart, i - 1); segStart = -1; }
+        }
+        bbFlush(segStart, n - 1);
+        if (s.bb_up) line(s.bb_up, 'rgba(139,148,158,0.35)', 1);
+        if (s.bb_low) line(s.bb_low, 'rgba(139,148,158,0.35)', 1);
+
+        // 채널 상단 점선 (24h 파랑 · 96h 회색) + SMA
+        if (s.ch24_up) line(s.ch24_up, 'rgba(77,166,255,0.65)', 1, [5, 4]);
+        if (s.ch96_up) line(s.ch96_up, 'rgba(139,148,158,0.45)', 1, [3, 4]);
+        if (s.sma20) line(s.sma20, CC_MUTED, 1.2);
+        if (s.sma200) line(s.sma200, CC_GOLD, 1.5);
+
+        // 캔들 — 기존 pos/neg 색
+        for (let i = 0; i < n; i++) {
+            const o = b.open[i], c = b.close[i], h = b.high[i], l = b.low[i];
+            if (o == null || c == null || h == null || l == null) continue;
+            const up = c >= o, col = up ? CC_GREEN : CC_RED, x = X(i);
+            ctx.strokeStyle = col; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(x, Y(h)); ctx.lineTo(x, Y(l)); ctx.stroke();
+            ctx.fillStyle = col;
+            const y1 = Y(Math.max(o, c)), y2 = Y(Math.min(o, c));
+            ctx.fillRect(x - bw / 2, y1, bw, Math.max(1, y2 - y1));
+        }
+
+        // 레벨 수평선 + 우측 가격 라벨 (겹침 시 12px 간격으로 밀어냄)
+        const sorted = [...lvls].sort((a, z) => Y(a.px) - Y(z.px));
+        let lastLabelY = -Infinity;
+        for (const lv of sorted) {
+            const y = Y(lv.px);
+            ctx.strokeStyle = lv.color; ctx.lineWidth = 1.3;
+            ctx.setLineDash(lv.dashed ? [7, 5] : []);
+            ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+            ctx.setLineDash([]);
+            let ly = Math.max(y, lastLabelY + 12);
+            ly = Math.min(ly, H - 6);
+            lastLabelY = ly;
+            const txt = fmtPx(lv.px);
+            const tw = ctx.measureText(txt).width + 8;
+            ctx.fillStyle = lv.color;
+            ctx.fillRect(padL + plotW + 2, ly - 8, Math.min(tw, padR - 4), 13);
+            ctx.fillStyle = '#0d1117';
+            ctx.fillText(txt, padL + plotW + 6, ly + 2);
+        }
+    }
+
+    // RSI14 미니 패널 — 30/70 밴드
+    function ccDrawRsi(cv, d) {
+        const dpr = window.devicePixelRatio || 1;
+        const W = cv.clientWidth || 860, H = 92;
+        cv.width = W * dpr; cv.height = H * dpr;
+        const ctx = cv.getContext('2d');
+        ctx.scale(dpr, dpr);
+        const padL = 4, padR = 74, padT = 4, padB = 4;
+        const plotW = W - padL - padR, plotH = H - padT - padB;
+        const r = (d.series || {}).rsi14 || [];
+        const n = (d.bars.close || []).length;
+        if (!n) return;
+        const Y = (v) => padT + (100 - v) / 100 * plotH;
+        const X = (i) => padL + (i + 0.5) * plotW / n;
+
+        ctx.fillStyle = 'rgba(139,148,158,0.08)';
+        ctx.fillRect(padL, Y(70), plotW, Y(30) - Y(70));
+        ctx.font = '10px SF Mono, Consolas, monospace';
+        for (const lvl of [30, 70]) {
+            ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(padL, Y(lvl)); ctx.lineTo(padL + plotW, Y(lvl)); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = CC_MUTED;
+            ctx.fillText(String(lvl), padL + plotW + 6, Y(lvl) + 3);
+        }
+        ctx.fillStyle = CC_MUTED;
+        ctx.fillText('RSI14', padL + 4, padT + 10);
+
+        ctx.strokeStyle = CC_BLUE; ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        let pen = false;
+        for (let i = 0; i < n; i++) {
+            if (r[i] == null) { pen = false; continue; }
+            const x = X(i), y = Y(r[i]);
+            if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+        }
+        ctx.stroke();
+    }
 </script>
 
 </body>

@@ -25,6 +25,9 @@ def client(tmp_path, monkeypatch):
     )
     # 실시간 가격 조회 차단 (네트워크 금지 — 폴백 경로로만 평가)
     monkeypatch.setattr(dash, "_live_price", lambda s: None)
+    # 코인 차트: 캐시 격리 + 캔들 조회 차단 (네트워크 금지 — 테스트별 목 주입)
+    monkeypatch.setattr(dash, "_chart_cache", {})
+    monkeypatch.setattr(dash, "_chart_fetch_1h", lambda s: None)
     dash.app.config["TESTING"] = True
     with dash.app.test_client() as c:
         yield c
@@ -1645,3 +1648,397 @@ class TestVariant5Recognition:
         by_id = {c["id"]: c for c in v["cells"]}
         assert by_id["E24"]["pct"] == pytest.approx(1.0)
         assert by_id["E25"]["pct"] is None               # 미가동 → "대기"
+
+
+# ------------------------------------------------------------------
+# 코인 차트 뷰 — /api/chart/<coin> (관측 도구 · 표시 전용)
+# ------------------------------------------------------------------
+
+def _mk_chart_bars(n=220, t0=1_756_700_400_000):
+    """결정적 합성 1h 확정봉 [(ts, o, h, l, c, v), ...] — 테스트 전용."""
+    import math as _m
+    bars = []
+    px = 100.0
+    for i in range(n):
+        drift = _m.sin(i * 0.7) * 1.5 + _m.sin(i * 0.13) * 3.0
+        o = px
+        c = 100.0 + drift + i * 0.05
+        h = max(o, c) + 0.8 + 0.3 * abs(_m.sin(i * 1.3))
+        low = min(o, c) - 0.8 - 0.3 * abs(_m.cos(i * 0.9))
+        v = 50.0 + 20.0 * _m.sin(i * 0.31) + (30.0 if i == n - 1 else 0.0)
+        bars.append((t0 + i * 3_600_000, o, h, low, c, v))
+        px = c
+    return bars
+
+
+class TestChartSeries:
+    """_chart_series — 엔진 동일식 (prev-close TR · Wilder RSI · ddof=0 · shift 1)."""
+
+    def test_지표_산식이_스캐너_엔진과_동치다(self):
+        """대시보드 시계열 마지막 값 == market_scanner.compute_metrics (동일 봉)."""
+        from carrybot.live.market_scanner import compute_metrics
+        bars = _mk_chart_bars(220)
+        s = dash._chart_series(bars)
+        m = compute_metrics(bars)
+        close = s["close"][-1]
+        assert close == pytest.approx(m["close"], abs=1e-6)
+        assert s["rsi14"][-1] == pytest.approx(m["rsi14"], abs=0.01)
+        assert ((s["ch24_up"][-1] / close - 1) * 100
+                == pytest.approx(m["dist24h_pct"], abs=1e-3))
+        assert ((s["ch96_up"][-1] / close - 1) * 100
+                == pytest.approx(m["dist96h_pct"], abs=1e-3))
+        pctb = (close - s["bb_low"][-1]) / (s["bb_up"][-1] - s["bb_low"][-1])
+        assert pctb == pytest.approx(m["bb_pctb"], abs=1e-3)
+        assert ((close / s["sma200"][-1] - 1) * 100
+                == pytest.approx(m["sma200_pct"], abs=1e-3))
+        assert (s["volume"][-1] / s["vol_avg20"][-1]
+                == pytest.approx(m["vol_surge"], abs=1e-3))
+
+    def test_ATR은_prev_close_TR_기준이다(self):
+        """갭 봉에서 |h−pc| 가 TR 에 반영된다 (swing.py 버그 재발 금지)."""
+        bars = [(0, 100.0, 101.0, 99.0, 100.0, 1.0),
+                (3_600_000, 120.0, 121.0, 119.0, 120.0, 1.0)]
+        s = dash._chart_series(bars)
+        # TR1 = 2, TR2 = max(2, |121−100|, |119−100|) = 21 → 2 + (21−2)/24
+        assert s["atr24"] == pytest.approx(2 + 19 / 24, abs=1e-6)
+
+    def test_채널은_현재봉을_제외한다(self):
+        """shift(1) — 마지막 봉 고가 스파이크가 ch24_up[-1] 에 미반영."""
+        bars = _mk_chart_bars(40)
+        t, o, h, low, c, v = bars[-1]
+        spiked = bars[:-1] + [(t, o, h + 1000.0, low, c, v)]
+        assert (dash._chart_series(spiked)["ch24_up"][-1]
+                == dash._chart_series(bars)["ch24_up"][-1])
+
+    def test_거래량_평균은_직전_20봉이다(self):
+        """vol_avg20 은 현재 봉 거래량을 제외한다 (shift 1)."""
+        bars = _mk_chart_bars(30)
+        s = dash._chart_series(bars)
+        vols = [b[5] for b in bars]
+        assert s["vol_avg20"][-1] == pytest.approx(sum(vols[-21:-1]) / 20)
+
+    def test_미형성_구간은_None(self):
+        s = dash._chart_series(_mk_chart_bars(50))
+        assert s["sma200"][-1] is None          # 200봉 미달
+        assert s["bb_up"][0] is None            # BB 워밍업
+        assert s["ch96_up"][-1] is None         # 96봉 창 미형성 (50 < 97)
+        assert s["ch24_up"][-1] is not None
+
+
+class TestCompositeScore:
+    """_composite_score — 동결 산식 경계값 (각 요소 ±20 · 합 ±100)."""
+
+    def test_전부_미형성이면_중립_0이고_라벨이_붙는다(self):
+        r = dash._composite_score(None, None, None, None, None, None, None)
+        assert r["score"] == 0
+        assert all(v == 0.0 for v in r["parts"].values())
+        assert "매매 신호가 아님" in r["note"]
+        assert "SWEEP-2026-08-31" in r["note"]
+
+    def test_모멘텀_경계(self):
+        part = lambda rsi: dash._composite_score(
+            None, None, None, rsi, None, None, None)["parts"]["momentum"]
+        assert part(100.0) == 20.0
+        assert part(0.0) == -20.0
+        assert part(50.0) == 0.0
+        assert part(75.0) == 10.0
+
+    def test_밴드는_낮을수록_매수측_플러스(self):
+        part = lambda pctb: dash._composite_score(
+            None, None, None, None, pctb, None, None)["parts"]["band"]
+        assert part(0.0) == 20.0                # 하단 = 매수측 +
+        assert part(1.0) == -20.0               # 상단 = 매도측 −
+        assert part(0.5) == 0.0
+        assert part(-0.5) == 20.0               # 밴드 밖 — 클립
+        assert part(1.5) == -20.0
+
+    def test_거래량_로그_스케일(self):
+        part = lambda sg: dash._composite_score(
+            None, None, None, None, None, sg, None)["parts"]["volume"]
+        assert part(1.0) == 0.0
+        assert part(2.0) == pytest.approx(10.0)
+        assert part(4.0) == pytest.approx(20.0)
+        assert part(8.0) == 20.0                # 클립
+        assert part(0.5) == pytest.approx(-10.0)
+        assert part(0.0) == 0.0                 # 비정상 → 중립
+        assert part(-1.0) == 0.0
+
+    def test_돌파_역수_캡(self):
+        part = lambda d: dash._composite_score(
+            None, None, None, None, None, None, d)["parts"]["breakout"]
+        assert part(-2.0) == 20.0               # 이미 돌파 — 캡
+        assert part(0.0) == 20.0
+        assert part(1.0) == pytest.approx(10.0)
+        assert part(3.0) == pytest.approx(5.0)
+        assert part(99.0) == pytest.approx(0.2)  # 원거리 → 0 수렴 (음수 없음)
+
+    def test_추세_정배열_가중과_클립(self):
+        part = lambda c, s20, s200: dash._composite_score(
+            c, s20, s200, None, None, None, None)["parts"]["trend"]
+        assert part(110.0, 105.0, 100.0) == 20.0    # base +15 + 정배열 +5
+        assert part(120.0, 105.0, 100.0) == 20.0    # base 클립 ±10 → 여전히 20
+        assert part(95.0, 90.0, 100.0) == pytest.approx(-12.5)  # −7.5 − 5
+        assert part(90.0, 95.0, 100.0) == -20.0     # base −15 − 역배열 5
+        assert part(100.0, None, None) == 0.0        # SMA200 미형성 → 중립
+
+    def test_점수는_합산_클립_정수(self):
+        # 5요소 전부 매수측 극단 → 정확히 +100
+        r = dash._composite_score(110.0, 105.0, 100.0, 100.0, 0.0, 4.0, -1.0)
+        assert r["score"] == 100
+        assert isinstance(r["score"], int)
+        # 4요소 매도측 극단 + 돌파 0 → −80 (돌파는 음수 없음 — 산식 명기)
+        r2 = dash._composite_score(90.0, 95.0, 100.0, 0.0, 1.0, 0.25, 99.0)
+        assert r2["score"] == -80
+
+
+class TestChartPosLevels:
+    """_chart_pos_levels — 전 그룹 스캔·병합·BBADD 재매핑 (읽기 전용)."""
+
+    def _state(self, tmp_path, st):
+        (tmp_path / "tracke_state.json").write_text(
+            json.dumps(st), encoding="utf-8")
+
+    def test_상태_부재_손상은_빈_목록(self, tmp_path):
+        assert dash._chart_pos_levels("BTC", logs_dir=tmp_path) == []
+        (tmp_path / "tracke_state.json").write_text("{깨짐", encoding="utf-8")
+        assert dash._chart_pos_levels("BTC", logs_dir=tmp_path) == []
+
+    def test_전_그룹_스캔과_동일_레벨_셀_병합(self, tmp_path):
+        self._state(tmp_path, {
+            "cells": {
+                "E01": {"positions": {"BTC": dict(
+                    d=1, u=0.1, e=100.0, stop=94.0, tgt=0.0, kind="BRK")}},
+                "E03": {"positions": {"BTC": dict(
+                    d=1, u=0.2, e=100.0, stop=94.0, tgt=0.0, kind="BRK")}},
+            },
+            "variant2_cells": {"cells": {
+                "E13": {"positions": {"BTC": dict(
+                    d=-1, u=1.0, e=101.0, stop=106.0, tgt=95.0,
+                    kind="BRKTP")}}}},
+        })
+        out = dash._chart_pos_levels("BTC", logs_dir=tmp_path)
+        assert len(out) == 2                       # 본 셀 병합 1 + 변형 1
+        long_g = next(g for g in out if g["dir"] == "롱")
+        assert long_g["cells"] == ["E01", "E03"]   # 고정 순서 병합
+        assert long_g["entry"] == pytest.approx(100.0)
+        assert long_g["stop"] == pytest.approx(94.0)
+        assert long_g["tgt"] is None               # 0.0 센티널 → None
+        assert long_g["add"] is None
+        short_g = next(g for g in out if g["dir"] == "숏")
+        assert short_g["cells"] == ["E13"]
+        assert short_g["stop"] == pytest.approx(106.0)
+        assert short_g["tgt"] == pytest.approx(95.0)
+
+    def test_BBADD는_tgt를_추매가로_재매핑한다(self, tmp_path):
+        """FarmPos 스키마 재사용 — BBADD 의 tgt 키 = 추매 트리거가 (엔진 #a)."""
+        self._state(tmp_path, {
+            "cells": {},
+            "variant5_cells": {"cells": {
+                "E24": {"positions": {"BTC": dict(
+                    d=1, u=0.1, e=100.0, stop=0.0, tgt=97.5, kind="BBADD")}}}},
+        })
+        out = dash._chart_pos_levels("BTC", logs_dir=tmp_path)
+        assert len(out) == 1
+        g = out[0]
+        assert g["add"] == pytest.approx(97.5)     # tgt → 추매가 재매핑
+        assert g["tgt"] is None                    # 익절 목표 아님
+        assert g["stop"] is None                   # BBADD 스탑 없음 (0.0 센티널)
+
+    def test_다른_코인은_제외된다(self, tmp_path):
+        self._state(tmp_path, {"cells": {"E01": {"positions": {
+            "ETH": dict(d=1, u=1.0, e=2000.0, stop=1900.0, kind="BRK")}}}})
+        assert dash._chart_pos_levels("BTC", logs_dir=tmp_path) == []
+        assert len(dash._chart_pos_levels("eth", logs_dir=tmp_path)) == 1
+
+    def test_상태_파일을_변경하지_않는다(self, tmp_path):
+        raw = json.dumps({"cells": {"E01": {"positions": {
+            "BTC": dict(d=1, u=0.1, e=100.0, stop=94.0, kind="BRK")}}}})
+        (tmp_path / "tracke_state.json").write_text(raw, encoding="utf-8")
+        dash._chart_pos_levels("BTC", logs_dir=tmp_path)
+        assert (tmp_path / "tracke_state.json").read_text(
+            encoding="utf-8") == raw               # 바이트 단위 불변 (읽기 전용)
+
+
+class TestApiChart:
+    """/api/chart/<coin> — 응답 구조 · 캐시 · 대기 흡수 (크래시 금지)."""
+
+    def _mock_fetch(self, monkeypatch, bars):
+        calls: list[str] = []
+
+        def fake(symbol):
+            calls.append(symbol)
+            return bars
+        monkeypatch.setattr(dash, "_chart_fetch_1h", fake)
+        return calls
+
+    def test_정상_응답_구조와_상시_라벨(self, client, monkeypatch):
+        self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [])
+        resp = client.get("/api/chart/BTC")
+        assert resp.status_code == 200
+        d = json.loads(resp.data)
+        assert d["available"] is True
+        assert d["coin"] == "BTC"
+        assert d["symbol"] == "BTC/USDT:USDT"
+        assert len(d["bars"]["close"]) == 200      # 응답 봉 수 상한
+        assert len(d["series"]["rsi14"]) == 200
+        for k in ("bb_up", "bb_low", "sma20", "sma200", "rsi14",
+                  "ch24_up", "ch24_dn", "ch96_up", "ch96_dn", "vol_avg20"):
+            assert k in d["series"]
+        assert set(d["composite"]["parts"]) == {
+            "trend", "momentum", "band", "volume", "breakout"}
+        assert -100 <= d["composite"]["score"] <= 100
+        assert all(-20 <= v <= 20 for v in d["composite"]["parts"].values())
+        # 관측 도구 라벨 상시 동봉 (표시 규율)
+        assert "우연 수준" in d["label"]
+        assert "매매 신호가 아님" in d["label"]
+        assert d["atr24"] is not None
+
+    def test_팜_보유_없으면_전략_기준_레벨(self, client, monkeypatch):
+        self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [])
+        d = json.loads(client.get("/api/chart/BTC").data)
+        lv = d["levels"]
+        assert lv["mode"] == "strategy"
+        assert lv["brk_entry"] is not None         # 24h 채널 상단 (돌파 진입)
+        assert lv["mr_entry"] is not None          # BB 하단 (평균회귀 진입)
+        assert lv["stop_mult"] == 6.0              # BRK_ATR_MULT 동수
+        assert lv["stop_dist"] == pytest.approx(6.0 * d["atr24"], abs=1e-6)
+
+    def test_팜_보유_있으면_포지션_레벨(self, client, monkeypatch):
+        self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        fixture = [dict(cells=["E01", "E03"], kind="BRK", dir="롱",
+                        entry=100.0, stop=94.0, tgt=None, add=None)]
+        monkeypatch.setattr(dash, "_chart_pos_levels",
+                            lambda *a, **k: list(fixture))
+        d = json.loads(client.get("/api/chart/BTC").data)
+        assert d["levels"]["mode"] == "positions"
+        assert d["levels"]["positions"][0]["cells"] == ["E01", "E03"]
+
+    def test_소문자_코인명도_정규화된다(self, client, monkeypatch):
+        self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [])
+        d = json.loads(client.get("/api/chart/btc").data)
+        assert d["available"] is True
+        assert d["coin"] == "BTC"
+
+    def test_기형_코인명은_대기(self, client, monkeypatch):
+        calls = self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        d = json.loads(client.get("/api/chart/B-C").data)
+        assert d["available"] is False
+        assert d["note"] == "차트 데이터 대기"
+        assert "매매 신호가 아님" in d["label"]
+        assert calls == []                         # 페치 자체를 안 한다
+
+    def test_페치_실패는_대기로_흡수(self, client):
+        # fixture 기본값: _chart_fetch_1h → None (캐시도 비어 있음)
+        resp = client.get("/api/chart/BTC")
+        assert resp.status_code == 200
+        d = json.loads(resp.data)
+        assert d["available"] is False
+        assert d["note"] == "차트 데이터 대기"
+
+    def test_캐시_5분_이내_재사용_만료_후_재페치(self, client, monkeypatch):
+        import time as _time
+        calls = self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [])
+        client.get("/api/chart/BTC")
+        client.get("/api/chart/BTC")
+        assert len(calls) == 1                     # 5분 이내 — 캐시 재사용
+        ts, payload = dash._chart_cache["BTC"]
+        dash._chart_cache["BTC"] = (_time.time() - 400.0, payload)  # 만료 주입
+        client.get("/api/chart/BTC")
+        assert len(calls) == 2                     # 만료 — 재페치
+
+    def test_만료_후_페치_실패시_스테일_잔존값_유지(self, client, monkeypatch):
+        import time as _time
+        self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [])
+        d1 = json.loads(client.get("/api/chart/BTC").data)
+        assert d1["available"] is True
+        ts, payload = dash._chart_cache["BTC"]
+        dash._chart_cache["BTC"] = (_time.time() - 400.0, payload)
+        monkeypatch.setattr(dash, "_chart_fetch_1h", lambda s: None)  # 장애
+        d2 = json.loads(client.get("/api/chart/BTC").data)
+        assert d2["available"] is True             # 스테일 잔존값 (무크래시)
+        assert d2["bars"] == d1["bars"]
+
+    def test_레벨은_캐시와_무관하게_매요청_재계산된다(self, client, monkeypatch):
+        self._mock_fetch(monkeypatch, _mk_chart_bars(220))
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [])
+        d1 = json.loads(client.get("/api/chart/BTC").data)
+        assert d1["levels"]["mode"] == "strategy"
+        monkeypatch.setattr(dash, "_chart_pos_levels", lambda *a, **k: [
+            dict(cells=["E01"], kind="BRK", dir="롱", entry=100.0,
+                 stop=94.0, tgt=None, add=None)])
+        d2 = json.loads(client.get("/api/chart/BTC").data)
+        assert d2["levels"]["mode"] == "positions"  # 시장 캐시는 그대로, 레벨 갱신
+
+    def test_확정봉만_수집한다(self, monkeypatch):
+        """_chart_fetch_1h — 현재 1h 구간의 미확정 봉을 제외한다."""
+        import pandas as pd
+        import time as _time
+        now_ms = int(_time.time() * 1000)
+        cur_h = now_ms - now_ms % 3_600_000
+        idx = pd.to_datetime([cur_h - 2 * 3_600_000, cur_h - 3_600_000, cur_h],
+                             unit="ms", utc=True)
+        df = pd.DataFrame(
+            {"open": [1.0, 2.0, 3.0], "high": [1.5, 2.5, 3.5],
+             "low": [0.5, 1.5, 2.5], "close": [1.2, 2.2, 3.2],
+             "volume": [10.0, 20.0, 30.0]}, index=idx)
+
+        class _FakeClient:
+            def fetch_ohlcv(self, symbol, timeframe, limit):
+                assert timeframe == "1h"
+                return df
+        monkeypatch.setattr(dash, "_get_market_client", lambda: _FakeClient())
+        bars = dash._chart_fetch_1h("BTC/USDT:USDT")
+        assert len(bars) == 2                      # 미확정 봉(현재 시간대) 제외
+        assert bars[-1][4] == pytest.approx(2.2)
+
+
+class TestCoinChartRender:
+    """차트 뷰 프런트 연결 — 스캐너 행·Track E 상세 코인명 (렌더 스모크)."""
+
+    _SCAN = {
+        "available": True, "generated_at": "2026-09-01 03:00 UTC",
+        "age_label": None, "stale": False, "skipped": 0,
+        "coins": [
+            {"symbol": "BTC/USDT:USDT", "coin": "BTC", "price": 100000.0,
+             "chg24h_pct": 1.2, "turnover24h": 5e9, "dist24h_pct": 0.5,
+             "dist96h_pct": -1.2, "rsi14": 61.0, "rsi2": 95.0,
+             "bb_pctb": 1.02, "sma200_pct": 3.1, "vol_surge": 2.5,
+             "gate_long": True, "gate_short": False},
+        ],
+    }
+
+    def test_스캐너_행이_코인_차트를_연다(self, client, monkeypatch):
+        monkeypatch.setattr(dash, "_load_market_scan",
+                            lambda *a, **k: dict(self._SCAN))
+        html = client.get("/").data.decode()
+        assert "openCoinChart('BTC')" in html       # 행 클릭 연결
+        assert 'class="scan-row"' in html
+
+    def test_모달과_상시_라벨이_렌더된다(self, client):
+        html = client.get("/").data.decode()
+        assert 'id="ccModal"' in html
+        assert "우연 수준(SWEEP-2026-08-31)" in html  # 관측 도구 라벨 상시
+        assert "매매 신호가 아님" in html
+        assert "/api/chart/" in html                 # 자체 canvas 페치 경로
+
+    def test_트랙E_상세_코인명이_차트를_연다(self, client, tmp_path, monkeypatch):
+        (tmp_path / "tracke_state.json").write_text(json.dumps({
+            "t0": 1787813928812,
+            "cells": {"E01": dict(equity=10000.0, positions={
+                "BTC": dict(d=1, u=0.1, e=80000.0, stop=76000.0,
+                            kind="BRK")})},
+            "ind": {"BTC": dict(pc=81000.0)},
+        }), encoding="utf-8")
+        for name in ("_load_tracke", "_load_tracke_variant", "_tracke_live"):
+            orig = getattr(dash, name)
+            monkeypatch.setattr(dash, name,
+                                (lambda o: lambda logs_dir=None:
+                                 o(logs_dir=tmp_path))(orig))
+        html = client.get("/").data.decode()
+        assert "openCoinChart('BTC')" in html        # 상세 코인명 → 같은 차트
+        assert 'class="coin-link"' in html

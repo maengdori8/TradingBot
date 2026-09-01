@@ -1820,6 +1820,430 @@ def api_live():
 
 
 # ------------------------------------------------------------------
+# 코인 차트 뷰 — /api/chart/<coin> (관측 도구 · 표시 전용)
+# ------------------------------------------------------------------
+# 읽기 전용 경로다: 어떤 상태·원장·판정 파일에도 쓰지 않으며, 결과는
+# 승급/실거래 게이트·주문 경로에 입력하지 않는다 (방화벽). 지표 산식은
+# 엔진 교정 관례와 동일하다 — prev-close TR ATR(swing.py 버그 재발 금지),
+# Wilder RSI 첫 diff 시드, BB ddof=0 모표준편차, shift(1) 채널.
+
+CHART_TF = "1h"
+CHART_CANDLE_LIMIT = 220        # 1h 조회 깊이 — SMA200 + 여유 (스캐너 동수)
+CHART_BARS = 200                # 응답 봉 수 상한
+CHART_CACHE_TTL = 300.0         # 코인별 서버 캐시 5분 (거래소 남용 방지)
+CHART_ATR_N = 24                # 1h ATR — scalp_farm ATR1H_N 동수
+CHART_STOP_ATR_MULT = 6.0       # BRK 스탑 배수 — scalp_farm BRK_ATR_MULT 동수
+CHART_BB_N = 20                 # BB 길이 (중심 SMA20)
+CHART_BB_K = 2.0                # BB 폭 (2σ, ddof=0)
+CHART_RSI_N = 14                # Wilder RSI
+CHART_SMA_N = 200               # 추세 SMA
+CHART_VOL_N = 20                # 거래량 평균 창 (직전 20봉)
+CHART_CH_FAST = 24              # 돌파 채널 (24h)
+CHART_CH_SLOW = 96              # 돌파 채널 (96h)
+
+# 컴포짓 점수 상시 라벨 — 응답에 항상 동봉, 프런트 상시 표시 (표시 규율)
+COMPOSITE_NOTE = ("관측 도구 — 이 지표 조합의 예측력은 검증 결과 우연 수준"
+                  "(SWEEP-2026-08-31). 레벨·상태 표시용이며 매매 신호가 아님.")
+
+_chart_cache: dict[str, tuple[float, dict]] = {}   # coin -> (fetched_at, 시장 페이로드)
+
+
+def _chart_fetch_1h(symbol: str) -> list[tuple] | None:
+    """Bybit 1h 캔들을 확정봉만 (ts, o, h, l, c, v) 오름차순으로 수집한다.
+
+    기존 대시보드 시세 관례(_get_market_client)를 재사용하고, 스캐너와 같은
+    확정봉 규약을 적용한다 — 현재 1h 구간에 속한 미확정 봉은 제외.
+
+    Args:
+        symbol: 통합 심볼 (예: 'BTC/USDT:USDT').
+
+    Returns:
+        [(ts_ms, open, high, low, close, volume)] 시간 오름차순 —
+        조회 실패/기형 응답이면 None (크래시 금지).
+    """
+    try:
+        df = _get_market_client().fetch_ohlcv(symbol, CHART_TF, CHART_CANDLE_LIMIT)
+    except Exception as e:  # noqa: BLE001 — 네트워크/거래소 계열 전반 (무크래시)
+        logger.warning("차트 캔들 조회 실패 %s: %s", symbol, e)
+        return None
+    now_h = int(time.time() * 1000)
+    now_h -= now_h % 3_600_000
+    bars: list[tuple] = []
+    try:
+        for ts, row in df.iterrows():
+            t = int(ts.timestamp() * 1000)
+            if t >= now_h:
+                continue                    # 미확정 봉 제외 (확정봉 규약)
+            bars.append((t, float(row["open"]), float(row["high"]),
+                         float(row["low"]), float(row["close"]),
+                         float(row["volume"]) if "volume" in row else float("nan")))
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None
+    bars.sort(key=lambda b: b[0])
+    return bars or None
+
+
+def _chart_series(bars: list[tuple]) -> dict:
+    """확정봉 시퀀스에서 차트 표시 시계열을 계산한다 (엔진 동일식).
+
+    산식 관례 (scalp_farm 교정판 · market_scanner 동형):
+    - ATR(24): TR = max(h−l, |h−pc|, |l−pc|) — **previous close** 기준,
+      Wilder 평활 a += (tr−a)/24 (swing.py 버그 재발 금지 관례).
+    - RSI14: Wilder 평활, 첫 diff 시드. dn==0 은 published_systems 원전 —
+      상승만 100, 무변동 50.
+    - BB(20, 2σ): 중심 SMA20 · ddof=0 모표준편차.
+    - 채널 24/96: 봉 [i] 를 **제외한** 직전 N봉 고가 최대·저가 최소 (shift 1).
+    - 거래량 평균: mean(vol[i−20..i−1]) — 직전 20봉 (shift 1).
+    미형성·NaN 구간은 None (JSON 직렬화 안전).
+
+    Args:
+        bars: [(ts, o, h, l, c, v), ...] 시간 오름차순, 확정봉만.
+
+    Returns:
+        {"ts","open","high","low","close","volume"(봉),
+         "bb_up","bb_low","sma20","sma200","rsi14",
+         "ch24_up","ch24_dn","ch96_up","ch96_dn","vol_avg20"(시계열),
+         "atr24"(마지막 확정봉까지의 ATR 스칼라)}.
+    """
+    def _v(x: float) -> float | None:
+        return round(x, 8) if isinstance(x, float) and math.isfinite(x) else None
+
+    n = len(bars)
+    ts = [int(b[0]) for b in bars]
+    opens = [float(b[1]) for b in bars]
+    highs = [float(b[2]) for b in bars]
+    lows = [float(b[3]) for b in bars]
+    closes = [float(b[4]) for b in bars]
+    vols = [float(b[5]) for b in bars]
+
+    bb_up: list[float | None] = [None] * n
+    bb_low: list[float | None] = [None] * n
+    sma20: list[float | None] = [None] * n
+    sma200: list[float | None] = [None] * n
+    rsi14: list[float | None] = [None] * n
+    ch24_up: list[float | None] = [None] * n
+    ch24_dn: list[float | None] = [None] * n
+    ch96_up: list[float | None] = [None] * n
+    ch96_dn: list[float | None] = [None] * n
+    vol_avg20: list[float | None] = [None] * n
+
+    # RSI14 — Wilder, 첫 diff 시드 (market_scanner.wilder_rsi 동형 점화식)
+    u: float | None = None
+    dn: float | None = None
+    for i in range(1, n):
+        diff = closes[i] - closes[i - 1]
+        ux, dx = max(diff, 0.0), max(-diff, 0.0)
+        u = ux if u is None else u + (ux - u) / CHART_RSI_N
+        dn = dx if dn is None else dn + (dx - dn) / CHART_RSI_N
+        if dn > 0:
+            r = 100.0 - 100.0 / (1.0 + u / dn)
+        else:
+            r = 100.0 if u > 0 else 50.0
+        rsi14[i] = _v(r)
+
+    # ATR(24) — prev-close TR, Wilder 평활 (scalp_farm _update_1h 동형)
+    atr: float | None = None
+    pc: float | None = None
+    for i in range(n):
+        tr = (highs[i] - lows[i] if pc is None
+              else max(highs[i] - lows[i], abs(highs[i] - pc), abs(lows[i] - pc)))
+        atr = tr if atr is None else atr + (tr - atr) / CHART_ATR_N
+        pc = closes[i]
+
+    for i in range(n):
+        if i >= CHART_BB_N - 1:
+            w = closes[i - CHART_BB_N + 1: i + 1]
+            m = sum(w) / CHART_BB_N
+            sd = math.sqrt(sum((x - m) ** 2 for x in w) / CHART_BB_N)   # ddof=0
+            sma20[i] = _v(m)
+            bb_up[i] = _v(m + CHART_BB_K * sd)
+            bb_low[i] = _v(m - CHART_BB_K * sd)
+        if i >= CHART_SMA_N - 1:
+            sma200[i] = _v(sum(closes[i - CHART_SMA_N + 1: i + 1]) / CHART_SMA_N)
+        for cn, cu, cd in ((CHART_CH_FAST, ch24_up, ch24_dn),
+                           (CHART_CH_SLOW, ch96_up, ch96_dn)):
+            if i >= cn:                       # 봉 [i] 제외 직전 n봉 (shift 1)
+                cu[i] = _v(max(highs[i - cn: i]))
+                cd[i] = _v(min(lows[i - cn: i]))
+        if i >= CHART_VOL_N:
+            vm = sum(vols[i - CHART_VOL_N: i]) / CHART_VOL_N
+            vol_avg20[i] = _v(vm)
+
+    return {
+        "ts": ts, "open": [_v(x) for x in opens], "high": [_v(x) for x in highs],
+        "low": [_v(x) for x in lows], "close": [_v(x) for x in closes],
+        "volume": [_v(x) for x in vols],
+        "bb_up": bb_up, "bb_low": bb_low, "sma20": sma20, "sma200": sma200,
+        "rsi14": rsi14, "ch24_up": ch24_up, "ch24_dn": ch24_dn,
+        "ch96_up": ch96_up, "ch96_dn": ch96_dn, "vol_avg20": vol_avg20,
+        "atr24": _v(atr) if atr is not None else None,
+    }
+
+
+def _composite_score(close: float | None, sma20: float | None,
+                     sma200: float | None, rsi14: float | None,
+                     pctb: float | None, vol_surge: float | None,
+                     dist24_pct: float | None) -> dict:
+    """컴포짓 관측 점수 −100~+100 — **산식 동결 2026-09-01, 변경 금지**.
+
+    5요소 각 −20~+20 클립, 합산 후 [−100, +100] 클립·정수 라운드.
+    + 는 매수측 관측, − 는 매도측 관측. 미형성(None) 요소는 0 (중립).
+
+    동결 산식:
+    1. 추세 trend = clip( clip((close/sma200 − 1)×100, −10, +10) × 1.5
+       + 정배열 가중, −20, +20 ) — 정배열 가중: sma20 > sma200 이면 +5,
+       sma20 < sma200 이면 −5, 그 외 0.
+    2. 모멘텀 momentum = clip((rsi14 − 50) × 0.4, −20, +20)
+       — RSI 0 → −20, 50 → 0, 100 → +20.
+    3. 밴드 위치 band = clip((0.5 − %b) × 40, −20, +20)
+       — 낮을수록 매수측 + (%b 0 하단 → +20, 1 상단 → −20).
+    4. 거래량 서지 volume = clip(log2(vol_surge) × 10, −20, +20)
+       — 평균 1× → 0, 2× → +10, 4× → +20, 0.5× → −10. surge ≤ 0 은 중립 0.
+    5. 돌파 근접 breakout: d = 24h 채널 상단까지 거리 %.
+       d ≤ 0 (이미 돌파) → +20, d > 0 → 20/(1+d) — 역수·캡 +20,
+       하한 0 (원거리 = 중립 수렴, 음수 없음).
+
+    지위: 관측 도구 — 이 지표 조합의 예측력은 검증 결과 우연 수준
+    (SWEEP-2026-08-31, logs/sweep_returns.npz). 레벨·상태 표시용이며
+    매매 신호가 아니다. 승급/실거래 게이트에 입력하지 않는다.
+
+    Args:
+        close: 최신 확정봉 종가.
+        sma20: SMA20 (BB 중심).
+        sma200: SMA200.
+        rsi14: Wilder RSI14.
+        pctb: BB %b.
+        vol_surge: vol[i] / mean(vol[i−20..i−1]).
+        dist24_pct: 24h 채널 상단까지 거리 % (음수 = 이미 돌파).
+
+    Returns:
+        {"score": int, "parts": {"trend","momentum","band","volume","breakout"}
+         (각 float ±20, 라운드 2), "note": COMPOSITE_NOTE}.
+    """
+    def _clip(x: float, lo: float = -20.0, hi: float = 20.0) -> float:
+        return max(lo, min(hi, x))
+
+    def _num(x) -> bool:
+        return (isinstance(x, (int, float)) and not isinstance(x, bool)
+                and math.isfinite(x))
+
+    trend = 0.0
+    if _num(close) and _num(sma200) and sma200 > 0:
+        base = _clip((close / sma200 - 1.0) * 100.0, -10.0, 10.0) * 1.5
+        align = 0.0
+        if _num(sma20):
+            align = 5.0 if sma20 > sma200 else (-5.0 if sma20 < sma200 else 0.0)
+        trend = _clip(base + align)
+
+    momentum = _clip((rsi14 - 50.0) * 0.4) if _num(rsi14) else 0.0
+    band = _clip((0.5 - pctb) * 40.0) if _num(pctb) else 0.0
+    volume = (_clip(math.log2(vol_surge) * 10.0)
+              if _num(vol_surge) and vol_surge > 0 else 0.0)
+    breakout = 0.0
+    if _num(dist24_pct):
+        breakout = 20.0 if dist24_pct <= 0 else _clip(20.0 / (1.0 + dist24_pct))
+
+    parts = {"trend": trend, "momentum": momentum, "band": band,
+             "volume": volume, "breakout": breakout}
+    score = int(round(_clip(sum(parts.values()), -100.0, 100.0)))
+    return {"score": score,
+            "parts": {k: round(v, 2) for k, v in parts.items()},
+            "note": COMPOSITE_NOTE}
+
+
+def _chart_pos_levels(coin: str, logs_dir: Path | None = None) -> list[dict]:
+    """tracke_state.json **전 그룹**에서 해당 코인 오픈 포지션 레벨을 모은다.
+
+    본 셀(cells)과 병렬 변형 블록(variant_cells·variant2_cells, ... —
+    _tracke_variant_blocks) 전부를 스캔한다 (표시 전용 — 게이트 입력 금지,
+    읽기 전용). BBADD 는 FarmPos 스키마 재사용으로 추매 트리거가가 tgt 키에
+    실리므로(엔진 확정 #a) 추매가로 재매핑한다 — _tracke_mtm_cell 동일 교정.
+    동일 (방향, kind, 진입, 손절, 목표, 추매) 레벨은 셀 목록으로 병합한다
+    (같은 전략 셀들의 중복 수평선 방지 — 셀 순서는 고정 순회 순서 보존).
+
+    Args:
+        coin: 코인 심볼 (예: 'BTC' — 대문자 정규화 후 비교).
+        logs_dir: 상태 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    Returns:
+        [{"cells": [셀 id, ...], "kind", "dir"(롱/숏), "entry",
+          "stop", "tgt", "add"}] — 상태 부재/손상/보유 없음이면 빈 목록
+        (크래시 금지). 0.0 센티널·부재 레벨은 None.
+    """
+    logs = logs_dir or (ROOT / "logs")
+    try:
+        st = json.loads((logs / "tracke_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(st, dict):
+        return []
+    coin = (coin or "").upper().strip()
+
+    groups: list[tuple[str, dict]] = []
+    main = st.get("cells")
+    if isinstance(main, dict):
+        for cid in TRACKE_CELL_IDS:                      # 고정 순서
+            cs = main.get(cid)
+            if isinstance(cs, dict):
+                groups.append((cid, cs))
+    for blk in _tracke_variant_blocks(st):               # 그룹 번호 순
+        b_cells = blk.get("cells")
+        if not isinstance(b_cells, dict):
+            continue
+        for cid in sorted(b_cells):                      # 셀 id 순 (고정)
+            cs = b_cells.get(cid)
+            if isinstance(cs, dict):
+                groups.append((str(cid).upper(), cs))
+
+    merged: dict[tuple, dict] = {}
+    for cid, cs in groups:
+        positions = cs.get("positions")
+        if not isinstance(positions, dict):
+            continue
+        for sym, pp in positions.items():
+            if not isinstance(pp, dict) or str(sym).upper().strip() != coin:
+                continue
+            try:
+                d_, e_ = int(pp["d"]), float(pp["e"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            stop_lv = _tracke_pos_level(pp, _TRACKE_POS_LEVEL_KEYS["stop"])
+            tgt_lv = _tracke_pos_level(pp, _TRACKE_POS_LEVEL_KEYS["tgt"])
+            add_lv = _tracke_pos_level(pp, _TRACKE_POS_LEVEL_KEYS["add"])
+            kind = str(pp.get("kind") or "")
+            if kind == "BBADD":              # tgt 키 = 추매 트리거가 (재매핑)
+                add_lv, tgt_lv = tgt_lv, None
+            key = (d_, kind, e_, stop_lv, tgt_lv, add_lv)
+            g = merged.get(key)
+            if g is None:
+                merged[key] = dict(
+                    cells=[cid], kind=kind, dir=("롱" if d_ > 0 else "숏"),
+                    entry=e_, stop=stop_lv, tgt=tgt_lv, add=add_lv)
+            elif cid not in g["cells"]:
+                g["cells"].append(cid)
+    return list(merged.values())
+
+
+def _chart_levels(coin: str, market: dict, logs_dir: Path | None = None) -> dict:
+    """차트 레벨 블록 — 팜 오픈 포지션 우선, 없으면 전략 기준 레벨.
+
+    전략 기준 레벨 (보유 없음 시 표기용 — 주문 아님):
+    - brk_entry: 24h 채널 상단 (돌파 진입 레벨, shift 1)
+    - mr_entry: BB 하단 (평균회귀 진입 레벨)
+    - stop_dist: 돌파 진입 가정 시 6×ATR(24) 스탑 거리
+      (scalp_farm BRK_ATR_MULT × ATR1H_N 동수 — 표기용 값)
+
+    Args:
+        coin: 코인 심볼.
+        market: _chart_market 시장 페이로드 (series·atr24 참조).
+        logs_dir: 상태 디렉토리 (기본 ROOT/logs, 테스트 주입용).
+
+    Returns:
+        {"mode": "positions", "positions": [...]} 또는
+        {"mode": "strategy", "brk_entry", "mr_entry", "atr24",
+         "stop_mult", "stop_dist"} (계산 불가 항목은 None).
+    """
+    positions = _chart_pos_levels(coin, logs_dir)
+    if positions:
+        return {"mode": "positions", "positions": positions}
+    series = market.get("series") or {}
+
+    def _last(key: str) -> float | None:
+        s = series.get(key) or []
+        return s[-1] if s and s[-1] is not None else None
+
+    atr = market.get("atr24")
+    stop_dist = (round(CHART_STOP_ATR_MULT * atr, 8)
+                 if isinstance(atr, (int, float)) and atr > 0 else None)
+    return {"mode": "strategy", "brk_entry": _last("ch24_up"),
+            "mr_entry": _last("bb_low"), "atr24": atr,
+            "stop_mult": CHART_STOP_ATR_MULT, "stop_dist": stop_dist}
+
+
+def _chart_market(coin: str) -> dict | None:
+    """코인별 시장 페이로드 (캔들 + 시계열 + 컴포짓) — 5분 서버 캐시.
+
+    캐시 유효분은 그대로 재사용한다 (거래소 남용 방지). 만료 후 재페치가
+    실패하면 스테일 잔존값을 유지하고("무크래시 — 대기보다 낫다"), 잔존값도
+    없으면 None (호출부는 "차트 데이터 대기" 응답).
+
+    Args:
+        coin: 정규화된 코인 심볼 (대문자).
+
+    Returns:
+        {"available", "coin", "symbol", "generated_at", "bars"(응답 상한
+         CHART_BARS 로 절단된 시계열 dict), "series", "atr24", "composite",
+         "label"} — 실패·잔존값 없음이면 None.
+    """
+    now = time.time()
+    cached = _chart_cache.get(coin)
+    if cached and now - cached[0] < CHART_CACHE_TTL:
+        return cached[1]
+    symbol = f"{coin}/USDT:USDT"
+    bars = _chart_fetch_1h(symbol)
+    if not bars or len(bars) < 2:
+        return cached[1] if cached else None    # 스테일 잔존값 유지 (무크래시)
+    s = _chart_series(bars)
+
+    close = s["close"][-1]
+    bb_u, bb_l, mid = s["bb_up"][-1], s["bb_low"][-1], s["sma20"][-1]
+    pctb = None
+    if (close is not None and bb_u is not None and bb_l is not None
+            and bb_u > bb_l):
+        pctb = (close - bb_l) / (bb_u - bb_l)
+    v_avg = s["vol_avg20"][-1]
+    v_last = s["volume"][-1]
+    vol_surge = (v_last / v_avg
+                 if v_last is not None and v_avg is not None and v_avg > 0
+                 else None)
+    ch24 = s["ch24_up"][-1]
+    dist24 = ((ch24 / close - 1.0) * 100.0
+              if ch24 is not None and close is not None and close > 0 else None)
+    composite = _composite_score(close, mid, s["sma200"][-1], s["rsi14"][-1],
+                                 pctb, vol_surge, dist24)
+
+    cut = -CHART_BARS
+    bars_keys = ("ts", "open", "high", "low", "close", "volume")
+    series_keys = ("bb_up", "bb_low", "sma20", "sma200", "rsi14",
+                   "ch24_up", "ch24_dn", "ch96_up", "ch96_dn", "vol_avg20")
+    payload = {
+        "available": True, "coin": coin, "symbol": symbol,
+        "generated_at": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"),
+        "bars": {k: s[k][cut:] for k in bars_keys},
+        "series": {k: s[k][cut:] for k in series_keys},
+        "atr24": s["atr24"],
+        "composite": composite,
+        "label": COMPOSITE_NOTE,
+    }
+    _chart_cache[coin] = (now, payload)
+    return payload
+
+
+@app.route("/api/chart/<coin>")
+def api_chart(coin: str):
+    """코인 차트 데이터 — 캔들 + 엔진 동일식 지표 + 레벨 + 컴포짓 점수.
+
+    관측 도구 (표시 전용): 매매 신호가 아니며(COMPOSITE_NOTE 상시 동봉),
+    승급/실거래 게이트·주문 경로에 입력하지 않는다. 캔들·지표·컴포짓은
+    5분 서버 캐시(_chart_market), 레벨은 매 요청 상태 파일에서 재계산
+    (읽기 전용 — 포지션 변화를 캐시보다 빨리 반영). 코인명 기형·페치 실패
+    전부 available=False "차트 데이터 대기" 응답으로 흡수 (크래시 금지).
+    """
+    coin = (coin or "").strip().upper()
+    waiting = {"available": False, "coin": coin, "note": "차트 데이터 대기",
+               "label": COMPOSITE_NOTE}
+    if not re.fullmatch(r"[A-Z0-9]{1,15}", coin):
+        return jsonify(waiting)
+    market = _chart_market(coin)
+    if market is None:
+        return jsonify(waiting)
+    payload = dict(market)              # 캐시 엔트리 오염 방지 (얕은 복사)
+    payload["levels"] = _chart_levels(coin, market)
+    return jsonify(payload)
+
+
+# ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
 
