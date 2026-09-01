@@ -44,6 +44,14 @@
   통합 (이력 e19~e21 열 추가, 스키마 이월 관례). 본 팜이 종말(전 심볼 폐지)
   하면 변형3 단계도 더 돌지 않으므로 그 시점 보유 포지션은 미실현으로 동결
   된다 (문서화된 한계 — 페이퍼 전용).
+- 변형4 셀 E22·E23 (BRK24R15 = BRK24 + 손익비 1.5:1 익절 — scalp_farm.py 동결
+  명세): 변형3 단계 '뒤'의 **다섯째 격리 단계**, 같은 규약 (_safe_variant —
+  변형4 실패는 본·v1·v2·v3 커밋에 무영향, 역도 성립). 지표는 본 팜 스냅숏
+  상속(E11 전례)이라 별도 워밍업 수집이 없고, 본 팜이 봉을 한 개도 처리하지
+  않았으면(last_ts=0) t0 를 동결하지 않는다 (워밍업 fail-closed). 폐지는 본 팜
+  폐지의 미러. 원장·이력은 기존 변형 파일 통합 (이력 e22·e23 열 추가, 스키마
+  이월 관례). 상태는 variant4_cells 키 (t0_variant4 write-once). 본 원장 기록
+  금지 방화벽 동일.
 """
 from __future__ import annotations
 
@@ -67,6 +75,8 @@ from carrybot.aggressive.scalp_farm import (
     V3CELLS,
     V3LABELS,
     V3_UNIVERSE_N,
+    V4CELLS,
+    V4LABELS,
     VCELLS,
     VLABELS,
     WARMUP_1H,
@@ -78,10 +88,12 @@ from carrybot.aggressive.scalp_farm import (
     new_variant,
     new_variant2,
     new_variant3,
+    new_variant4,
     step,
     step_variant,
     step_variant2,
     step_variant3,
+    step_variant4,
     variant2_delist,
     variant2_equities,
     variant2_from_dict,
@@ -90,6 +102,10 @@ from carrybot.aggressive.scalp_farm import (
     variant3_equities,
     variant3_from_dict,
     variant3_to_dict,
+    variant4_delist,
+    variant4_equities,
+    variant4_from_dict,
+    variant4_to_dict,
     variant_delist,
     variant_equities,
     variant_from_dict,
@@ -111,11 +127,12 @@ LEDGER_KEY = ["cell", "sym", "strategy", "bar_close", "action"]
 # lab/tracke_null.py 공식 10셀 계약(미지 셀 거부)을 보호한다 (기록 교차 금지)
 VLEDGER = Path("logs/tracke_variant_ledger.csv")
 VHIST = Path("logs/tracke_variant_history.csv")
-# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3) 열 추가 (구 파일의 결여 열은
-# 0.0 이월 = 부재 표기). equity = 행 기록 시점의 변형 전 셀(전 그룹) 시가평가
-# 합, keep-last(ts).
+# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3)·e22~e23(변형4) 열 추가 (구
+# 파일의 결여 열은 0.0 이월 = 부재 표기). equity = 행 기록 시점의 변형 전
+# 셀(전 그룹) 시가평가 합, keep-last(ts).
 VHIST_COLS = ["day", "ts", "equity", "e11", "e12", "e13", "e14", "e15", "e16",
-              "e17", "e18", "e19", "e20", "e21", "n_pos", "bars", "fills"]
+              "e17", "e18", "e19", "e20", "e21", "e22", "e23",
+              "n_pos", "bars", "fills"]
 OFFICIAL_IDS = frozenset(s.cell for s in CELLS)     # E01~E10
 VARIANT_IDS = frozenset(s.cell for s in VCELLS)     # E11·E12
 VARIANT2_IDS = frozenset(s.cell for s in V2CELLS)   # E13~E18
@@ -553,7 +570,8 @@ def _save_all(state: FarmState, fills: list, replay_end: int, bars_done: int) ->
                 total, n_pos, bars_done, len(fills))
 
 
-# ── 변형 셀 단계 (E11·E12 → E13~E18 순) — 본 셀 커밋 뒤에만 실행, 실패 격리 ──
+# ── 변형 셀 단계 (E11·E12 → E13~E18 → E19~E21 → E22·E23 순) — 본 셀 커밋
+# 뒤에만 실행, 각 단계 실패 격리 ──
 # 지위·규칙은 scalp_farm.py 모듈 docstring 의 동결 명세를 따른다. 본 셀
 # 원장·이력·상태 경로에는 어떤 기록도 하지 않는다 (variant*_cells 키 제외).
 
@@ -562,7 +580,8 @@ def _mirror_delist(state: FarmState, v: FarmState, delist_fn=variant_delist) -> 
     """본 팜 폐지를 변형에 미러 — 변형 상태의 마지막 처리 종가로 청산.
 
     Args:
-        delist_fn: 그룹별 폐지 함수 (variant_delist | variant2_delist).
+        delist_fn: 그룹별 폐지 함수 (variant_delist | variant2_delist |
+            variant4_delist — 변형3 은 미러하지 않고 자체 판정한다).
 
     Returns:
         변형 force_exit 체결 목록.
@@ -591,7 +610,9 @@ def _vhist_row(state: FarmState, v: FarmState, own_cells: tuple,
               (V2CELLS, state.variant2_cells, variant2_from_dict,
                variant2_equities),
               (V3CELLS, state.variant3_cells, variant3_from_dict,
-               variant3_equities))
+               variant3_equities),
+              (V4CELLS, state.variant4_cells, variant4_from_dict,
+               variant4_equities))
     for cells, vc, from_d, eq_fn in groups:
         if cells is own_cells:
             g = v
@@ -742,7 +763,8 @@ def _variant_inputs(ex, v: FarmState, data: dict, fund_ev: dict,
                     since: int, replay_end: int) -> tuple:
     """변형 그룹 재생 입력 준비 — 뒤처짐 따라잡기 수집 + 펀딩 커버 (fail-closed).
 
-    두 변형 그룹(E11·E12 / E13~E18) 공용 — 그룹 무관한 순수 수집 로직.
+    본 팜 바스켓을 그대로 쓰는 변형 그룹(E11·E12 / E13~E18 / E22·E23) 공용 —
+    그룹 무관한 순수 수집 로직 (변형3 은 자체 유니버스라 _variant3_inputs 별도).
 
     Returns:
         (vsince, vdata, vfund).
@@ -785,7 +807,8 @@ def _replay_variant(v: FarmState, vdata: dict, vfund: dict, vsince: int,
     """변형 그룹 봉 격자 재생 공용 — (체결 목록, 처리 봉 수) 반환.
 
     Args:
-        step_fn: 그룹별 step (step_variant | step_variant2).
+        step_fn: 그룹별 step (step_variant | step_variant2 | step_variant3 |
+            step_variant4).
     """
     fills: list = []
     bars_done = 0
@@ -1125,6 +1148,103 @@ def _finalize_variant2(state: FarmState) -> None:
     _save_variant2(state, v, vfills, v.last_ts or state.last_ts, 0)
 
 
+def _save_variant4(state: FarmState, v: FarmState, vfills: list,
+                   ts_end: int, bars_done: int) -> None:
+    """변형4(E22·E23) 원장 → 이력 → 상태(variant4_cells) 순 원자적 체크포인트.
+
+    _save_variant2/3 과 같은 계약 — 파일 통합(VLEDGER/VHIST), 상태 키·t0 만
+    분리. 방화벽: (cell, strategy) 쌍이 V4CELLS 밖이면 기록 대신 예외
+    (셀·전략 집합 독립 검사는 교차 오염을 놓친다 — 변형2 전례).
+    t0_variant4 는 write-once — 기존 기록과 다른 t0 저장 시도는 어떤 파일도
+    쓰기 전에 예외로 죽는다.
+    """
+    prev = state.variant4_cells
+    if prev is not None and prev.get("t0_variant4") != v.t0:
+        raise ValueError(f"t0_variant4 변경 금지 (write-once): "
+                         f"{prev.get('t0_variant4')} != {v.t0}")
+    allowed = {(s.cell, s.strategy) for s in V4CELLS}
+    bad = {(f["cell"], f["strategy"]) for f in vfills} - allowed
+    if bad:
+        raise ValueError(f"변형4 원장에 비변형4 행 기록 금지: {sorted(bad)}")
+    n = append_csv_atomic(VLEDGER, pd.DataFrame(vfills, columns=LEDGER_COLS),
+                          LEDGER_KEY)
+    if n:
+        logger.info("변형4 원장 %d행 추가 (중복 제거 후)", n)
+    row = _vhist_row(state, v, V4CELLS, ts_end, bars_done, len(vfills))
+    append_csv_atomic(VHIST, pd.DataFrame([row], columns=VHIST_COLS),
+                      key=["ts"], keep="last")
+    try:
+        state.variant4_cells = variant4_to_dict(v)
+        _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+    except BaseException:
+        state.variant4_cells = prev     # 실패 격리 롤백 (_save_variant 와 대칭)
+        raise
+    logger.info("변형4 자본 %.2f (E22+E23), 포지션 %d, 처리 봉 %d, 체결 %d",
+                sum(row[s.cell.lower()] for s in V4CELLS),
+                sum(len(c.positions) for c in v.cells.values()),
+                bars_done, len(vfills))
+
+
+def _run_variant4(ex, state: FarmState, data: dict, fund_ev: dict,
+                  since: int, replay_end: int) -> None:
+    """변형4 셀(E22·E23) 재생 — 변형3 단계 뒤 다섯째 단계 (_safe_variant 격리).
+
+    첫 호출: 본 팜이 봉을 처리한 적이 있어야(last_ts>0) t0_variant4 동결
+    (write-once) — 지표는 본 팜 스냅숏 상속이므로 별도 워밍업 수집이 없고,
+    본 팜 미가동 상태의 빈 지표로 동결하지 않는다 (fail-closed, 다음 실행
+    재시도). 동결 실행은 재생 없이 종료하고 다음 실행부터 재생한다.
+    이후: E11·E12 와 동일한 폐지 미러 → 따라잡기 수집 → 재생 → 통합 파일 저장.
+
+    Args:
+        ex: ccxt bybit (따라잡기 수집 전용 — 정상 경로에서는 미사용).
+        state: 본 팜 상태 (variant4_cells 키만 갱신됨).
+        data: 본 실행이 수집한 sym -> {ts: ohlc} (읽기 전용으로 사용).
+        fund_ev: 본 실행이 수집한 sym -> {정산 ts: 펀딩률 합}.
+        since: 본 실행 재생 시작 ts.
+        replay_end: 본 실행 재생 끝 ts (변형4도 같은 끝으로 정렬).
+    """
+    if state.variant4_cells is None:
+        if not state.last_ts:
+            return                      # 본 팜 미가동 — 다음 실행에서 초기화
+        v = new_variant4(state, t0=int(time.time() * 1000))
+        try:
+            state.variant4_cells = variant4_to_dict(v)
+            # 헤더 선생성 + 이력 스키마 이월 (e22·e23 열 정렬 — 변형2/3 전례)
+            append_csv_atomic(VLEDGER, pd.DataFrame([], columns=LEDGER_COLS),
+                              LEDGER_KEY)
+            _migrate_vhist_schema()
+            _atomic_write(STATE, json.dumps(state.to_dict(), indent=1,
+                                            default=float))
+        except BaseException:
+            state.variant4_cells = None   # 미기록 t0 영속화 금지 (롤백)
+            raise
+        logger.info("변형4 t0_variant4=%d 동결 (write-once) — E22·E23: %s",
+                    v.t0, V4LABELS["E22"])
+        return
+    v = variant4_from_dict(state.variant4_cells)
+    if v.basket_b != list(state.basket_b):
+        raise ValueError(f"변형4 바스켓 B 불일치: {v.basket_b} != {state.basket_b}")
+    if v.last_ts > state.last_ts:
+        raise ValueError(f"변형4 last_ts({v.last_ts})가 본 팜({state.last_ts}) 초과")
+    vfills = _mirror_delist(state, v, variant4_delist)
+    vsince, vdata, vfund = _variant_inputs(ex, v, data, fund_ev, since, replay_end)
+    fills2, bars_done = _replay_variant(v, vdata, vfund, vsince, replay_end,
+                                        step_variant4)
+    _save_variant4(state, v, vfills + fills2, replay_end, bars_done)
+
+
+def _finalize_variant4(state: FarmState) -> None:
+    """변형4(E22·E23) 종말 폐지 미러 — _finalize_variant2 와 동일 계약, 그룹 분리."""
+    if state.variant4_cells is None:
+        return
+    v = variant4_from_dict(state.variant4_cells)
+    missing = [s for s in state.delisted if s not in v.delisted]
+    if not missing:
+        return
+    vfills = _mirror_delist(state, v, variant4_delist)
+    _save_variant4(state, v, vfills, v.last_ts or state.last_ts, 0)
+
+
 def _safe_variant(fn, *args) -> None:
     """변형 단계 격리 실행 — 어떤 실패도 본 셀 커밋·중단 마커에 영향 없음.
 
@@ -1190,6 +1310,7 @@ def main() -> None:
             _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
         _safe_variant(_finalize_variant, state)    # 변형 폐지 미러 (미실현 방치 금지)
         _safe_variant(_finalize_variant2, state)
+        _safe_variant(_finalize_variant4, state)
         return
 
     now_h = int(pd.Timestamp.now(tz="utc").floor("h").timestamp() * 1000)
@@ -1231,12 +1352,14 @@ def main() -> None:
             _save_all(state, fills, state.last_ts, 0)      # 폐지 변이 보존
             _safe_variant(_finalize_variant, state)
             _safe_variant(_finalize_variant2, state)
+            _safe_variant(_finalize_variant4, state)
             return
     if not syms:
         _abort("잔여 심볼 없음 — 상태 보존")
         _save_all(state, fills, state.last_ts, 0)
         _safe_variant(_finalize_variant, state)
         _safe_variant(_finalize_variant2, state)
+        _safe_variant(_finalize_variant4, state)
         return
 
     replay_end = min(max(d) for d in data.values())
@@ -1246,6 +1369,7 @@ def main() -> None:
         _clear_abort()
         _safe_variant(_finalize_variant, state)    # 변형 따라잡기는 다음 새 봉 실행에서
         _safe_variant(_finalize_variant2, state)
+        _safe_variant(_finalize_variant4, state)
         return
     grid = list(range(since, replay_end + 1, H1))
 
@@ -1257,6 +1381,7 @@ def main() -> None:
             _save_all(state, fills, state.last_ts, 0)      # 폐지 변이 보존
             _safe_variant(_finalize_variant, state)
             _safe_variant(_finalize_variant2, state)
+            _safe_variant(_finalize_variant4, state)
         return
 
     # 펀딩 — 라이브 구간이 있을 때만 필요 (워밍업 봉엔 포지션이 없다)
@@ -1294,6 +1419,8 @@ def main() -> None:
     _safe_variant(_run_variant2, ex, state, data, fund_ev, since, replay_end)
     # 변형3 셀 E19~E21 — 넷째 단계 (전 유니버스, 자체 수집·자체 폐지 판정)
     _safe_variant(_run_variant3, ex, state, data, fund_ev, since, replay_end)
+    # 변형4 셀 E22·E23 — 다섯째 단계 (손익비 1.5:1 익절, 본 팜 지표 스냅숏 상속)
+    _safe_variant(_run_variant4, ex, state, data, fund_ev, since, replay_end)
 
 
 if __name__ == "__main__":

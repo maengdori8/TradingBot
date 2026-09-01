@@ -152,6 +152,33 @@
   파일 통합 (이력 e19~e21 열 추가, 스키마 이월 관례). 본 원장 기록 금지
   방화벽·E01~E18 바이트 동일성 보증(variant3_cells 키 제외 projection)은
   기존 그룹과 동일 (tests/test_scalp_farm.py 회귀).
+
+변형4 셀 E22·E23 — 2026-09-01 사전 고정, 성과 조회 전 동결 (V4CELLS 그룹):
+- 지위: 공식 판정 비대상·판정 권한 없음 (V4LABELS 동결 문구 — "손익비 1.5:1
+  익절 변형 · 미검증 · 판정 권한 없음"). 손익비 1.5:1 은 사용자가 **결과 조회
+  전에** 지정했으므로 사후선택이 아니다 (결과와 무관하게 편입).
+- 전략 BRK24R15 = BRK24 와 진입·초기 스탑·사이징(리스크 2%)·기존 청산(역채널
+  추적·스탑·갭 악화) **완전 동일 코드 경로**. 추가 규칙 하나뿐:
+  익절 tgt = fill + 1.5×(fill − stop) = 2.5·fill − 1.5·stop (롱/숏 공통식).
+  봉내 레벨 체결(갭이 유리해도 레벨 — RSI-DIV #15 관례), 체결봉부터 검사
+  (같은 봉 same_bar_stop/same_bar_target — #17 관례), 같은 봉에서 BRK 청산
+  레벨과 동시 도달 시 **BRK 청산 우선(비관)**.
+- **최대 보유 제한 없음** — E11/E12(BRK24TP)의 12봉 캡과 명시적으로 구분한다
+  (손익비 효과만 분리해 관찰하는 것이 본 그룹의 목적). p.hold 는 이 그룹에서
+  읽지도 증가시키지도 않는다 (진입 시 1 고정 — 죽은 필드).
+- 청산 우선순위 동결: BRK 스탑/역채널 → 1.5R 목표. 청산 봉 종가 시각 펀딩은
+  이미 청산된 포지션에 미적용 (전 전략 공통 관례).
+- E22 = 바스켓 A, E23 = 동결 바스켓 B 재사용. 셀당 신규 $10,000, MAX_POS 3·
+  heat 6%·gross 10x·일손실 −5% 진입정지·비용 왕복 16bp·펀딩 = 공통 그대로
+  (cost_model="" — 변형3의 2단계 비용 모델 미적용).
+- 상태: variant4_cells 키, t0_variant4 write-once. 지표는 E11 전례대로 본 팜
+  '시장 전용 지표 상태'의 깊은 스냅숏을 상속하고 last_ts 를 본 팜과 정렬한다
+  (BRK24 는 확장 지표 x2 가 불필요 — 별도 워밍업 수집 없음). t0_variant4
+  이전 봉 재생·주문 생성이 구조적으로 불가능 (워밍업 무주문).
+- 원장·이력: 기존 변형 파일 통합 (tracke_variant_ledger/history.csv — 유일키에
+  cell 이 있어 행 충돌 없음, 이력은 e22·e23 열 추가 스키마 이월 관례). 본 원장
+  (tracke_ledger.csv) 기록 금지 방화벽·E01~E21 바이트 동일성 보증
+  (variant4_cells 키 제외 projection)은 기존 그룹과 동일.
 """
 from __future__ import annotations
 
@@ -217,6 +244,10 @@ V3_MAX_POS = 6                 # 셀당 동시 최대 포지션
 V3_UNIVERSE_N = 40             # 유니버스 크기 (T0(v3) 거래대금 상위, write-once)
 V3_COST_MODEL = "major8_alt11"  # 2단계 비용: 메이저 편도 8bp / 비메이저 11bp
 V3_COST_SIDE_ALT = 0.0011      # 비메이저(BASKET_A 외) 편도 = taker 6 + 슬립 5bp
+
+# --- 변형4 셀(E22·E23) 동결 상수 — 손익비 1.5:1 익절 (최대보유 제한 없음).
+#     사용자가 결과 조회 전 지정한 수치 (사후선택 아님). 규칙은 모듈 docstring ---
+V4_TP_R = 1.5                  # BRK24R15 익절 배수 (1.5R) — 최대보유 캡 없음
 
 
 @dataclass(frozen=True)
@@ -306,6 +337,18 @@ V3LABELS: dict = {
     "E21": "전 유니버스 · 미검증 · 백테스트 기준선 없음(전방 전용) · 판정 권한 없음",
 }
 
+# 변형4 셀(E22·E23) — 위 세 그룹과 분리된 그룹 (t0_variant4 별도 write-once).
+# 전략 BRK24R15 = BRK24 + 1.5R 익절 (그 외 전부 BRK24 와 같은 코드 경로).
+V4CELLS: tuple[CellSpec, ...] = (
+    CellSpec("E22", "BRK24R15", "A", 24), CellSpec("E23", "BRK24R15", "B", 24),
+)
+
+# 변형4 셀 고정 라벨 (동결 문구 — 성과와 무관, 변경 금지)
+V4LABELS: dict = {
+    "E22": "손익비 1.5:1 익절 변형 · 미검증 · 판정 권한 없음",
+    "E23": "손익비 1.5:1 익절 변형 · 미검증 · 판정 권한 없음",
+}
+
 # 대시보드 바스켓 표기 (표시 전용 — _tracke_variant_spec 이 발견하면 사용.
 # "A"/"B" 는 대시보드 폴백 표기 유지, "U" 만 여기서 공급)
 VBASKET_LABELS: dict = {"U": "거래량 상위 40 고정 코호트 (T0 동결)"}
@@ -336,7 +379,7 @@ class FarmPos:
     e: float               # 진입가
     stop: float            # 스탑 레벨
     kind: str              # "BRK"|"MR"|"RSIDIV"
-    tgt: float = 0.0       # RSIDIV 목표가 (2R)
+    tgt: float = 0.0       # 목표가 (RSIDIV 2R / BRKTP 1R / BRKR15 1.5R)
     hold: int = 0          # MR 보유 1h봉 수 (진입봉 = 1)
     n4_entry: int = 0      # RSIDIV 신호 4h봉 인덱스
     risk_d: float = 0.0    # 진입 시 단위당 스탑거리 (heat 계산)
@@ -498,6 +541,8 @@ class FarmState:
     variant2_cells: dict | None = None
     # 변형3(E19~E21) 서브상태 — 동일 계약, 키·t0(t0_variant3)·유니버스 분리.
     variant3_cells: dict | None = None
+    # 변형4(E22·E23) 서브상태 — 동일 계약, 키·t0(t0_variant4)만 분리.
+    variant4_cells: dict | None = None
 
     def to_dict(self) -> dict:
         """JSON 직렬화 (셀 gross 계산용 마지막 유효 종가 마크맵 주입)."""
@@ -508,7 +553,8 @@ class FarmState:
                     cells={c: s.to_dict(px) for c, s in self.cells.items()},
                     variant_cells=self.variant_cells,
                     variant2_cells=self.variant2_cells,
-                    variant3_cells=self.variant3_cells)
+                    variant3_cells=self.variant3_cells,
+                    variant4_cells=self.variant4_cells)
 
     @classmethod
     def from_dict(cls, d: dict) -> "FarmState":
@@ -518,7 +564,8 @@ class FarmState:
                  delisted=list(d.get("delisted", [])), ind=dict(d.get("ind", {})),
                  variant_cells=d.get("variant_cells"),
                  variant2_cells=d.get("variant2_cells"),
-                 variant3_cells=d.get("variant3_cells"))
+                 variant3_cells=d.get("variant3_cells"),
+                 variant4_cells=d.get("variant4_cells"))
         st.cells = {c: CellState.from_dict(s) for c, s in d.get("cells", {}).items()}
         return st
 
@@ -592,12 +639,32 @@ def new_variant3(state: FarmState, universe: list, t0: int) -> FarmState:
                      cells={spec.cell: CellState() for spec in V3CELLS})
 
 
+def new_variant4(state: FarmState, t0: int) -> FarmState:
+    """변형4 서브팜(E22·E23) 초기화 — t0_variant4 동결 시점에 1회 (write-once).
+
+    E11 전례(new_variant)와 완전 동일한 계약: 본 팜의 동결 바스켓 B·폐지 목록
+    재사용 + '시장 전용 지표 상태' 깊은 스냅숏 상속 + last_ts 정렬 (t0_variant4
+    이전 봉 재생·주문 생성 구조적 차단). BRK24R15 는 BRK24 지표만 쓰므로
+    확장 지표(x2) 워밍업 수집이 필요 없다 — 별도 수집 단계 없음.
+
+    Args:
+        state: 본 팜 상태 (변형되지 않음).
+        t0: t0_variant4 (epoch ms) — 기록 후 불변.
+    """
+    return FarmState(t0=t0, last_ts=state.last_ts,
+                     basket_b=list(state.basket_b),
+                     delisted=list(state.delisted),
+                     ind=copy.deepcopy(state.ind),
+                     cells={spec.cell: CellState() for spec in V4CELLS})
+
+
 def _vgroup_to_dict(v: FarmState, key: str) -> dict:
     """변형 그룹 직렬화 공용 — t0 를 그룹 키로 개명, 서브상태 중첩 제거."""
     d = v.to_dict()
     d.pop("variant_cells", None)          # 중첩 없음 (변형 안의 변형 금지)
     d.pop("variant2_cells", None)
     d.pop("variant3_cells", None)
+    d.pop("variant4_cells", None)
     d[key] = d.pop("t0")
     return d
 
@@ -615,6 +682,11 @@ def variant2_to_dict(v: FarmState) -> dict:
 def variant3_to_dict(v: FarmState) -> dict:
     """변형3 서브상태 직렬화 — 'variant3_cells' 키 계약 (t0_variant3 명명)."""
     return _vgroup_to_dict(v, "t0_variant3")
+
+
+def variant4_to_dict(v: FarmState) -> dict:
+    """변형4 서브상태 직렬화 — 'variant4_cells' 키 계약 (t0_variant4 명명)."""
+    return _vgroup_to_dict(v, "t0_variant4")
 
 
 def _vgroup_from_dict(d: dict | None, key: str, cells: tuple) -> FarmState:
@@ -652,6 +724,11 @@ def variant2_from_dict(d: dict | None) -> FarmState:
 def variant3_from_dict(d: dict | None) -> FarmState:
     """'variant3_cells' 키 역직렬화 — 손상 시 fail-closed (E19~E21)."""
     return _vgroup_from_dict(d, "t0_variant3", V3CELLS)
+
+
+def variant4_from_dict(d: dict | None) -> FarmState:
+    """'variant4_cells' 키 역직렬화 — 손상 시 fail-closed (E22·E23)."""
+    return _vgroup_from_dict(d, "t0_variant4", V4CELLS)
 
 
 def cell_syms(spec: CellSpec, state: FarmState) -> tuple:
@@ -700,6 +777,11 @@ def variant2_equities(v: FarmState) -> dict:
 def variant3_equities(v: FarmState) -> dict:
     """변형3 셀(E19~E21) 시가평가 — 변형3 서브상태 전용."""
     return _equities(v, V3CELLS)
+
+
+def variant4_equities(v: FarmState) -> dict:
+    """변형4 셀(E22·E23) 시가평가 — 변형4 서브상태 전용."""
+    return _equities(v, V4CELLS)
 
 
 def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
@@ -809,9 +891,9 @@ def _post_fill_check(cell: CellState, spec: CellSpec, s: str, b: BarE,
     if (p.d > 0 and b.low <= p.stop) or (p.d < 0 and b.high >= p.stop):
         _close(cell, spec, s, ts_close, p.stop, "same_bar_stop", fills)
         return
-    # 목표 레벨 보유 종류(RSIDIV 2R, 변형 BRKTP 1R)만 같은 봉 목표 검사
-    if p.kind in ("RSIDIV", "BRKTP") and ((p.d > 0 and b.high >= p.tgt)
-                                          or (p.d < 0 and b.low <= p.tgt)):
+    # 목표 레벨 보유 종류(RSIDIV 2R, 변형 BRKTP 1R·BRKR15 1.5R)만 같은 봉 검사
+    if p.kind in ("RSIDIV", "BRKTP", "BRKR15") and (
+            (p.d > 0 and b.high >= p.tgt) or (p.d < 0 and b.low <= p.tgt)):
         _close(cell, spec, s, ts_close, p.tgt, "same_bar_target", fills)
 
 
@@ -1027,14 +1109,17 @@ def _manage(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
             if b.high >= lvl:
                 _close(cell, spec, s, ts_close, max(lvl, b.open), "exit", fills)
                 return True
-        if spec.strategy == "BRK24TP":
-            # 변형 (a) 익절 1R — 레벨 체결 (갭 유리해도 레벨), BRK 청산(위)이
-            # 먼저 검사되므로 같은 봉 동시 도달 시 스탑/역채널 우선 (비관)
+        if spec.strategy in ("BRK24TP", "BRK24R15"):
+            # 변형 (a) 익절 목표 — 레벨 체결 (갭 유리해도 레벨), BRK 청산(위)이
+            # 먼저 검사되므로 같은 봉 동시 도달 시 스탑/역채널 우선 (비관).
+            # 배수는 진입 시 p.tgt 에 확정 반영 (BRK24TP 1R / BRK24R15 1.5R)
             if (p.d > 0 and b.high >= p.tgt) or (p.d < 0 and b.low <= p.tgt):
                 _close(cell, spec, s, ts_close, p.tgt, "target", fills)
                 return True
+        if spec.strategy == "BRK24TP":
             # 변형 (b) 최대 보유 12×1h봉 (진입봉=1, 결측 봉은 카운트 정지) —
-            # 도달 봉 '종가' 청산 (MR 처럼 다음 봉 시가가 아님 — 동결 규칙)
+            # 도달 봉 '종가' 청산 (MR 처럼 다음 봉 시가가 아님 — 동결 규칙).
+            # E11/E12 전용 — 변형4(BRK24R15)는 최대보유 제한이 없다 (동결)
             p.hold += 1
             if p.hold >= VAR_MAX_HOLD:
                 _close(cell, spec, s, ts_close, b.close, "timeout", fills)
@@ -1107,12 +1192,16 @@ def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
         if spec.strategy == "BRK24GATE" and not _gate_ok(ind, d):
             return
         stop = fill - d * BRK_ATR_MULT * a
-        # 변형 BRK24TP: 진입·스탑·사이징은 위와 완전 동일 경로 — 목표만 추가
-        # (1R: tgt = fill + 1×(fill − stop), 롱/숏 공통식. 본 BRK는 tgt=0.0 기본값)
-        variant = spec.strategy == "BRK24TP"
-        tgt = fill + VAR_TP_R * (fill - stop) if variant else 0.0
-        if _try_open(cell, spec, s, b, d, fill, stop,
-                     "BRKTP" if variant else "BRK", px, fills, tgt=tgt):
+        # 변형 익절 셀: 진입·스탑·사이징은 위와 완전 동일 경로 — 목표만 추가
+        # (tgt = fill + R×(fill − stop), 롱/숏 공통식. BRK24TP = 1R,
+        # BRK24R15 = 1.5R. 본 BRK·BRK24GATE 는 tgt=0.0·kind "BRK" 그대로)
+        if spec.strategy == "BRK24TP":
+            kind, tgt = "BRKTP", fill + VAR_TP_R * (fill - stop)
+        elif spec.strategy == "BRK24R15":
+            kind, tgt = "BRKR15", fill + V4_TP_R * (fill - stop)
+        else:
+            kind, tgt = "BRK", 0.0
+        if _try_open(cell, spec, s, b, d, fill, stop, kind, px, fills, tgt=tgt):
             _post_fill_check(cell, spec, s, b, fills)   # 같은 봉 스탑 비관 (봉내 진입)
     elif spec.strategy == "MR":
         cl = ind["cl"]                       # shift(1) — 현재 봉 제외 24봉
@@ -1224,6 +1313,23 @@ def step_variant3(state: FarmState, bars: dict, funding: dict | None = None) -> 
         if b.ts > state.last_ts:
             state.ind.setdefault(s, _new_ind()).setdefault("x2", _new_x2())
     return _step_cells(state, bars, funding, V3CELLS)
+
+
+def step_variant4(state: FarmState, bars: dict, funding: dict | None = None) -> list:
+    """변형4 서브팜(E22·E23) 전용 step — 본 셀과 같은 내부 경로, 상태·셀만 분리.
+
+    BRK24R15 는 확장 지표(x2)를 쓰지 않으므로 step_variant2/3 의 x2 시딩이
+    없다 (E11·E12 의 step_variant 와 동일 구조).
+
+    Args:
+        state: 변형4 서브상태 (variant4_from_dict 결과, 변형됨).
+        bars: sym -> BarE (동일 ts 필수).
+        funding: sym -> 이 봉 종가 시각에 정산되는 펀딩률 합 (없으면 0).
+
+    Returns:
+        체결 이벤트 목록 (cell 은 E22/E23 만).
+    """
+    return _step_cells(state, bars, funding, V4CELLS)
 
 
 def _step_cells(state: FarmState, bars: dict, funding: dict | None,
@@ -1373,6 +1479,11 @@ def variant3_delist(v: FarmState, sym: str, last_px: float | None = None) -> lis
     청산가는 변형3 상태의 마지막 처리 종가 (fail-closed 관례 동일).
     """
     return _delist_cells(v, sym, last_px, V3CELLS)
+
+
+def variant4_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
+    """변형4 셀(E22·E23) 폐지 처리 — variant_delist 와 동일 관례, 그룹만 분리."""
+    return _delist_cells(v, sym, last_px, V4CELLS)
 
 
 def _delist_cells(state: FarmState, sym: str, last_px: float | None,

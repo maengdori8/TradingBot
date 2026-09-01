@@ -29,6 +29,9 @@ from carrybot.aggressive.scalp_farm import (
     V3_MAX_POS,
     V3_RISK,
     V3_UNIVERSE_N,
+    V4CELLS,
+    V4LABELS,
+    V4_TP_R,
     VAR_MAX_HOLD,
     VAR_TP_R,
     VBASKET_LABELS,
@@ -49,10 +52,12 @@ from carrybot.aggressive.scalp_farm import (
     new_variant,
     new_variant2,
     new_variant3,
+    new_variant4,
     step,
     step_variant,
     step_variant2,
     step_variant3,
+    step_variant4,
     variant2_delist,
     variant2_equities,
     variant2_from_dict,
@@ -61,6 +66,10 @@ from carrybot.aggressive.scalp_farm import (
     variant3_equities,
     variant3_from_dict,
     variant3_to_dict,
+    variant4_delist,
+    variant4_equities,
+    variant4_from_dict,
+    variant4_to_dict,
     variant_from_dict,
     variant_to_dict,
     warmup_full,
@@ -83,15 +92,18 @@ from carrybot.aggressive.scalp_farm_runner import (
     _clear_abort,
     _finalize_variant,
     _finalize_variant2,
+    _finalize_variant4,
     _migrate_vhist_schema,
     _run_variant,
     _run_variant2,
     _run_variant3,
+    _run_variant4,
     _safe_variant,
     _save_all,
     _save_variant,
     _save_variant2,
     _save_variant3,
+    _save_variant4,
     _variant3_inputs,
     append_csv_atomic,
     fetch_funding_range,
@@ -1172,11 +1184,11 @@ class TestVariantRunner:
         vh = pd.read_csv(tmp_path / VHIST)
         assert list(vh.columns) == ["day", "ts", "equity", "e11", "e12",
                                     "e13", "e14", "e15", "e16", "e17", "e18",
-                                    "e19", "e20", "e21",
+                                    "e19", "e20", "e21", "e22", "e23",
                                     "n_pos", "bars", "fills"]
-        # 변형2·변형3 미초기화 — e13~e21 열은 부재 표기 0.0, equity 는 E11+E12 만
+        # 변형2·3·4 미초기화 — e13~e23 열은 부재 표기 0.0, equity 는 E11+E12 만
         assert (vh[["e13", "e14", "e15", "e16", "e17", "e18",
-                    "e19", "e20", "e21"]] == 0.0).all().all()
+                    "e19", "e20", "e21", "e22", "e23"]] == 0.0).all().all()
         assert vh["equity"].iloc[-1] == pytest.approx(
             vh["e11"].iloc[-1] + vh["e12"].iloc[-1])
 
@@ -2924,3 +2936,545 @@ class TestV3Runner:
                      {"symbol": "XXXUSDT", "turnover24h": "7000000"}]
         assert "XXX" in pick_universe40(tk3)
         assert "XXX" in pick_universe40(list(reversed(tk3)))
+
+
+V4_LABEL = "손익비 1.5:1 익절 변형 · 미검증 · 판정 권한 없음"
+
+
+def v4farm(t0: int = 1) -> FarmState:
+    """변형4 테스트 서브팜 (t0=1이면 전 봉 라이브)."""
+    return new_variant4(farm(), t0)
+
+
+def v4pos(**kw) -> FarmPos:
+    """변형4 BRKR15 보유 포지션 기본값 (롱 e=100, stop=88, tgt=118 = 1.5R)."""
+    base = dict(d=1, u=10.0, e=100.0, stop=88.0, kind="BRKR15", tgt=118.0,
+                hold=1, risk_d=12.0)
+    base.update(kw)
+    return FarmPos(**base)
+
+
+class TestV4Rules:
+    """E22·E23 (BRK24R15) — 사전 고정: 손익비 1.5:1 익절·최대보유 제한 없음."""
+
+    def test_진입_스탑_사이징은_BRK24와_정확히_같다(self):
+        # 같은 워밍업·같은 봉에서 E01(BRK24)과 E22(BRK24R15)는 완전 동일 체결
+        st = farm()
+        warm(st, "BTC", atr=2.0)
+        v = new_variant4(st, t0=1)
+        b = bar(0, 100, 105, 100, 104)               # 돌파하되 1.5R(118) 미도달
+        fills = step(st, {"BTC": b})
+        vfills = step_variant4(v, {"BTC": b})
+        p = st.cells["E01"].positions["BTC"]
+        q = v.cells["E22"].positions["BTC"]
+        assert (q.e, q.stop, q.u, q.risk_d) == (p.e, p.stop, p.u, p.risk_d)
+        e1 = next(f for f in fills if f["cell"] == "E01" and f["action"] == "enter")
+        e22 = next(f for f in vfills
+                   if f["cell"] == "E22" and f["action"] == "enter")
+        assert (e22["price"], e22["qty"], e22["cost"]) == \
+            (e1["price"], e1["qty"], e1["cost"])
+        assert e22["strategy"] == "BRK24R15"
+        assert q.kind == "BRKR15"
+        assert q.tgt == 2.5 * q.e - 1.5 * q.stop, "1.5R = fill + 1.5×(fill−stop)"
+        assert q.tgt == pytest.approx(118.0)
+
+    def test_1_5R_목표는_봉내_레벨_체결이다(self):
+        v = v4farm()
+        warm(v, "BTC", atr=2.0, hi=100.0, lo=1.0)     # 역채널(저가 1) 배제
+        v.cells["E22"].positions["BTC"] = v4pos()
+        fills = step_variant4(v, {"BTC": bar(0, 105, 119, 104, 106)})
+        assert fills[0]["action"] == "target"
+        assert fills[0]["price"] == pytest.approx(118.0)
+        assert "BTC" not in v.cells["E22"].positions
+
+    def test_1R에서는_청산되지_않는다(self):
+        # 손익비 분화의 핵심 — 1R(112) 도달만으로는 무청산 (E11 과 구분)
+        st = farm()
+        warm(st, "BTC", atr=2.0)
+        v1 = new_variant(st, t0=1)
+        v4 = new_variant4(st, t0=1)
+        b0 = {"BTC": bar(0, 100, 105, 100, 104)}
+        step_variant(v1, b0)
+        step_variant4(v4, b0)
+        assert v1.cells["E11"].positions["BTC"].tgt == pytest.approx(112.0)
+        assert v4.cells["E22"].positions["BTC"].tgt == pytest.approx(118.0)
+        b1 = {"BTC": bar(1, 104, 113, 103, 110)}     # 1R 도달, 1.5R 미도달
+        f1 = step_variant(v1, b1)
+        f4 = step_variant4(v4, b1)
+        assert [f["action"] for f in f1 if f["cell"] == "E11"] == ["target"]
+        assert f1[0]["price"] == pytest.approx(112.0)
+        assert f4 == [], "1.5R 미도달 — 변형4 는 보유 유지"
+        assert "BTC" in v4.cells["E22"].positions
+
+    def test_갭이_유리해도_목표는_레벨_체결이다(self):
+        # RSI-DIV #15 관례 동일 — 시가 125 > 목표 118 여도 118 체결
+        v = v4farm()
+        warm(v, "BTC", atr=2.0, hi=100.0, lo=1.0)
+        v.cells["E22"].positions["BTC"] = v4pos()
+        fills = step_variant4(v, {"BTC": bar(0, 125, 130, 123, 126)})
+        assert fills[0]["action"] == "target"
+        assert fills[0]["price"] == pytest.approx(118.0), "레벨 체결 (유리한 갭 무시)"
+
+    def test_스탑과_목표_동시_도달이면_BRK_청산이_우선이다(self):
+        v = v4farm()
+        warm(v, "BTC", atr=2.0, hi=100.0, lo=1.0)
+        v.cells["E22"].positions["BTC"] = v4pos()
+        fills = step_variant4(v, {"BTC": bar(0, 100, 119, 80, 90)})  # 88·118 모두
+        assert fills[0]["action"] == "exit"
+        assert fills[0]["price"] == pytest.approx(88.0), "스탑 우선 (비관)"
+        assert not any(f["action"] == "target" for f in fills)
+
+    def test_역채널_추적_청산은_변형4에도_유지된다(self):
+        # 기존 BRK24 청산 규칙 병존 — n/2=12봉 역채널 + 갭 악화
+        v = v4farm()
+        warm(v, "BTC", atr=2.0, hi=100.0, lo=95.0)   # 최근 저가 95 = 역채널
+        v.cells["E22"].positions["BTC"] = v4pos()
+        fills = step_variant4(v, {"BTC": bar(0, 96, 97, 94, 96)})
+        assert fills[0]["action"] == "exit"
+        assert fills[0]["price"] == pytest.approx(95.0), "역채널 레벨 (스탑 88 아님)"
+
+    def test_최대보유_제한이_없다(self):
+        # E11/E12 의 12봉 캡과의 명시적 분화 — 같은 봉 시퀀스에서 E11 은
+        # 12봉째 타임아웃, E22 는 40봉을 지나도 보유 (손익비 효과만 분리)
+        st = farm()
+        v1 = new_variant(st, t0=1)
+        v4 = new_variant4(st, t0=1)
+        warm(v1, "BTC", atr=2.0, hi=1000.0, lo=1.0)
+        warm(v4, "BTC", atr=2.0, hi=1000.0, lo=1.0)
+        v1.cells["E11"].positions["BTC"] = vpos(stop=1.0, tgt=1e9, risk_d=99.0)
+        v4.cells["E22"].positions["BTC"] = v4pos(stop=1.0, tgt=1e9, risk_d=99.0)
+        f1: list = []
+        f4: list = []
+        for k in range(40):
+            b = {"BTC": bar(k, 100.0, 100.5, 99.5 + 0.01 * k, 100.0)}
+            f1 += step_variant(v1, b)
+            f4 += step_variant4(v4, b)
+        assert [f["action"] for f in f1] == ["timeout"], "E11 은 12봉 캡"
+        assert f4 == [], "E22 는 최대보유 제한 없음 (40봉 무청산)"
+        p = v4.cells["E22"].positions["BTC"]
+        assert p.hold == 1, "hold 는 변형4가 읽지도 늘리지도 않는 죽은 필드"
+
+    def test_진입봉_1_5R_도달은_같은_봉_익절된다(self):
+        # RSI-DIV #17 관례 — 체결봉부터 목표 검사 (레벨 체결)
+        v = v4farm()
+        warm(v, "BTC", atr=2.0)
+        fills = step_variant4(v, {"BTC": bar(0, 100, 119, 100, 110)})
+        acts = [f["action"] for f in fills if f["cell"] == "E22"]
+        assert acts == ["enter", "same_bar_target"]
+        assert fills[-1]["price"] == pytest.approx(118.0)
+        assert "BTC" not in v.cells["E22"].positions
+
+    def test_진입봉_동시_도달은_스탑이_우선이다(self):
+        v = v4farm()
+        warm(v, "BTC", atr=2.0)
+        fills = step_variant4(v, {"BTC": bar(0, 100, 119, 87, 100)})  # 88·118
+        acts = [f["action"] for f in fills if f["cell"] == "E22"]
+        assert acts == ["enter", "same_bar_stop"]
+        assert not any(f["action"] == "same_bar_target" for f in fills)
+
+    def test_숏_1_5R_목표는_진입_아래_대칭이다(self):
+        v = v4farm()
+        warm(v, "BTC", atr=2.0, hi=100.0, lo=90.0)
+        step_variant4(v, {"BTC": bar(0, 89, 89.5, 80, 82)})   # 하향 돌파 숏
+        p = v.cells["E22"].positions["BTC"]
+        assert p.d == -1
+        assert p.e == pytest.approx(89.0)                     # min(시가, 채널 90)
+        assert p.stop == pytest.approx(101.0)                 # 89 + 6*2
+        assert p.tgt == pytest.approx(71.0), "2.5*89 − 1.5*101 (1.5R 아래)"
+        assert p.tgt == 2.5 * p.e - 1.5 * p.stop
+
+    def test_결측_봉은_변형4_관리를_정지시킨다(self):
+        # 엔진 공통 fail-closed — 결측 봉은 목표·스탑 검사 전부 정지
+        v = v4farm()
+        warm(v, "BTC", atr=2.0, hi=1000.0, lo=1.0)
+        warm(v, "ETH", atr=2.0, hi=1000.0, lo=1.0)
+        v.cells["E22"].positions["BTC"] = v4pos()
+        fills = step_variant4(v, {"ETH": bar(0, 130, 130, 130, 130)})  # BTC 결측
+        assert fills == [] and "BTC" in v.cells["E22"].positions
+        fills = step_variant4(v, {"BTC": bar(1, 119, 120, 118, 119),
+                                  "ETH": bar(1, 130, 130, 130, 130)})
+        assert fills[0]["action"] == "target"
+
+    def test_변형4는_t0_variant4_이전_워밍업_무주문이다(self):
+        v = new_variant4(farm(), t0=BASE + 100 * H1)
+        warm(v, "BTC", atr=2.0)
+        fills = step_variant4(v, {"BTC": bar(0, 100, 115, 100, 114)})  # 명백 돌파
+        assert fills == []
+        for c in v.cells.values():
+            assert not c.positions and not c.pending
+
+    def test_변형4_동결_상수와_라벨(self):
+        assert V4_TP_R == 1.5
+        assert [s.cell for s in V4CELLS] == ["E22", "E23"]
+        assert all(s.strategy == "BRK24R15" and s.n == 24 for s in V4CELLS)
+        assert [s.basket for s in V4CELLS] == ["A", "B"]
+        assert V4LABELS["E22"] == V4LABELS["E23"] == V4_LABEL
+        # 리스크 2%·MAX_POS 3·균일 16bp — 본 셀 공통 파라미터 그대로
+        for s in V4CELLS:
+            assert (s.risk, s.max_pos, s.cost_model, s.heat_clamp) == \
+                (0.02, 3, "", False)
+
+
+class TestV4State:
+    """변형4 서브상태 — variant4_cells 키, t0_variant4 write-once, 그룹 분리."""
+
+    def test_new_variant4는_동결_바스켓_재사용과_지표_깊은_분리다(self):
+        st = farm()
+        warm(st, "BTC", atr=2.0)
+        step(st, {"BTC": bar(0, 100, 101, 99, 100)})
+        v = new_variant4(st, t0=123)
+        assert v.t0 == 123
+        assert v.basket_b == st.basket_b == ["XRP", "DOGE", "ADA"]
+        assert v.last_ts == st.last_ts, "t0_variant4 이전 봉 재생 구조적 차단"
+        assert v.ind == st.ind, "시장 전용 지표 스냅숏 상속 (값 동일)"
+        assert set(v.cells) == {"E22", "E23"}
+        assert all(c.equity == 10_000.0 for c in v.cells.values())
+        v.ind["BTC"]["atr1"] = 999.0                 # 변형 쪽 변이가
+        v.ind["BTC"]["hl"].append([1.0, 1.0])
+        assert st.ind["BTC"]["atr1"] != 999.0, "본 팜 지표에 새면 안 된다 (깊은 복사)"
+        assert len(st.ind["BTC"]["hl"]) != len(v.ind["BTC"]["hl"])
+
+    def test_변형4_직렬화는_t0_variant4_명명으로_왕복된다(self):
+        v = new_variant4(farm(), t0=BASE)
+        warm(v, "BTC", atr=2.0)
+        step_variant4(v, {"BTC": bar(0, 100, 105, 100, 104)})   # 포지션 포함
+        d = variant4_to_dict(v)
+        assert "t0_variant4" in d and "t0" not in d
+        assert all(k not in d for k in ("variant_cells", "variant2_cells",
+                                        "variant3_cells", "variant4_cells"))
+        v2 = variant4_from_dict(json.loads(json.dumps(d, default=float)))
+        assert json.dumps(variant4_to_dict(v2), sort_keys=True, default=float) \
+            == json.dumps(d, sort_keys=True, default=float)
+        assert v2.cells["E22"].positions["BTC"].kind == "BRKR15"
+        assert v2.cells["E22"].positions["BTC"].tgt == pytest.approx(118.0)
+
+    def test_기존_그룹_직렬화에_variant4_키가_새지_않는다(self):
+        # 바이트 동일성의 전제 — v1·v2·v3 서브상태 JSON 에 새 키가 생기면
+        # 기존 그룹 상태 바이트가 변한다 (_vgroup_to_dict 의 pop 회귀)
+        st = farm()
+        for d in (variant_to_dict(new_variant(st, t0=1)),
+                  variant2_to_dict(new_variant2(st, t0=2)),
+                  variant3_to_dict(new_variant3(st, ["BTC"], t0=3)),
+                  variant4_to_dict(new_variant4(st, t0=4))):
+            assert "variant4_cells" not in d
+            assert "t0" not in d
+
+    def test_본_상태는_variant4_cells를_불투명하게_왕복_보존한다(self):
+        st = farm()
+        assert st.variant4_cells is None, "미초기화 기본값 None (초기화 대상)"
+        st.variant4_cells = variant4_to_dict(new_variant4(st, t0=BASE))
+        rt = FarmState.from_dict(json.loads(json.dumps(st.to_dict(), default=float)))
+        assert rt.variant4_cells == st.variant4_cells
+        assert json.dumps(rt.to_dict(), sort_keys=True, default=float) == \
+            json.dumps(st.to_dict(), sort_keys=True, default=float)
+
+    def test_손상된_변형4_상태는_fail_closed다(self):
+        with pytest.raises(ValueError):
+            variant4_from_dict(None)
+        with pytest.raises(ValueError):
+            variant4_from_dict({})
+        with pytest.raises(ValueError):
+            variant4_from_dict({"t0_variant4": 0, "cells": {}})
+        with pytest.raises(ValueError):                  # E11 구성은 변형4가 아니다
+            variant4_from_dict({"t0_variant4": 5,
+                                "cells": {"E11": {"equity": 10_000.0},
+                                          "E12": {"equity": 10_000.0}}})
+        with pytest.raises(ValueError):                  # 셀 부분 결손
+            variant4_from_dict({"t0_variant4": 5,
+                                "cells": {"E22": {"equity": 10_000.0}}})
+
+    def test_변형4_시가평가와_폐지는_그룹_전용이다(self):
+        v = v4farm()
+        warm(v, "XRP", atr=2.0, pc=110.0)
+        v.cells["E23"].positions["XRP"] = v4pos()
+        eqs = variant4_equities(v)
+        assert set(eqs) == {"E22", "E23"}
+        assert eqs["E23"] == pytest.approx(10_000 + 10.0 * 10.0), "마지막 종가 마크"
+        assert eqs["E22"] == pytest.approx(10_000.0)
+        fills = variant4_delist(v, "XRP")
+        assert fills[0]["cell"] == "E23" and fills[0]["action"] == "force_exit"
+        assert fills[0]["price"] == pytest.approx(110.0)
+        assert fills[0]["cost"] == pytest.approx(10.0 * 110.0 * COST_SIDE), \
+            "변형4 비용은 균일 편도 8bp (2단계 모델 미적용)"
+        assert "XRP" in v.delisted
+        assert not v.cells["E23"].positions
+
+
+class TestV4Runner:
+    """E22·E23 러너 — t0 동결·방화벽·다섯째 단계 격리·바이트 동일성 회귀."""
+
+    OHLC5 = (100.0, 101.0, 99.0, 100.0, 10.0)
+
+    def test_첫_호출은_t0_동결이고_추가_수집이_없다(self, tmp_path, monkeypatch):
+        import carrybot.aggressive.scalp_farm_runner as runner
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        warm(st, "BTC", atr=2.0)
+        step(st, {"BTC": bar(0, 100, 101, 99, 100)})
+        called = []
+        monkeypatch.setattr(runner, "fetch_1h_paged",
+                            lambda *a: called.append(a) or {})
+        _run_variant4(object(), st, {}, {}, BASE, BASE)
+        vc = st.variant4_cells
+        assert called == [], "본 팜 지표 스냅숏 상속 — 별도 워밍업 수집 없음"
+        assert vc["t0_variant4"] > 0
+        assert vc["last_ts"] == BASE == st.last_ts, "본 팜과 정렬 (워밍업 무주문)"
+        assert set(vc["cells"]) == {"E22", "E23"}
+        assert vc["basket_b"] == st.basket_b
+        assert vc["ind"]["BTC"]["atr1"] > 0, "본 팜 지표 상속"
+        assert all(not c["positions"] for c in vc["cells"].values()), \
+            "동결 실행은 재생하지 않는다"
+        vh = pd.read_csv(tmp_path / VHIST)
+        assert list(vh.columns) == VHIST_COLS, "e22·e23 스키마 이월"
+        assert (tmp_path / VLEDGER).exists(), "헤더 선생성 (git add 함정 방지)"
+        raw = json.loads((tmp_path / "logs/tracke_state.json").read_text())
+        assert raw["variant4_cells"]["t0_variant4"] == vc["t0_variant4"]
+
+    def test_본_팜_미가동이면_t0를_동결하지_않는다(self, tmp_path, monkeypatch):
+        # 워밍업 fail-closed — 본 팜이 봉을 하나도 처리하지 않았으면 동결 지연
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        assert st.last_ts == 0
+        _run_variant4(object(), st, {}, {}, BASE, BASE)
+        assert st.variant4_cells is None, "빈 지표로 t0 동결 금지"
+        assert not (tmp_path / VLEDGER).exists()
+        assert not (tmp_path / "logs/tracke_state.json").exists()
+
+    def test_동결_실패는_t0를_영속화하지_않는다(self, tmp_path, monkeypatch):
+        import carrybot.aggressive.scalp_farm_runner as runner
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        st.last_ts = BASE
+        monkeypatch.setattr(runner, "_atomic_write",
+                            lambda *a: (_ for _ in ()).throw(OSError("장애")))
+        with pytest.raises(OSError):
+            _run_variant4(object(), st, {}, {}, BASE, BASE)
+        assert st.variant4_cells is None, "미기록 t0 롤백"
+
+    def test_save_variant4는_t0_변경을_거부한다(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        v = v4farm()
+        st.variant4_cells = variant4_to_dict(v)
+        v.t0 = 2
+        with pytest.raises(ValueError, match="write-once"):
+            _save_variant4(st, v, [], BASE, 0)
+        assert st.variant4_cells["t0_variant4"] == 1, "기존 기록 보존"
+        assert not (tmp_path / VLEDGER).exists()
+
+    def test_방화벽은_그룹_경계를_양방향으로_막는다(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        v4 = v4farm()
+        st.variant4_cells = variant4_to_dict(v4)
+        row22 = dict(cell="E22", sym="BTC", strategy="BRK24R15",
+                     bar_close=BASE + H1, action="enter", price=100.0, qty=1.0,
+                     pnl=0.0, cost=0.08, direction=1, funding=0.0)
+        with pytest.raises(ValueError, match="비공식 셀"):   # 본 원장 기록 금지
+            _save_all(st, [row22], BASE, 1)
+        v1 = new_variant(st, t0=1)
+        st.variant_cells = variant_to_dict(v1)
+        with pytest.raises(ValueError, match="비변형 행"):
+            _save_variant(st, v1, [row22], BASE, 1)
+        v2 = new_variant2(st, t0=2)
+        st.variant2_cells = variant2_to_dict(v2)
+        with pytest.raises(ValueError, match="비변형2"):
+            _save_variant2(st, v2, [row22], BASE, 1)
+        v3 = new_variant3(st, ["BTC"], t0=3)
+        st.variant3_cells = variant3_to_dict(v3)
+        with pytest.raises(ValueError, match="비변형3"):
+            _save_variant3(st, v3, [row22], BASE, 1)
+        for bad in (dict(row22, cell="E01", strategy="BRK24"),
+                    dict(row22, cell="E11", strategy="BRK24TP"),
+                    dict(row22, cell="E19", strategy="BRK24"),
+                    dict(row22, strategy="BRK24"),       # 유효 셀 × 타 전략
+                    dict(row22, cell="E13")):            # 타 셀 × 유효 전략
+            with pytest.raises(ValueError, match="비변형4"):
+                _save_variant4(st, v4, [bad], BASE, 1)
+        assert not (tmp_path / LEDGER).exists()
+        assert not (tmp_path / VLEDGER).exists(), "오염 기록 대신 예외 (기록 0)"
+
+    def test_종말_폐지_정리는_변형4_포지션을_방치하지_않는다(
+            self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        st.last_ts = BASE + H1
+        v = new_variant4(st, t0=1)
+        warm(v, "XRP", atr=2.0, pc=100.0)
+        v.cells["E23"].positions["XRP"] = v4pos()
+        st.variant4_cells = variant4_to_dict(v)
+        st.delisted.append("XRP")
+        _finalize_variant4(st)
+        vled = pd.read_csv(tmp_path / VLEDGER)
+        row = vled.iloc[0]
+        assert (row["cell"], row["action"]) == ("E23", "force_exit")
+        assert row["price"] == pytest.approx(100.0), "변형4 상태의 마지막 처리 종가"
+        assert st.variant4_cells["delisted"] == ["XRP"]
+        assert not st.variant4_cells["cells"]["E23"]["positions"]
+        _finalize_variant4(st)                           # 멱등 — 추가 기록 없음
+        assert len(pd.read_csv(tmp_path / VLEDGER)) == len(vled)
+
+    def test_변형4_실패는_본_v1_v2_v3_커밋을_막지_않고_재실행이_따라잡는다(
+            self, tmp_path, monkeypatch):
+        import carrybot.aggressive.scalp_farm_runner as runner
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        warm(st, "BTC", atr=2.0)
+        v1 = new_variant(st, t0=1)
+        v1.last_ts = BASE - H1
+        st.variant_cells = variant_to_dict(v1)
+        v2 = new_variant2(st, t0=2)
+        v2.last_ts = BASE - H1
+        warm2(v2, "BTC", atr=2.0, **GATE_PASS)
+        st.variant2_cells = variant2_to_dict(v2)
+        v3 = new_variant3(st, ["BTC"], t0=3)
+        v3.last_ts = BASE - H1
+        warm2(v3, "BTC", atr=2.0, **GATE_PASS)
+        st.variant3_cells = variant3_to_dict(v3)
+        v4 = new_variant4(st, t0=4)
+        v4.last_ts = BASE - H1
+        st.variant4_cells = variant4_to_dict(v4)
+        data = {"BTC": {BASE: (100.0, 105.0, 100.0, 104.0, 20.0),
+                        BASE + H1: (104.0, 104.5, 103.5, 104.0, 10.0),
+                        BASE + 2 * H1: (89.0, 89.5, 88.5, 89.0, 10.0)}}
+        fills: list = []
+        for t in sorted(data["BTC"]):
+            fills += step(st, {"BTC": BarE(t, *data["BTC"][t])})
+        _save_all(st, fills, BASE + 2 * H1, 3)
+        for fn in (_run_variant, _run_variant2, _run_variant3):
+            _safe_variant(fn, None, st, data, {"BTC": {}}, BASE, BASE + 2 * H1)
+        main_led = (tmp_path / LEDGER).read_bytes()
+        main_state = (tmp_path / "logs/tracke_state.json").read_bytes()
+        prior = ledger_lines_raw(tmp_path / VLEDGER,
+                                 ("E11", "E12", "E13", "E14", "E15", "E16",
+                                  "E17", "E18", "E19", "E20", "E21"))
+        n_before = len(pd.read_csv(tmp_path / VLEDGER))
+        orig_write = runner._atomic_write
+
+        def boom(path, text):
+            raise OSError("디스크 장애 주입")
+        monkeypatch.setattr(runner, "_atomic_write", boom)
+        _safe_variant(_run_variant4, None, st, data, {"BTC": {}},
+                      BASE, BASE + 2 * H1)              # 예외가 전파되면 실패
+        assert (tmp_path / LEDGER).read_bytes() == main_led, "본 원장 불변"
+        assert (tmp_path / "logs/tracke_state.json").read_bytes() == main_state
+        assert not (tmp_path / ERR_MARK).exists(), "본 팜 중단 마커 오염 금지"
+        n1 = len(pd.read_csv(tmp_path / VLEDGER))
+        assert n1 > n_before, "변형4 원장은 상태 저장 전에 append 됨"
+        assert ledger_lines_raw(tmp_path / VLEDGER,
+                                ("E11", "E12", "E13", "E14", "E15", "E16",
+                                 "E17", "E18", "E19", "E20", "E21")) == prior, \
+            "선행 그룹 원장 행 바이트 불변"
+        # 재실행 — 디스크 상태(뒤처진 variant4_cells)에서 유일키 멱등 따라잡기
+        monkeypatch.setattr(runner, "_atomic_write", orig_write)
+        st2 = FarmState.from_dict(
+            json.loads((tmp_path / "logs/tracke_state.json").read_text()))
+        _safe_variant(_run_variant4, None, st2, data, {"BTC": {}},
+                      BASE, BASE + 2 * H1)
+        assert len(pd.read_csv(tmp_path / VLEDGER)) == n1, "유일키 멱등 — 중복 0"
+        assert st2.variant4_cells["last_ts"] == BASE + 2 * H1, "따라잡기 완료"
+        assert st2.variant4_cells["t0_variant4"] == 4, "t0 불변 (write-once)"
+        assert st2.variant_cells["last_ts"] == BASE + 2 * H1, "그룹1 무영향"
+        assert st2.variant2_cells["last_ts"] == BASE + 2 * H1, "그룹2 무영향"
+        assert st2.variant3_cells["last_ts"] == BASE + 2 * H1, "그룹3 무영향"
+
+    def test_회귀_v4_활성이_본셀과_E11_E21_산출을_바꾸지_않는다(
+            self, tmp_path, monkeypatch):
+        # 요건 — v4 활성 재생(실체결 발생) 후에도 본 셀 산출물(원장·이력·상태
+        # projection)과 E11~E21 서브상태·변형 원장 행이 바이트 단위로 같다.
+        def scenario(root, with_v4: bool):
+            monkeypatch.chdir(root)
+            st = farm()
+            warm(st, "BTC", atr=2.0)
+            v1 = new_variant(st, t0=1)
+            v2 = new_variant2(st, t0=2)
+            x2 = v2.ind["BTC"]["x2"]
+            x2["c2"] = list(GATE_PASS["c2"])
+            x2["v2"] = list(GATE_PASS["v2"])
+            x2["u14"], x2["d14"] = 1.0, 0.5
+            st.variant2_cells = variant2_to_dict(v2)
+            v3 = new_variant3(st, ["BTC", "ETH", "SOL"], t0=3)
+            warm2(v3, "BTC", atr=2.0, **GATE_PASS)
+            st.variant3_cells = variant3_to_dict(v3)
+            v4 = None
+            if with_v4:
+                v4 = new_variant4(st, t0=4)
+                st.variant4_cells = variant4_to_dict(v4)
+            seq = [({"BTC": bar(0, 100, 105, 100, 104)}, None),
+                   ({"BTC": bar(1, 104, 104.5, 103.5, 104)}, {"BTC": 0.0001}),
+                   ({"BTC": bar(2, 89, 89.5, 88.5, 89)}, None)]
+            fills: list = []
+            f1: list = []
+            f2: list = []
+            f3: list = []
+            f4: list = []
+            for bars, fm in seq:
+                fills += step(st, bars, fm)
+                f1 += step_variant(v1, bars, fm)
+                f2 += step_variant2(v2, bars, fm)
+                f3 += step_variant3(v3, bars, fm)
+                if v4 is not None:
+                    f4 += step_variant4(v4, bars, fm)
+            # 비교가 공허하지 않음 — 본·E11·E13·E19 경로 전부 실체결이 있다
+            assert any(f["cell"] == "E01" for f in fills)
+            assert any(f["cell"] == "E11" for f in f1)
+            assert any(f["cell"] == "E13" for f in f2)
+            assert any(f["cell"] == "E19" for f in f3)
+            _save_all(st, fills, BASE + 2 * H1, 3)
+            st.variant_cells = variant_to_dict(v1)
+            _save_variant(st, v1, f1, BASE + 2 * H1, 3)
+            _save_variant2(st, v2, f2, BASE + 2 * H1, 3)
+            _save_variant3(st, v3, f3, BASE + 2 * H1, 3)
+            if v4 is not None:
+                _save_variant4(st, v4, f4, BASE + 2 * H1, 3)
+            # 영속 상태 재적재 뒤의 본 재생도 동일해야 한다
+            st2 = FarmState.from_dict(
+                json.loads((root / "logs/tracke_state.json").read_text()))
+            fills2 = step(st2, {"BTC": bar(3, 89, 90, 88.8, 89.5)})
+            _save_all(st2, fills2, BASE + 3 * H1, 1)
+            raw = json.loads((root / "logs/tracke_state.json").read_text())
+            prior = ledger_lines_raw(root / VLEDGER, (
+                "E11", "E12", "E13", "E14", "E15", "E16", "E17", "E18",
+                "E19", "E20", "E21"))
+            vcells = json.dumps(raw.pop("variant_cells"), sort_keys=True)
+            v2cells = json.dumps(raw.pop("variant2_cells"), sort_keys=True)
+            v3cells = json.dumps(raw.pop("variant3_cells"), sort_keys=True)
+            raw.pop("variant4_cells")
+            return ((root / LEDGER).read_bytes(),
+                    (root / "logs/tracke_history.csv").read_bytes(),
+                    json.dumps(raw, sort_keys=True), vcells, v2cells, v3cells,
+                    prior, len(f4))
+        a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+        a_dir.mkdir(), b_dir.mkdir()
+        ra = scenario(a_dir, with_v4=False)
+        rb = scenario(b_dir, with_v4=True)
+        assert ra[0] == rb[0], "본 원장 바이트 동일"
+        assert ra[1] == rb[1], "본 이력 바이트 동일"
+        assert ra[2] == rb[2], "본 상태(변형4 키 제외 projection) 동일"
+        assert ra[3] == rb[3], "E11/E12 서브상태 동일"
+        assert ra[4] == rb[4], "E13~E18 서브상태 동일"
+        assert ra[5] == rb[5], "E19~E21 서브상태 동일"
+        assert ra[6] == rb[6], "변형 원장 내 E11~E21 행 원문 바이트 동일"
+        assert rb[7] > 0, "변형4가 실제 체결을 냈다 (공허한 비교 아님)"
+
+    def test_통합_이력_행은_네_그룹_수치를_담는다(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        st = farm()
+        v1 = new_variant(st, t0=1)
+        st.variant_cells = variant_to_dict(v1)
+        v2 = new_variant2(st, t0=2)
+        st.variant2_cells = variant2_to_dict(v2)
+        v3 = v3farm()
+        st.variant3_cells = variant3_to_dict(v3)
+        v4 = v4farm()
+        st.variant4_cells = variant4_to_dict(v4)
+        _save_variant(st, v1, [], BASE, 0)
+        _save_variant2(st, v2, [], BASE, 0)
+        _save_variant3(st, v3, [], BASE, 0)
+        _save_variant4(st, v4, [], BASE, 0)              # keep-last — 마지막 행
+        vh = pd.read_csv(tmp_path / VHIST)
+        assert len(vh) == 1
+        row = vh.iloc[0]
+        for s in VCELLS + V2CELLS + V3CELLS + V4CELLS:
+            assert row[s.cell.lower()] == pytest.approx(10_000.0)
+        assert row["equity"] == pytest.approx(130_000.0), "전 변형 셀(13개) 합"
