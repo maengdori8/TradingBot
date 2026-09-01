@@ -1,0 +1,172 @@
+{
+  "protocol": "pareto_ensemble_v5_forward_paper_validation",
+  "version": "1.0.0",
+  "preregistered_at_utc": "2026-08-31T06:39:12Z",
+  "forward_data_start_utc": "2026-09-01T00:00:00Z",
+  "earliest_calendar_decision_utc": "2027-09-01T00:00:00Z",
+  "decision_mode": "all_required_gates_must_pass",
+  "live_trading_automatic_promotion": false,
+  "declaration": {
+    "historical_discovery_data_already_observed": true,
+    "historical_classification": "DISCOVERY_ONLY_NOT_PREREGISTERED",
+    "historical_gate_status": "FAIL",
+    "historical_results_cannot_be_reused_for_forward_pass": true,
+    "profit_guarantee": false
+  },
+  "universe": {
+    "exchange": "Bybit linear perpetual",
+    "symbols": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "SOL/USDT:USDT",
+      "XRP/USDT:USDT",
+      "DOGE/USDT:USDT"
+    ],
+    "signal_timeframe": "1h",
+    "display_timeframes": [
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "long_only": true,
+    "shorts_allowed": false,
+    "additions_allowed": false
+  },
+  "candidate": {
+    "risk_percent_per_full_r": 0.25,
+    "portfolio_heat_limit_r": 5.0,
+    "portfolio_heat_limit_percent": 1.25,
+    "engines": [
+      {
+        "name": "core_24_12_filtered",
+        "risk_weight": 0.9,
+        "entry_channel_hours": 24,
+        "exit_channel_hours": 12,
+        "volatility_filter": "q60 of eligible-breakout ATR24/close in [t-365d,t), current candidate excluded, pandas linear interpolation, min 30, full 365d"
+      },
+      {
+        "name": "scout_24_12_no_filter_matched_ready",
+        "risk_weight": 0.05,
+        "entry_channel_hours": 24,
+        "exit_channel_hours": 12,
+        "volatility_filter": "none; core q365 readiness required; baseline probe, not independent alpha"
+      },
+      {
+        "name": "fast_12_6_filtered",
+        "risk_weight": 0.05,
+        "entry_channel_hours": 12,
+        "exit_channel_hours": 6,
+        "volatility_filter": "q60 of eligible-breakout ATR24/close in [t-365d,t), current candidate excluded, pandas linear interpolation, min 30, full 365d; core q365 readiness also required"
+      }
+    ],
+    "common_features": {
+      "sma_length": 200,
+      "rsi_length": 14,
+      "rsi_long_threshold": 50.0,
+      "volume_sma_length": 20,
+      "atr_length": 24,
+      "stop_atr_multiple": 7.0,
+      "entry": "confirmed 1h signal, market fill at next 1h open",
+      "review_after_hours": 24,
+      "max_holding_hours": 72,
+      "stop_may_only_tighten": true,
+      "take_profit_target_r": 0.0,
+      "macro_filter_required": false,
+      "failed_breakout_early_exit_hours": 0
+    }
+  },
+  "matched_reference": {
+    "risk_weight": 1.0,
+    "entry_channel_hours": 24,
+    "exit_channel_hours": 12,
+    "same_common_features_as_candidate": true,
+    "volatility_filter": "none",
+    "coverage": "candidate q365 readiness mask and same forward calendar interval"
+  },
+  "execution_models": {
+    "strict": {
+      "cost_bps_each_side": 12.0,
+      "funding": "actual Bybit settlement rates, debit and credit included",
+      "funding_mark_proxy": "1h open at settlement timestamp"
+    },
+    "severe": {
+      "cost_bps_each_side": 20.0,
+      "funding_debit_multiplier": 2.0,
+      "funding_credit_multiplier": 0.0
+    },
+    "required_before_any_live_review": [
+      "chronological mark-to-market account path",
+      "exchange minimum notional and quantity precision",
+      "partial fill, latency, rejection and gap slippage",
+      "cross and isolated margin replay",
+      "maintenance margin and liquidation replay"
+    ]
+  },
+  "forward_sample_minimums": {
+    "calendar_days": 365,
+    "risk_equivalent_entries": 250.0,
+    "definition_of_risk_equivalent_entry": "sum of committed event risk with each unique symbol-entry-time event capped at 1R",
+    "both_minimums_required": true
+  },
+  "required_gates": {
+    "strict_profit_factor_at_least": 1.2,
+    "strict_risk_normalized_expectancy_strictly_greater_than_r": 0.0,
+    "all_five_symbols_net_r_strictly_greater_than_zero": true,
+    "all_available_complete_and_monthly_stepped_rolling_365d_windows_net_r_strictly_greater_than_zero": true,
+    "risk_equivalent_monthly_median_at_least_reference_multiple": 1.1,
+    "risk_equivalent_monthly_p10_at_least_reference": true,
+    "raw_signal_counts_are_diagnostic_only": true,
+    "top_five_winners_removed_profit_factor_at_least": 1.2,
+    "top_five_winners_removed_expectancy_strictly_greater_than_r": 0.0,
+    "severe_profit_factor_at_least": 1.05,
+    "severe_risk_normalized_expectancy_strictly_greater_than_r": 0.0,
+    "weighted_concurrent_heat_at_most_r": 5.0,
+    "weighted_concurrent_heat_at_most_percent": 1.25,
+    "bootstrap": {
+      "calendar_block_days": [
+        14,
+        28,
+        56,
+        84
+      ],
+      "samples_per_block": 10000,
+      "base_seed": 20260831,
+      "own_strict_net_r_p05_strictly_greater_than_zero_all_blocks": true,
+      "own_strict_probability_positive_at_least_all_blocks": 0.95,
+      "own_severe_net_r_p05_strictly_greater_than_zero_all_blocks": true,
+      "own_severe_probability_positive_at_least_all_blocks": 0.95,
+      "paired_same_calendar_indices": true,
+      "paired_candidate_minus_reference_net_r_p05_strictly_greater_than_zero_all_blocks": true,
+      "paired_candidate_minus_reference_risk_normalized_expectancy_p05_strictly_greater_than_zero_all_blocks": true,
+      "paired_reference_minus_candidate_realized_mdd_p05_strictly_greater_than_zero_all_blocks": true,
+      "paired_probability_positive_at_least_all_metrics_all_blocks": 0.95
+    },
+    "operational_realism_requirements_all_completed": true,
+    "tradingview_compile_and_runtime": {
+      "authoritative_strategy": "0 errors on standard 60m",
+      "observation_overlay": "0 errors on standard 1m, 5m and 15m"
+    }
+  },
+  "change_control": {
+    "parameter_or_universe_change_creates_new_version": true,
+    "new_version_resets_forward_clock_and_sample_count": true,
+    "bug_fix_policy": "record the defect, old and new hashes, affected dates and both outcomes; any signal or PnL-changing fix resets the forward clock",
+    "no_post_hoc_gate_relaxation": true
+  },
+  "frozen_hashes_sha256": {
+    "historical_results_json": "13d79792669c6682535cef5ac807c360a464233cb885407745ad65de3010d9b6",
+    "historical_pipeline_composite_code_hash": "d6ce256715863966061b4f9e9c2374c136c9089d73ef5b833fec889111f63df6",
+    "validate_pareto_ensemble_py": "c60ad2f1a48028df5cb308fcd48a04c94bfeb1ab8a4e24f5787cbadd1437c02a",
+    "validate_pareto_candidate_py": "0ff57b26d5edada68afba41f8840dc59a66115420293395c84a94b7d3d85d2bc",
+    "validate_live_candidate_py": "93240b38a621e667133be2d4554c19f3e3de276609da68471c7d08a40aec5675",
+    "pareto_trial_ledger_py": "aabc6176aa1264b02e0ba9548c422d243aa49201b15e2e8a9f6b18cc2815440e",
+    "pareto_ensemble_v5_60m_strategy_pine": "0aec7adeb04fff4a8010f4cb7d34b79f01c21e260b8bacaf8b274178d54c02ea",
+    "pareto_ensemble_v5_ltf_overlay_pine": "b9886d3b65d9dfd3a4b2319872796f18d3bca7bc446bab9fffc4facdd7f16b4f"
+  },
+  "frozen_discovery_data_hashes_sha256": {
+    "core_btc_eth_1h": "c06a3301457dfec8f68b184e1f8ac8797acc49874fa96c409a6a57e6743ebac0",
+    "sol_1h": "80d7f7574d680505eb280d05bfecc4ce3bc38ff461e651b91eb122e666f04785",
+    "xrp_doge_1h": "84da1b9da6ea17ad9c3be783f0649e5eb377513305ae80179d7cea4c8e6d84ca",
+    "five_symbol_actual_funding": "e79ede6bc95add874bc3d31e70914f7403e04ee2fca7a9d6e314dac8a83edac3"
+  }
+}

@@ -1,0 +1,299 @@
+//@version=6
+indicator(
+     "Pareto Ensemble V5 — Confirmed 1H Overlay [1m/5m/15m]",
+     shorttitle = "PV5 LTF",
+     overlay = true,
+     calc_bars_count = 50000,
+     max_labels_count = 300)
+
+// 표시·관찰 알림 전용이며 주문 실행 권위가 없다. 1시간 UDF의 모든 반환값을 [1]만큼
+// 지연하고 lookahead_on으로 요청하므로 진행 중인 1시간봉을 사용하지 않는다. 같은 확정
+// 신호의 setup/event ID는 1m·5m·15m에서 동일하다. 지표는 새 시간의 첫 realtime tick에
+// 이전 1시간 신호를 알 수 있지만, 역사 봉에서는 첫 LTF봉 종가에 계산된다. 따라서 이
+// 파일의 역사적 "관찰 시점"을 next-hour-open 체결 증거로 사용하면 안 된다. 정확한
+// next-hour-open 역사 체결과 12bp 비용은 pareto_ensemble_v5_60m_strategy.pine만 담당한다.
+// 이 오버레이는 거래소 최소수량·실제 체결·펀딩·strategy equity circuit breaker를 모르며,
+// alert payload도 execution_authority=false다.
+
+int CORE = 0
+int SCOUT = 1
+int FAST = 2
+int LEG_COUNT = 3
+int HOUR_MS = 60 * 60 * 1000
+int DAY_MS = 24 * HOUR_MS
+int WINDOW_MS = 365 * DAY_MS
+float STOP_ATR = 7.0
+int REVIEW_HOURS = 24
+int MAX_HOLDING_HOURS = 72
+
+bool showDashboard = input.bool(true, "상태 대시보드", display = display.data_window)
+bool enableObservationAlerts = input.bool(true, "관찰 알림", tooltip = "주문 알림이 아닙니다. execution_authority=false payload만 보냅니다.", display = display.data_window)
+
+f_legName(int leg) =>
+    leg == CORE ? "CORE" : leg == SCOUT ? "SCOUT" : "FAST"
+
+f_jsonNumber(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+f_observationJson(string eventName, int leg, string setupKey, string eventId, float price, float stopPrice, string reason) =>
+    "{\"version\":\"pareto_ensemble_v5\",\"execution_authority\":false" +
+     ",\"event\":\"" + eventName + "\",\"event_id\":\"" + eventId + "\"" +
+     ",\"setup_id\":\"" + setupKey + "\",\"leg\":\"" + f_legName(leg) + "\"" +
+     ",\"ticker\":\"" + syminfo.tickerid + "\",\"signal_timeframe\":\"60\"" +
+     ",\"price\":" + f_jsonNumber(price) + ",\"stop\":" + f_jsonNumber(stopPrice) +
+     ",\"reason\":\"" + reason + "\"}"
+
+f_linearQuantile(array<float> values, float quantile) =>
+    float result = na
+    int count = array.size(values)
+    if count > 0
+        array<float> ordered = array.copy(values)
+        array.sort(ordered, order.ascending)
+        float rank = (count - 1) * quantile
+        int lowerIndex = int(math.floor(rank))
+        int upperIndex = int(math.ceil(rank))
+        float lowerValue = array.get(ordered, lowerIndex)
+        float upperValue = array.get(ordered, upperIndex)
+        result := lowerValue + (upperValue - lowerValue) * (rank - lowerIndex)
+    result
+
+f_trimWindow(array<int> timestamps, array<float> values, int cutoff) =>
+    while array.size(timestamps) > 0
+        if array.get(timestamps, 0) < cutoff
+            array.shift(timestamps)
+            array.shift(values)
+        else
+            break
+    true
+
+// CORE와 FAST의 q60 배열을 이 단일 60분 UDF 안에만 둔다. threshold는 current raw를
+// push하기 전에 계산한다. 365일의 왼쪽 경계는 포함하고, pandas linear quantile을 쓴다.
+f_hourBundle() =>
+    var array<int> coreCandidateTimes = array.new_int()
+    var array<float> coreCandidateVolatility = array.new_float()
+    var array<int> fastCandidateTimes = array.new_int()
+    var array<float> fastCandidateVolatility = array.new_float()
+    var int coreFirstFeatureReadyTime = na
+    var int fastFirstFeatureReadyTime = na
+
+    float trend = ta.sma(close, 200)
+    float momentum = ta.rsi(close, 14)
+    float volumeAverage = ta.sma(volume, 20)
+    float atrEntry = ta.atr(24)[1]
+    float coreEntryHigh = ta.highest(high, 24)[1]
+    float coreEntryLow = ta.lowest(low, 24)[1]
+    float fastEntryHigh = ta.highest(high, 12)[1]
+    float fastEntryLow = ta.lowest(low, 12)[1]
+    float coreExitNextHour = ta.lowest(low, 12)
+    float fastExitNextHour = ta.lowest(low, 6)
+
+    bool priorLongGate = close[1] > trend[1] and momentum[1] > 50.0 and volume[1] > volumeAverage[2]
+    bool nextLongGate = close > trend and momentum > 50.0 and volume > volumeAverage[1]
+    bool coreFeatureReady = not na(atrEntry) and not na(coreEntryHigh) and not na(coreEntryLow) and not na(trend[1]) and not na(momentum[1]) and not na(volumeAverage[2])
+    bool fastFeatureReady = not na(atrEntry) and not na(fastEntryHigh) and not na(fastEntryLow) and not na(trend[1]) and not na(momentum[1]) and not na(volumeAverage[2])
+
+    if coreFeatureReady and na(coreFirstFeatureReadyTime)
+        coreFirstFeatureReadyTime := time
+    if fastFeatureReady and na(fastFirstFeatureReadyTime)
+        fastFirstFeatureReadyTime := time
+
+    bool coreRaw = coreFeatureReady and priorLongGate and close > coreEntryHigh
+    bool fastRaw = fastFeatureReady and priorLongGate and close > fastEntryHigh
+    float relativeAtr = atrEntry / close
+
+    f_trimWindow(coreCandidateTimes, coreCandidateVolatility, time - WINDOW_MS)
+    f_trimWindow(fastCandidateTimes, fastCandidateVolatility, time - WINDOW_MS)
+
+    int coreSamples = array.size(coreCandidateVolatility)
+    int fastSamples = array.size(fastCandidateVolatility)
+    bool coreFullWindow = not na(coreFirstFeatureReadyTime) and time >= coreFirstFeatureReadyTime + WINDOW_MS
+    bool fastFullWindow = not na(fastFirstFeatureReadyTime) and time >= fastFirstFeatureReadyTime + WINDOW_MS
+    float coreThreshold = coreRaw and coreFullWindow and coreSamples >= 30 ? f_linearQuantile(coreCandidateVolatility, 0.60) : na
+    float fastThreshold = fastRaw and fastFullWindow and fastSamples >= 30 ? f_linearQuantile(fastCandidateVolatility, 0.60) : na
+    bool coreAccepted = coreRaw and not na(coreThreshold) and relativeAtr <= coreThreshold
+    bool fastAccepted = fastRaw and not na(fastThreshold) and relativeAtr <= fastThreshold
+
+    if coreRaw and not na(relativeAtr)
+        array.push(coreCandidateTimes, time)
+        array.push(coreCandidateVolatility, relativeAtr)
+    if fastRaw and not na(relativeAtr)
+        array.push(fastCandidateTimes, time)
+        array.push(fastCandidateVolatility, relativeAtr)
+
+    [time, time_close, open, high, low, close, atrEntry, nextLongGate,
+     coreRaw, coreAccepted, coreThreshold, coreSamples, coreFullWindow, coreExitNextHour,
+     fastRaw, fastAccepted, fastThreshold, fastSamples, fastFullWindow, fastExitNextHour]
+
+// lookahead_on과 결합할 모든 필드를 UDF 내부에서 한 봉 offset한다.
+f_confirmedHourBundle() =>
+    [hourTime, hourCloseTime, hourOpen, hourHigh, hourLow, hourClose, atrEntry, nextLongGate,
+     coreRaw, coreAccepted, coreThreshold, coreSamples, coreFullWindow, coreExitNextHour,
+     fastRaw, fastAccepted, fastThreshold, fastSamples, fastFullWindow, fastExitNextHour] = f_hourBundle()
+    [hourTime[1], hourCloseTime[1], hourOpen[1], hourHigh[1], hourLow[1], hourClose[1], atrEntry[1], nextLongGate[1],
+     coreRaw[1], coreAccepted[1], coreThreshold[1], coreSamples[1], coreFullWindow[1], coreExitNextHour[1],
+     fastRaw[1], fastAccepted[1], fastThreshold[1], fastSamples[1], fastFullWindow[1], fastExitNextHour[1]]
+
+bool targetTimeframe = timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5 or timeframe.multiplier == 15)
+if barstate.isfirst and not targetTimeframe
+    runtime.error("표시 오버레이는 표준 1분·5분·15분봉에서만 사용할 수 있습니다.")
+if barstate.isfirst and not chart.is_standard
+    runtime.error("Heikin Ashi/Renko 등 비표준 차트에서는 사용할 수 없습니다.")
+
+[confirmedHourTime, confirmedHourCloseTime, confirmedHourOpen, confirmedHourHigh, confirmedHourLow, confirmedHourClose, confirmedAtr, confirmedNextLongGate,
+ confirmedCoreRaw, confirmedCoreAccepted, confirmedCoreThreshold, confirmedCoreSamples, confirmedCoreFullWindow, confirmedCoreExitNextHour,
+ confirmedFastRaw, confirmedFastAccepted, confirmedFastThreshold, confirmedFastSamples, confirmedFastFullWindow, confirmedFastExitNextHour] = request.security(
+     syminfo.tickerid,
+     "60",
+     f_confirmedHourBundle(),
+     gaps = barmerge.gaps_off,
+     lookahead = barmerge.lookahead_on,
+     calc_bars_count = 50000)
+
+// realtime 첫 tick에서 처리한 상태가 같은 LTF봉의 다음 tick에 rollback되지 않도록 varip을
+// 쓴다. 재로딩된 역사에서는 각 첫 LTF봉에서 같은 시간별 상태를 재생한다.
+varip array<bool> virtualActive = array.new_bool(LEG_COUNT, false)
+varip array<bool> virtualReviewDone = array.new_bool(LEG_COUNT, false)
+varip array<float> virtualEntryPrice = array.new_float(LEG_COUNT, na)
+varip array<float> virtualFinalStop = array.new_float(LEG_COUNT, na)
+varip array<float> virtualTrailingStop = array.new_float(LEG_COUNT, na)
+varip array<int> virtualEntryTime = array.new_int(LEG_COUNT, na)
+varip array<int> virtualLastExitIndexTime = array.new_int(LEG_COUNT, na)
+varip array<int> lastEntryMarkerTime = array.new_int(LEG_COUNT, na)
+varip array<int> lastExitMarkerTime = array.new_int(LEG_COUNT, na)
+varip array<int> lastSignalMarkerTime = array.new_int(LEG_COUNT, na)
+varip array<string> virtualSetupKey = array.new_string(LEG_COUNT, "")
+varip int lastHandledConfirmedHour = na
+
+bool newHour = timeframe.change("60")
+bool handleHour = newHour and not na(confirmedHourTime) and (na(lastHandledConfirmedHour) or confirmedHourTime != lastHandledConfirmedHour)
+
+if handleHour
+    lastHandledConfirmedHour := confirmedHourTime
+    array<bool> closedAtThisOpen = array.new_bool(LEG_COUNT, false)
+
+    // 1) 직전 시간 동안 기존 보호선의 open gap과 intrabar touch를 먼저 확정한다.
+    for leg = 0 to LEG_COUNT - 1
+        if array.get(virtualActive, leg)
+            float oldStop = array.get(virtualTrailingStop, leg)
+            string reason = ""
+            float exitPrice = na
+            if confirmedHourOpen <= oldStop
+                reason := oldStop == array.get(virtualFinalStop, leg) ? "stop_gap" : "channel_exit"
+                exitPrice := confirmedHourOpen
+            else if confirmedHourLow <= oldStop
+                reason := oldStop == array.get(virtualFinalStop, leg) ? "stop" : "channel_exit"
+                exitPrice := oldStop
+            if str.length(reason) > 0
+                string setupKey = array.get(virtualSetupKey, leg)
+                string eventId = setupKey + "|OBS_EXIT|" + reason + "|" + str.tostring(confirmedHourTime)
+                if enableObservationAlerts
+                    alert(f_observationJson("exit_observation", leg, setupKey, eventId, exitPrice, oldStop, reason), alert.freq_all)
+                array.set(virtualActive, leg, false)
+                array.set(virtualLastExitIndexTime, leg, confirmedHourTime)
+                array.set(lastExitMarkerTime, leg, time)
+                array.set(closedAtThisOpen, leg, true)
+
+    // 2) 방금 닫힌 시간까지의 채널을 다음 시간 보호선으로 올리고, 새 시가 gap을 검사한다.
+    for leg = 0 to LEG_COUNT - 1
+        if array.get(virtualActive, leg)
+            float channel = leg == FAST ? confirmedFastExitNextHour : confirmedCoreExitNextHour
+            float previousStop = array.get(virtualTrailingStop, leg)
+            float revisedStop = math.max(previousStop, channel)
+            array.set(virtualTrailingStop, leg, revisedStop)
+            if open <= revisedStop
+                string setupKey = array.get(virtualSetupKey, leg)
+                string reason = revisedStop == array.get(virtualFinalStop, leg) ? "stop_gap" : "channel_exit"
+                string eventId = setupKey + "|OBS_EXIT|" + reason + "|" + str.tostring(time)
+                if enableObservationAlerts
+                    alert(f_observationJson("exit_observation", leg, setupKey, eventId, open, revisedStop, reason), alert.freq_all)
+                array.set(virtualActive, leg, false)
+                array.set(virtualLastExitIndexTime, leg, time)
+                array.set(lastExitMarkerTime, leg, time)
+                array.set(closedAtThisOpen, leg, true)
+            else if revisedStop > previousStop + syminfo.mintick * 0.5
+                string setupKey = array.get(virtualSetupKey, leg)
+                string eventId = setupKey + "|OBS_PROTECT|" + str.tostring(time)
+                if enableObservationAlerts
+                    alert(f_observationJson("protective_stop_observation", leg, setupKey, eventId, na, revisedStop, "channel_raise"), alert.freq_all)
+
+    // 3) open gap에서 생존한 상태만 현재 시가에서 max72/review24를 적용한다.
+    for leg = 0 to LEG_COUNT - 1
+        if array.get(virtualActive, leg)
+            float heldHours = (time - array.get(virtualEntryTime, leg)) / float(HOUR_MS)
+            string reason = ""
+            if heldHours >= MAX_HOLDING_HOURS
+                reason := "time_exit_72h"
+            else if not array.get(virtualReviewDone, leg) and heldHours >= REVIEW_HOURS
+                array.set(virtualReviewDone, leg, true)
+                if not confirmedNextLongGate
+                    reason := "time_review_exit"
+            if str.length(reason) > 0
+                string setupKey = array.get(virtualSetupKey, leg)
+                string eventId = setupKey + "|OBS_EXIT|" + reason + "|" + str.tostring(time)
+                if enableObservationAlerts
+                    alert(f_observationJson("exit_observation", leg, setupKey, eventId, open, array.get(virtualTrailingStop, leg), reason), alert.freq_all)
+                array.set(virtualActive, leg, false)
+                array.set(virtualLastExitIndexTime, leg, time)
+                array.set(lastExitMarkerTime, leg, time)
+                array.set(closedAtThisOpen, leg, true)
+
+    // 4) 직전 확정봉 신호는 현재 1시간 시가로 가상 진입한다. Python의
+    // signal_index=exit_index+1 계약상 신호 인덱스가 마지막 청산 인덱스보다 커야 한다.
+    bool coreCoverageReady = confirmedCoreFullWindow and confirmedCoreSamples >= 30
+    for leg = 0 to LEG_COUNT - 1
+        bool signal = leg == CORE ? confirmedCoreAccepted : leg == SCOUT ? confirmedCoreRaw and coreCoverageReady : confirmedFastAccepted and coreCoverageReady
+        if signal
+            array.set(lastSignalMarkerTime, leg, time)
+        int lastExitIndexTime = array.get(virtualLastExitIndexTime, leg)
+        bool afterLastExitIndex = na(lastExitIndexTime) or confirmedHourTime > lastExitIndexTime
+        bool canEnter = signal and afterLastExitIndex and not array.get(virtualActive, leg) and not array.get(closedAtThisOpen, leg) and not na(confirmedAtr) and confirmedAtr > 0.0
+        if canEnter
+            float entryPrice = open
+            float finalStop = entryPrice - confirmedAtr * STOP_ATR
+            float channel = leg == FAST ? confirmedFastExitNextHour : confirmedCoreExitNextHour
+            float trailingStop = math.max(finalStop, channel)
+            string setupKey = "V5|" + syminfo.tickerid + "|" + f_legName(leg) + "|" + str.tostring(confirmedHourTime)
+            if trailingStop < entryPrice
+                array.set(virtualActive, leg, true)
+                array.set(virtualReviewDone, leg, false)
+                array.set(virtualEntryPrice, leg, entryPrice)
+                array.set(virtualFinalStop, leg, finalStop)
+                array.set(virtualTrailingStop, leg, trailingStop)
+                array.set(virtualEntryTime, leg, time)
+                array.set(virtualSetupKey, leg, setupKey)
+                array.set(lastEntryMarkerTime, leg, time)
+                string eventId = setupKey + "|OBS_ENTRY"
+                if enableObservationAlerts
+                    alert(f_observationJson("entry_observation", leg, setupKey, eventId, entryPrice, trailingStop, "next_hour_open_virtual"), alert.freq_all)
+
+plot(array.get(virtualActive, CORE) ? array.get(virtualEntryPrice, CORE) : na, "CORE 가상 진입가", color = color.lime, linewidth = 2, style = plot.style_linebr)
+plot(array.get(virtualActive, CORE) ? array.get(virtualTrailingStop, CORE) : na, "CORE 보호선", color = color.red, linewidth = 2, style = plot.style_linebr)
+plot(array.get(virtualActive, SCOUT) ? array.get(virtualEntryPrice, SCOUT) : na, "SCOUT 가상 진입가", color = color.aqua, linewidth = 1, style = plot.style_linebr)
+plot(array.get(virtualActive, SCOUT) ? array.get(virtualTrailingStop, SCOUT) : na, "SCOUT 보호선", color = color.orange, linewidth = 1, style = plot.style_linebr)
+plot(array.get(virtualActive, FAST) ? array.get(virtualEntryPrice, FAST) : na, "FAST 가상 진입가", color = color.fuchsia, linewidth = 1, style = plot.style_linebr)
+plot(array.get(virtualActive, FAST) ? array.get(virtualTrailingStop, FAST) : na, "FAST 보호선", color = color.purple, linewidth = 1, style = plot.style_linebr)
+
+plotshape(time == array.get(lastSignalMarkerTime, CORE), title = "CORE 확정 신호", style = shape.circle, location = location.belowbar, color = color.lime, size = size.tiny, text = "C")
+plotshape(time == array.get(lastSignalMarkerTime, SCOUT), title = "SCOUT 확정 신호", style = shape.circle, location = location.belowbar, color = color.aqua, size = size.tiny, text = "S")
+plotshape(time == array.get(lastSignalMarkerTime, FAST), title = "FAST 확정 신호", style = shape.circle, location = location.belowbar, color = color.fuchsia, size = size.tiny, text = "F")
+plotshape(time == array.get(lastEntryMarkerTime, CORE), title = "CORE 가상 진입", style = shape.labelup, location = location.belowbar, color = color.lime, textcolor = color.black, size = size.tiny, text = "C 진입")
+plotshape(time == array.get(lastEntryMarkerTime, SCOUT), title = "SCOUT 가상 진입", style = shape.labelup, location = location.belowbar, color = color.aqua, textcolor = color.black, size = size.tiny, text = "S 진입")
+plotshape(time == array.get(lastEntryMarkerTime, FAST), title = "FAST 가상 진입", style = shape.labelup, location = location.belowbar, color = color.fuchsia, textcolor = color.white, size = size.tiny, text = "F 진입")
+plotshape(time == array.get(lastExitMarkerTime, CORE), title = "CORE 가상 청산", style = shape.labeldown, location = location.abovebar, color = color.red, textcolor = color.white, size = size.tiny, text = "C 청산")
+plotshape(time == array.get(lastExitMarkerTime, SCOUT), title = "SCOUT 가상 청산", style = shape.labeldown, location = location.abovebar, color = color.orange, textcolor = color.black, size = size.tiny, text = "S 청산")
+plotshape(time == array.get(lastExitMarkerTime, FAST), title = "FAST 가상 청산", style = shape.labeldown, location = location.abovebar, color = color.purple, textcolor = color.white, size = size.tiny, text = "F 청산")
+
+var table dashboard = table.new(position.bottom_right, 4, 4, bgcolor = color.new(color.black, 10), border_color = color.new(color.gray, 55), border_width = 1)
+if barstate.islast and showDashboard
+    table.cell(dashboard, 0, 0, "V5 표시 전용", text_color = color.white, bgcolor = color.new(color.blue, 35))
+    table.cell(dashboard, 1, 0, "주문 권위 없음", text_color = color.red)
+    table.cell(dashboard, 2, 0, "1H 확정", text_color = color.white)
+    table.cell(dashboard, 3, 0, "[1] non-repaint", text_color = color.lime)
+    for leg = 0 to LEG_COUNT - 1
+        string state = array.get(virtualActive, leg) ? "가상 보유" : "대기"
+        table.cell(dashboard, 0, leg + 1, f_legName(leg), text_color = color.white)
+        table.cell(dashboard, 1, leg + 1, state, text_color = array.get(virtualActive, leg) ? color.lime : color.silver)
+        table.cell(dashboard, 2, leg + 1, "stop", text_color = color.red)
+        table.cell(dashboard, 3, leg + 1, array.get(virtualActive, leg) ? str.tostring(array.get(virtualTrailingStop, leg), format.mintick) : "-", text_color = color.red)
+if barstate.islast and not showDashboard
+    table.clear(dashboard, 0, 0, 3, 3)

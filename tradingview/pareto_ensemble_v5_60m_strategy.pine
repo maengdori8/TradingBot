@@ -1,0 +1,459 @@
+//@version=6
+strategy(
+     "RESEARCH Pareto Ensemble V5 — 60m Authoritative",
+     shorttitle = "PV5 60M",
+     overlay = true,
+     initial_capital = 10000,
+     currency = currency.USD,
+     pyramiding = 3,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.12,
+     process_orders_on_close = false,
+     calc_on_order_fills = true,
+     calc_on_every_tick = false,
+     use_bar_magnifier = false,
+     close_entries_rule = "ANY",
+     margin_long = 100,
+     margin_short = 100,
+     calc_bars_count = 50000,
+     max_labels_count = 300)
+
+// 연구·페이퍼 전용이다. 수익을 보장하지 않으며 prospective gate를 통과하지 않았다.
+// 이 파일만 주문 체결의 권위(authoritative)를 가진다. 반드시 표준 60분봉에서 실행한다.
+// process_orders_on_close=false이므로 확정 60분봉 종가에서 생성한 시장가 주문은 다음
+// 60분봉 시가에 체결된다. 이는 Python validator의 next-hour-open 계약과 일치한다.
+// calc_on_order_fills는 실제 모의 체결가를 읽어 stop=fill-7*ATR을 즉시 등록하기 위해서만
+// 사용한다. 체결 재계산에서는 현재 봉 OHLC/신호/UDF를 절대 읽지 않아 역사적 미래누출을
+// 막는다. 실거래기는 entry_intent를 멱등 처리하고 실제 거래소 체결 직후 native reduce-only
+// stop-market을 직접 등록해야 한다. TradingView의 모의 stop은 거래소 보호주문이 아니다.
+// Strategy Tester는 펀딩을 반영하지 않는다. 실제 펀딩·20bp stress와 prospective FAIL 판정은
+// Python validation ledger가 권위다. 검증 외 circuit breaker를 켜면 보고된 검증 수치는 더는
+// 적용되지 않는다. 기본 OFF 경로만 Python stop/review24/max72 원장과 비교할 수 있다.
+
+int CORE = 0
+int SCOUT = 1
+int FAST = 2
+int LEG_COUNT = 3
+int HOUR_MS = 60 * 60 * 1000
+int DAY_MS = 24 * HOUR_MS
+int WINDOW_MS = 365 * DAY_MS
+float TOTAL_RISK_PERCENT = 0.25
+float STOP_ATR = 7.0
+int REVIEW_HOURS = 24
+int MAX_HOLDING_HOURS = 72
+float DAILY_LOSS_LIMIT_PERCENT = 1.5
+float TOTAL_DRAWDOWN_LIMIT_PERCENT = 10.0
+
+bool showDashboard = input.bool(true, "상태 대시보드", display = display.data_window)
+bool enableUnvalidatedCircuitBreaker = input.bool(false, "검증 외 일/총낙폭 회로", tooltip = "기본 OFF가 Python 검증 경로입니다. ON이면 일손실 1.5%/총낙폭 10% 회로가 추가되어 보고된 검증 성과 수치가 적용되지 않습니다.", display = display.data_window)
+
+float contractStep = math.max(syminfo.mincontract, 0.00000001)
+float pointValue = math.max(syminfo.pointvalue, 0.00000001)
+
+f_legName(int leg) =>
+    leg == CORE ? "CORE" : leg == SCOUT ? "SCOUT" : "FAST"
+
+f_entryId(int leg) =>
+    leg == CORE ? "CORE" : leg == SCOUT ? "SCOUT" : "FAST"
+
+f_legWeight(int leg) =>
+    leg == CORE ? 0.90 : 0.05
+
+f_roundQuantity(float rawQuantity) =>
+    math.floor(math.max(rawQuantity, 0.0) / contractStep) * contractStep
+
+f_jsonNumber(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+f_eventJson(string eventName, int leg, string setupKey, string eventId, float quantity, float price, float stopPrice, float stopDistance, int stopRevision, string reason, bool reduceOnly, bool actionable) =>
+    "{\"version\":\"pareto_ensemble_v5\",\"execution_authority\":true" +
+     ",\"event\":\"" + eventName + "\",\"event_id\":\"" + eventId + "\"" +
+     ",\"setup_id\":\"" + setupKey + "\",\"leg\":\"" + f_legName(leg) + "\"" +
+     ",\"ticker\":\"" + syminfo.tickerid + "\",\"signal_timeframe\":\"60\"" +
+     ",\"qty\":" + f_jsonNumber(quantity) + ",\"price\":" + f_jsonNumber(price) +
+     ",\"stop\":" + f_jsonNumber(stopPrice) + ",\"stop_distance\":" + f_jsonNumber(stopDistance) +
+     ",\"stop_revision\":" + str.tostring(stopRevision) +
+     ",\"reason\":\"" + reason + "\",\"reduce_only\":" + (reduceOnly ? "true" : "false") +
+     ",\"actionable\":" + (actionable ? "true" : "false") + "}"
+
+// pandas Series.quantile(q, interpolation="linear")와 같은 (n-1)*q 선형보간이다.
+f_linearQuantile(array<float> values, float quantile) =>
+    float result = na
+    int count = array.size(values)
+    if count > 0
+        array<float> ordered = array.copy(values)
+        array.sort(ordered, order.ascending)
+        float rank = (count - 1) * quantile
+        int lowerIndex = int(math.floor(rank))
+        int upperIndex = int(math.ceil(rank))
+        float lowerValue = array.get(ordered, lowerIndex)
+        float upperValue = array.get(ordered, upperIndex)
+        result := lowerValue + (upperValue - lowerValue) * (rank - lowerIndex)
+    result
+
+// pandas rolling("365D", closed="left")처럼 정확한 경계시각은 남긴다.
+f_trimWindow(array<int> timestamps, array<float> values, int cutoff) =>
+    while array.size(timestamps) > 0
+        if array.get(timestamps, 0) < cutoff
+            array.shift(timestamps)
+            array.shift(values)
+        else
+            break
+    true
+
+// 이 UDF가 모든 60분 신호와 두 q60 상태를 단 한 번 소유한다. 현재 raw 후보는 분위수를
+// 계산한 뒤에 push하므로 threshold에서 제외된다. 배열 ID는 request context 밖으로 반환하지
+// 않고 scalar tuple만 반환한다.
+f_hourBundle(bool allowStateAdvance) =>
+    var array<int> coreCandidateTimes = array.new_int()
+    var array<float> coreCandidateVolatility = array.new_float()
+    var array<int> fastCandidateTimes = array.new_int()
+    var array<float> fastCandidateVolatility = array.new_float()
+    var int coreFirstFeatureReadyTime = na
+    var int fastFirstFeatureReadyTime = na
+    var int lastProcessedTime = na
+    var int cachedHourTime = na
+    var int cachedHourCloseTime = na
+    var float cachedHourOpen = na
+    var float cachedHourHigh = na
+    var float cachedHourLow = na
+    var float cachedHourClose = na
+    var float cachedAtrEntry = na
+    var bool cachedNextLongGate = false
+    var bool cachedCoreRaw = false
+    var bool cachedCoreAccepted = false
+    var float cachedCoreThreshold = na
+    var int cachedCoreSamples = 0
+    var bool cachedCoreFullWindow = false
+    var float cachedCoreExitNextHour = na
+    var bool cachedFastRaw = false
+    var bool cachedFastAccepted = false
+    var float cachedFastThreshold = na
+    var int cachedFastSamples = 0
+    var bool cachedFastFullWindow = false
+    var float cachedFastExitNextHour = na
+
+    // TA 호출은 모든 계산 패스에서 실행해 series 일관성을 유지한다. 그러나 q 배열과 캐시는
+    // 정상 확정봉 패스에서만 한 번 커밋한다. 역사적 calc_on_order_fills 패스는 confirmed로
+    // 보일 수 있으므로 호출자가 allowStateAdvance=false를 전달해 현재 봉 OHLC 오염을 막는다.
+    float trend = ta.sma(close, 200)
+    float momentum = ta.rsi(close, 14)
+    float volumeAverage = ta.sma(volume, 20)
+    float atrEntry = ta.atr(24)[1]
+    float coreEntryHigh = ta.highest(high, 24)[1]
+    float coreEntryLow = ta.lowest(low, 24)[1]
+    float fastEntryHigh = ta.highest(high, 12)[1]
+    float fastEntryLow = ta.lowest(low, 12)[1]
+    float coreExitNextHour = ta.lowest(low, 12)
+    float fastExitNextHour = ta.lowest(low, 6)
+
+    bool priorLongGate = close[1] > trend[1] and momentum[1] > 50.0 and volume[1] > volumeAverage[2]
+    bool nextLongGate = close > trend and momentum > 50.0 and volume > volumeAverage[1]
+    bool coreFeatureReady = not na(atrEntry) and not na(coreEntryHigh) and not na(coreEntryLow) and not na(trend[1]) and not na(momentum[1]) and not na(volumeAverage[2])
+    bool fastFeatureReady = not na(atrEntry) and not na(fastEntryHigh) and not na(fastEntryLow) and not na(trend[1]) and not na(momentum[1]) and not na(volumeAverage[2])
+    bool coreRaw = coreFeatureReady and priorLongGate and close > coreEntryHigh
+    bool fastRaw = fastFeatureReady and priorLongGate and close > fastEntryHigh
+    float relativeAtr = atrEntry / close
+
+    bool processHour = allowStateAdvance and barstate.isconfirmed and (na(lastProcessedTime) or time != lastProcessedTime)
+    if processHour
+        if coreFeatureReady and na(coreFirstFeatureReadyTime)
+            coreFirstFeatureReadyTime := time
+        if fastFeatureReady and na(fastFirstFeatureReadyTime)
+            fastFirstFeatureReadyTime := time
+
+        f_trimWindow(coreCandidateTimes, coreCandidateVolatility, time - WINDOW_MS)
+        f_trimWindow(fastCandidateTimes, fastCandidateVolatility, time - WINDOW_MS)
+
+        int coreSamples = array.size(coreCandidateVolatility)
+        int fastSamples = array.size(fastCandidateVolatility)
+        bool coreFullWindow = not na(coreFirstFeatureReadyTime) and time >= coreFirstFeatureReadyTime + WINDOW_MS
+        bool fastFullWindow = not na(fastFirstFeatureReadyTime) and time >= fastFirstFeatureReadyTime + WINDOW_MS
+        float coreThreshold = coreRaw and coreFullWindow and coreSamples >= 30 ? f_linearQuantile(coreCandidateVolatility, 0.60) : na
+        float fastThreshold = fastRaw and fastFullWindow and fastSamples >= 30 ? f_linearQuantile(fastCandidateVolatility, 0.60) : na
+        bool coreAccepted = coreRaw and not na(coreThreshold) and relativeAtr <= coreThreshold
+        bool fastAccepted = fastRaw and not na(fastThreshold) and relativeAtr <= fastThreshold
+
+        cachedHourTime := time
+        cachedHourCloseTime := time_close
+        cachedHourOpen := open
+        cachedHourHigh := high
+        cachedHourLow := low
+        cachedHourClose := close
+        cachedAtrEntry := atrEntry
+        cachedNextLongGate := nextLongGate
+        cachedCoreRaw := coreRaw
+        cachedCoreAccepted := coreAccepted
+        cachedCoreThreshold := coreThreshold
+        cachedCoreSamples := coreSamples
+        cachedCoreFullWindow := coreFullWindow
+        cachedCoreExitNextHour := coreExitNextHour
+        cachedFastRaw := fastRaw
+        cachedFastAccepted := fastAccepted
+        cachedFastThreshold := fastThreshold
+        cachedFastSamples := fastSamples
+        cachedFastFullWindow := fastFullWindow
+        cachedFastExitNextHour := fastExitNextHour
+
+        // 반드시 현재 후보의 threshold 판정과 캐시 저장이 끝난 다음에 q 표본으로 넣는다.
+        if coreRaw and not na(relativeAtr)
+            array.push(coreCandidateTimes, time)
+            array.push(coreCandidateVolatility, relativeAtr)
+        if fastRaw and not na(relativeAtr)
+            array.push(fastCandidateTimes, time)
+            array.push(fastCandidateVolatility, relativeAtr)
+        lastProcessedTime := time
+
+    [cachedHourTime, cachedHourCloseTime, cachedHourOpen, cachedHourHigh, cachedHourLow, cachedHourClose, cachedAtrEntry, cachedNextLongGate,
+     cachedCoreRaw, cachedCoreAccepted, cachedCoreThreshold, cachedCoreSamples, cachedCoreFullWindow, cachedCoreExitNextHour,
+     cachedFastRaw, cachedFastAccepted, cachedFastThreshold, cachedFastSamples, cachedFastFullWindow, cachedFastExitNextHour]
+
+f_openTradeInfo(string wantedId) =>
+    float foundPrice = na
+    int foundTime = na
+    float foundSize = na
+    if strategy.opentrades > 0
+        for tradeNumber = 0 to strategy.opentrades - 1
+            if strategy.opentrades.entry_id(tradeNumber) == wantedId
+                foundPrice := strategy.opentrades.entry_price(tradeNumber)
+                foundTime := strategy.opentrades.entry_time(tradeNumber)
+                foundSize := math.abs(strategy.opentrades.size(tradeNumber))
+    [foundPrice, foundTime, foundSize]
+
+bool validTimeframe = timeframe.isminutes and timeframe.multiplier == 60
+if barstate.isfirst and not validTimeframe
+    runtime.error("권위 실행 전략은 표준 60분봉에서만 사용할 수 있습니다.")
+if barstate.isfirst and not chart.is_standard
+    runtime.error("Heikin Ashi/Renko 등 비표준 차트에서는 실행할 수 없습니다.")
+
+// calc_on_order_fills의 동일봉 추가 실행에서도 상태가 유지돼야 하므로 primitive varip
+// 배열을 쓴다. 신호 UDF는 fill pass에서 호출하지 않는다.
+varip array<bool> legPending = array.new_bool(LEG_COUNT, false)
+varip array<bool> legActive = array.new_bool(LEG_COUNT, false)
+varip array<bool> legExitPending = array.new_bool(LEG_COUNT, false)
+varip array<bool> legReviewDone = array.new_bool(LEG_COUNT, false)
+varip array<float> legAtr = array.new_float(LEG_COUNT, na)
+varip array<float> legQuantity = array.new_float(LEG_COUNT, na)
+varip array<float> legEntryPrice = array.new_float(LEG_COUNT, na)
+varip array<float> legFinalStop = array.new_float(LEG_COUNT, na)
+varip array<float> legTrailingStop = array.new_float(LEG_COUNT, na)
+varip array<float> legPendingChannel = array.new_float(LEG_COUNT, na)
+varip array<float> legRiskCash = array.new_float(LEG_COUNT, na)
+varip array<int> legEntryTime = array.new_int(LEG_COUNT, na)
+varip array<int> legSignalTime = array.new_int(LEG_COUNT, na)
+varip array<int> legLastExitBarTime = array.new_int(LEG_COUNT, na)
+varip array<int> legStopRevision = array.new_int(LEG_COUNT, 0)
+varip array<string> legSetupKey = array.new_string(LEG_COUNT, "")
+varip int observedOpenTrades = 0
+varip int observedClosedTrades = 0
+varip float riskEpochCash = na
+
+var float dailyStartEquity = na
+var float peakEquity = na
+var bool dailyHalt = false
+var bool totalHalt = false
+var int lastDecisionBarTime = na
+
+bool fillPass = strategy.opentrades != observedOpenTrades or strategy.closedtrades != observedClosedTrades
+
+// UDF는 매 계산 호출해 TA series 경고를 피한다. fill 재계산에서는 캐시만 반환하고 q 상태를
+// 전진시키지 않으며, 정상 확정봉 패스에서만 current-excluded 365D 원장을 한 번 갱신한다.
+[hourTime, hourCloseTime, hourOpen, hourHigh, hourLow, hourClose, signalAtr, nextLongGate,
+ coreRaw, coreAccepted, coreThreshold, coreSamples, coreFullWindow, coreExitNextHour,
+ fastRaw, fastAccepted, fastThreshold, fastSamples, fastFullWindow, fastExitNextHour] = f_hourBundle(not fillPass)
+
+// 체결 재계산: 저장해 둔 확정봉 ATR/channel과 실제 모의 체결가만 사용한다.
+if fillPass
+    for leg = 0 to LEG_COUNT - 1
+        [filledPrice, filledTime, filledSize] = f_openTradeInfo(f_entryId(leg))
+        bool foundOpenTrade = not na(filledPrice)
+        if array.get(legPending, leg) and foundOpenTrade
+            array.set(legPending, leg, false)
+            array.set(legActive, leg, true)
+            array.set(legEntryPrice, leg, filledPrice)
+            array.set(legEntryTime, leg, filledTime)
+            array.set(legQuantity, leg, filledSize)
+            float finalStop = filledPrice - array.get(legAtr, leg) * STOP_ATR
+            float initialChannel = array.get(legPendingChannel, leg)
+            float trailingStop = math.max(finalStop, initialChannel)
+            array.set(legFinalStop, leg, finalStop)
+            array.set(legTrailingStop, leg, trailingStop)
+            array.set(legStopRevision, leg, 1)
+            string setupKey = array.get(legSetupKey, leg)
+            string eventId = setupKey + "|PROTECT|R1"
+            // TradingView 모의 fill 기반 가격이다. 실제 실행기는 자신의 거래소 fill로 R1
+            // stop을 이미 계산해야 하므로 이 reconciliation 이벤트는 주문 비실행이다.
+            alert(f_eventJson("protective_stop_update", leg, setupKey, eventId, filledSize, filledPrice, trailingStop, array.get(legAtr, leg) * STOP_ATR, 1, "simulated_entry_fill", true, false), alert.freq_all)
+        if array.get(legActive, leg) and not foundOpenTrade
+            array.set(legActive, leg, false)
+            array.set(legExitPending, leg, false)
+            array.set(legReviewDone, leg, false)
+            array.set(legEntryPrice, leg, na)
+            array.set(legFinalStop, leg, na)
+            array.set(legTrailingStop, leg, na)
+            array.set(legEntryTime, leg, na)
+            array.set(legLastExitBarTime, leg, time)
+            array.set(legStopRevision, leg, 0)
+
+// 확정 60분봉 종가에서만 신호·q 상태와 시간별 위험 상태를 한 번 갱신한다.
+if not fillPass and barstate.isconfirmed and (na(lastDecisionBarTime) or time != lastDecisionBarTime)
+    lastDecisionBarTime := time
+
+    bool anyExposure = false
+    for leg = 0 to LEG_COUNT - 1
+        anyExposure := anyExposure or array.get(legPending, leg) or array.get(legActive, leg)
+    if not anyExposure
+        riskEpochCash := na
+
+    if enableUnvalidatedCircuitBreaker
+        if na(dailyStartEquity)
+            dailyStartEquity := strategy.equity
+        if na(peakEquity)
+            peakEquity := strategy.equity
+        peakEquity := math.max(peakEquity, strategy.equity)
+        float dailyLossPercent = dailyStartEquity > 0.0 ? math.max((dailyStartEquity - strategy.equity) / dailyStartEquity * 100.0, 0.0) : 0.0
+        float totalDrawdownPercent = peakEquity > 0.0 ? math.max((peakEquity - strategy.equity) / peakEquity * 100.0, 0.0) : 0.0
+        if dailyLossPercent >= DAILY_LOSS_LIMIT_PERCENT
+            dailyHalt := true
+        if totalDrawdownPercent >= TOTAL_DRAWDOWN_LIMIT_PERCENT
+            totalHalt := true
+    bool circuitHaltNow = enableUnvalidatedCircuitBreaker and (dailyHalt or totalHalt)
+
+    // 방금 닫힌 시간의 채널은 다음 시간 시가부터 유효하다.
+    for leg = 0 to LEG_COUNT - 1
+        if array.get(legActive, leg)
+            float channel = leg == FAST ? fastExitNextHour : coreExitNextHour
+            float previousStop = array.get(legTrailingStop, leg)
+            float revisedStop = math.max(previousStop, channel)
+            if revisedStop > previousStop + syminfo.mintick * 0.5
+                int revision = array.get(legStopRevision, leg) + 1
+                array.set(legStopRevision, leg, revision)
+                array.set(legTrailingStop, leg, revisedStop)
+                string setupKey = array.get(legSetupKey, leg)
+                string eventId = setupKey + "|PROTECT|R" + str.tostring(revision)
+                alert(f_eventJson("protective_stop_update", leg, setupKey, eventId, array.get(legQuantity, leg), na, revisedStop, array.get(legAtr, leg) * STOP_ATR, revision, "channel_raise", true, true), alert.freq_all)
+
+    // 다음 시가 주문 우선순위: 선택 회로 -> max time -> 24h review. 기존 stop은 체결까지 유지된다.
+    for leg = 0 to LEG_COUNT - 1
+        bool pending = array.get(legPending, leg)
+        bool active = array.get(legActive, leg)
+        bool exitPending = array.get(legExitPending, leg)
+        string setupKey = array.get(legSetupKey, leg)
+        if circuitHaltNow and pending
+            if leg == CORE
+                strategy.cancel("CORE")
+            else if leg == SCOUT
+                strategy.cancel("SCOUT")
+            else
+                strategy.cancel("FAST")
+            array.set(legPending, leg, false)
+            string eventId = setupKey + "|ENTRY_CANCEL|" + str.tostring(hourTime)
+            alert(f_eventJson("entry_cancel_intent", leg, setupKey, eventId, array.get(legQuantity, leg), na, na, array.get(legAtr, leg) * STOP_ATR, 0, "circuit", false, true), alert.freq_all)
+        if active and not exitPending
+            float heldHoursAtNextOpen = (hourCloseTime - array.get(legEntryTime, leg)) / float(HOUR_MS)
+            string exitReason = ""
+            if circuitHaltNow
+                exitReason := totalHalt ? "total_drawdown" : "daily_loss"
+            else if heldHoursAtNextOpen >= MAX_HOLDING_HOURS
+                exitReason := "max_72h"
+            else if not array.get(legReviewDone, leg) and heldHoursAtNextOpen >= REVIEW_HOURS
+                array.set(legReviewDone, leg, true)
+                if not nextLongGate
+                    exitReason := "review_24h"
+            if str.length(exitReason) > 0
+                array.set(legExitPending, leg, true)
+                string eventId = setupKey + "|EXIT_INTENT|" + exitReason + "|" + str.tostring(hourTime)
+                string fillId = setupKey + "|EXIT_FILL|" + exitReason + "|" + str.tostring(hourTime)
+                string fillMessage = f_eventJson("market_exit_fill", leg, setupKey, fillId, array.get(legQuantity, leg), na, array.get(legTrailingStop, leg), array.get(legAtr, leg) * STOP_ATR, array.get(legStopRevision, leg), exitReason, true, false)
+                if leg == CORE
+                    strategy.close("CORE", comment = exitReason, alert_message = fillMessage)
+                else if leg == SCOUT
+                    strategy.close("SCOUT", comment = exitReason, alert_message = fillMessage)
+                else
+                    strategy.close("FAST", comment = exitReason, alert_message = fillMessage)
+                alert(f_eventJson("market_exit_intent", leg, setupKey, eventId, array.get(legQuantity, leg), na, array.get(legTrailingStop, leg), array.get(legAtr, leg) * STOP_ATR, array.get(legStopRevision, leg), exitReason, true, true), alert.freq_all)
+
+    // 각 엔진은 독립 상태를 가지며 추매·숏은 없다. 같은 심볼 동시 명목 위험은
+    // 고정 weight 0.90+0.05+0.05=1R을 넘지 않는다. 최소수량 미달은 올림하지 않고 거절한다.
+    bool coreCoverageReady = coreFullWindow and coreSamples >= 30
+    if not circuitHaltNow
+        for leg = 0 to LEG_COUNT - 1
+            bool signal = leg == CORE ? coreAccepted : leg == SCOUT ? coreRaw and coreCoverageReady : fastAccepted and coreCoverageReady
+            int lastExitBarTime = array.get(legLastExitBarTime, leg)
+            bool exitedThisBar = not na(lastExitBarTime) and lastExitBarTime == hourTime
+            bool canEnter = signal and not array.get(legPending, leg) and not array.get(legActive, leg) and not exitedThisBar
+            if canEnter and not na(signalAtr) and signalAtr > 0.0
+                float epochCandidate = na(riskEpochCash) ? strategy.equity * TOTAL_RISK_PERCENT / 100.0 : riskEpochCash
+                float riskCash = epochCandidate * f_legWeight(leg)
+                float stopDistance = signalAtr * STOP_ATR
+                float quantity = f_roundQuantity(riskCash / math.max(stopDistance * pointValue, syminfo.mintick * pointValue))
+                if quantity >= contractStep
+                    if na(riskEpochCash)
+                        riskEpochCash := epochCandidate
+                    string setupKey = "V5|" + syminfo.tickerid + "|" + f_legName(leg) + "|" + str.tostring(hourTime)
+                    string intentId = setupKey + "|ENTRY_INTENT"
+                    string fillId = setupKey + "|ENTRY_FILL"
+                    array.set(legPending, leg, true)
+                    array.set(legExitPending, leg, false)
+                    array.set(legReviewDone, leg, false)
+                    array.set(legAtr, leg, signalAtr)
+                    array.set(legQuantity, leg, quantity)
+                    array.set(legPendingChannel, leg, leg == FAST ? fastExitNextHour : coreExitNextHour)
+                    array.set(legRiskCash, leg, riskCash)
+                    array.set(legSignalTime, leg, hourTime)
+                    array.set(legSetupKey, leg, setupKey)
+                    string fillMessage = f_eventJson("entry_fill", leg, setupKey, fillId, quantity, na, na, stopDistance, 0, "next_hour_open", false, false)
+                    if leg == CORE
+                        strategy.entry("CORE", strategy.long, qty = quantity, alert_message = fillMessage)
+                    else if leg == SCOUT
+                        strategy.entry("SCOUT", strategy.long, qty = quantity, alert_message = fillMessage)
+                    else
+                        strategy.entry("FAST", strategy.long, qty = quantity, alert_message = fillMessage)
+                    alert(f_eventJson("entry_intent", leg, setupKey, intentId, quantity, hourClose, na, stopDistance, 0, "execute_next_hour_open", false, true), alert.freq_all)
+
+    // UTC 자정 경계의 직전 하루 위험을 먼저 처리한 뒤 다음 날 기준값을 연다.
+    bool utcDayBoundary = int(math.floor(hourCloseTime / float(DAY_MS))) != int(math.floor((hourCloseTime - 1) / float(DAY_MS)))
+    if enableUnvalidatedCircuitBreaker and utcDayBoundary
+        dailyStartEquity := strategy.equity
+        dailyHalt := false
+
+// 체결 직후와 확정봉 종가 모두에서 실제 entry ID별 보호 stop을 유지한다.
+for leg = 0 to LEG_COUNT - 1
+    if array.get(legActive, leg)
+        string setupKey = array.get(legSetupKey, leg)
+        int revision = array.get(legStopRevision, leg)
+        float protectiveStop = array.get(legTrailingStop, leg)
+        string fillId = setupKey + "|PROTECT_FILL|R" + str.tostring(revision)
+        string fillMessage = f_eventJson("protective_exit_fill", leg, setupKey, fillId, array.get(legQuantity, leg), na, protectiveStop, array.get(legAtr, leg) * STOP_ATR, revision, protectiveStop == array.get(legFinalStop, leg) ? "final_stop" : "channel_stop", true, false)
+        if leg == CORE
+            strategy.exit("X-CORE", "CORE", stop = protectiveStop, alert_message = fillMessage)
+        else if leg == SCOUT
+            strategy.exit("X-SCOUT", "SCOUT", stop = protectiveStop, alert_message = fillMessage)
+        else
+            strategy.exit("X-FAST", "FAST", stop = protectiveStop, alert_message = fillMessage)
+
+observedOpenTrades := strategy.opentrades
+observedClosedTrades := strategy.closedtrades
+
+plot(array.get(legActive, CORE) ? array.get(legEntryPrice, CORE) : na, "CORE 진입가", color = color.lime, linewidth = 2, style = plot.style_linebr)
+plot(array.get(legActive, CORE) ? array.get(legTrailingStop, CORE) : na, "CORE 보호선", color = color.red, linewidth = 2, style = plot.style_linebr)
+plot(array.get(legActive, SCOUT) ? array.get(legEntryPrice, SCOUT) : na, "SCOUT 진입가", color = color.aqua, linewidth = 1, style = plot.style_linebr)
+plot(array.get(legActive, SCOUT) ? array.get(legTrailingStop, SCOUT) : na, "SCOUT 보호선", color = color.orange, linewidth = 1, style = plot.style_linebr)
+plot(array.get(legActive, FAST) ? array.get(legEntryPrice, FAST) : na, "FAST 진입가", color = color.fuchsia, linewidth = 1, style = plot.style_linebr)
+plot(array.get(legActive, FAST) ? array.get(legTrailingStop, FAST) : na, "FAST 보호선", color = color.purple, linewidth = 1, style = plot.style_linebr)
+
+var table dashboard = table.new(position.bottom_right, 4, 4, bgcolor = color.new(color.black, 10), border_color = color.new(color.gray, 55), border_width = 1)
+if barstate.islast and showDashboard
+    table.cell(dashboard, 0, 0, "V5 권위 실행", text_color = color.white, bgcolor = color.new(color.blue, 35))
+    string circuitState = not enableUnvalidatedCircuitBreaker ? "회로 OFF·검증경로" : totalHalt ? "회로 ON·총낙폭 정지" : dailyHalt ? "회로 ON·일손실 정지" : "회로 ON·검증외"
+    table.cell(dashboard, 1, 0, circuitState, text_color = enableUnvalidatedCircuitBreaker ? totalHalt or dailyHalt ? color.red : color.orange : color.yellow)
+    table.cell(dashboard, 2, 0, "위험", text_color = color.white)
+    table.cell(dashboard, 3, 0, "0.25% / symbol", text_color = color.yellow)
+    for leg = 0 to LEG_COUNT - 1
+        string state = array.get(legPending, leg) ? "다음 시가 대기" : array.get(legActive, leg) ? array.get(legExitPending, leg) ? "청산 대기" : "보유" : "대기"
+        table.cell(dashboard, 0, leg + 1, f_legName(leg), text_color = color.white)
+        table.cell(dashboard, 1, leg + 1, state, text_color = array.get(legActive, leg) ? color.lime : color.silver)
+        table.cell(dashboard, 2, leg + 1, "stop", text_color = color.red)
+        table.cell(dashboard, 3, leg + 1, array.get(legActive, leg) ? str.tostring(array.get(legTrailingStop, leg), format.mintick) : "-", text_color = color.red)
+if barstate.islast and not showDashboard
+    table.clear(dashboard, 0, 0, 3, 3)

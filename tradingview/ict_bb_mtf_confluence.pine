@@ -1,0 +1,690 @@
+//@version=6
+indicator("ICT Technical Execution Overlay [1m/5m/15m]", shorttitle = "ICT EXEC", overlay = true, max_labels_count = 200, max_lines_count = 300, max_boxes_count = 300)
+
+// 이 지표의 점수와 방향은 수익 확률이 아니라 서로 다른 근거의 일치도를 뜻합니다.
+// 신호는 차트 봉 마감 후 확정되며, 상위 타임프레임은 직전 확정봉만 사용합니다.
+
+string GROUP_SIGNAL = "신호"
+string GROUP_BB = "볼린저 밴드"
+string GROUP_MOMENTUM = "모멘텀"
+string GROUP_ICT = "ICT"
+string GROUP_TREND = "추세·강도"
+string GROUP_VOLUME = "거래량·매물대"
+string GROUP_LEVELS = "가격대·패턴"
+string GROUP_EXECUTION = "실행·분할진입"
+string GROUP_RISK = "리스크"
+string GROUP_DISPLAY = "표시"
+
+int minScore = input.int(3, "ICT 최소 내부 점수", minval = 2, maxval = 12, group = GROUP_SIGNAL, tooltip = "전체 100점 합의 전, ICT 근거가 최소한 존재하는지 확인합니다.", display = display.data_window)
+int setupWindow = input.int(5, "셋업 유효 봉 수", minval = 1, maxval = 20, group = GROUP_SIGNAL, display = display.data_window)
+int cooldownBars = input.int(10, "동일 방향 신호 쿨다운", minval = 1, maxval = 100, group = GROUP_SIGNAL, display = display.data_window)
+float mtfBiasThreshold = input.float(0.75, "MTF 방향 임계값", minval = 0.25, maxval = 3.0, step = 0.25, group = GROUP_SIGNAL, display = display.data_window)
+int bbLength = input.int(20, "BB 길이", minval = 5, maxval = 100, group = GROUP_BB, display = display.data_window)
+float bbMult = input.float(2.0, "BB 표준편차", minval = 1.0, maxval = 4.0, step = 0.1, group = GROUP_BB, display = display.data_window)
+int rsiLength = input.int(14, "RSI 길이", minval = 2, maxval = 50, group = GROUP_MOMENTUM, display = display.data_window)
+float rsiOversold = input.float(35.0, "RSI 과매도", minval = 10.0, maxval = 45.0, step = 1.0, group = GROUP_MOMENTUM, display = display.data_window)
+float rsiOverbought = input.float(65.0, "RSI 과매수", minval = 55.0, maxval = 90.0, step = 1.0, group = GROUP_MOMENTUM, display = display.data_window)
+int stochLength = input.int(14, "스토캐스틱 길이", minval = 3, maxval = 50, group = GROUP_MOMENTUM, display = display.data_window)
+int stochSmoothK = input.int(3, "%K 평활", minval = 1, maxval = 10, group = GROUP_MOMENTUM, display = display.data_window)
+int stochSmoothD = input.int(3, "%D 평활", minval = 1, maxval = 10, group = GROUP_MOMENTUM, display = display.data_window)
+int stcFast = input.int(23, "STC 빠른 EMA", minval = 2, maxval = 50, group = GROUP_MOMENTUM, display = display.data_window)
+int stcSlow = input.int(50, "STC 느린 EMA", minval = 3, maxval = 100, group = GROUP_MOMENTUM, display = display.data_window)
+int stcCycle = input.int(10, "STC 사이클", minval = 3, maxval = 50, group = GROUP_MOMENTUM, display = display.data_window)
+int stcSmooth = input.int(3, "STC 평활", minval = 1, maxval = 10, group = GROUP_MOMENTUM, display = display.data_window)
+int swingLength = input.int(3, "스윙 좌우 봉", minval = 2, maxval = 10, group = GROUP_ICT, display = display.data_window)
+int ictLookback = input.int(12, "ICT 근거 유효 봉 수", minval = 2, maxval = 50, group = GROUP_ICT, display = display.data_window)
+int atrLength = input.int(14, "ATR 길이", minval = 2, maxval = 50, group = GROUP_ICT, display = display.data_window)
+float displacementAtr = input.float(0.8, "변위 캔들 최소 ATR", minval = 0.2, maxval = 3.0, step = 0.1, group = GROUP_ICT, display = display.data_window)
+bool showEma = input.bool(false, "EMA 20·50·200 (디버그)", group = GROUP_TREND, display = display.data_window)
+bool showVwap = input.bool(false, "세션 VWAP (디버그)", group = GROUP_TREND, display = display.data_window)
+bool showSupertrend = input.bool(false, "Supertrend", group = GROUP_TREND, display = display.data_window)
+int emaFastLength = input.int(20, "빠른 EMA", minval = 2, maxval = 100, group = GROUP_TREND, display = display.data_window)
+int emaTrendLength = input.int(50, "추세 EMA", minval = 5, maxval = 200, group = GROUP_TREND, display = display.data_window)
+int emaMacroLength = input.int(200, "장기 EMA", minval = 20, maxval = 500, group = GROUP_TREND, display = display.data_window)
+int adxLength = input.int(14, "DI 길이", minval = 2, maxval = 50, group = GROUP_TREND, display = display.data_window)
+int adxSmoothing = input.int(14, "ADX 평활", minval = 2, maxval = 50, group = GROUP_TREND, display = display.data_window)
+float adxTrendThreshold = input.float(20.0, "추세 ADX 기준", minval = 5.0, maxval = 50.0, step = 1.0, group = GROUP_TREND, display = display.data_window)
+float supertrendFactor = input.float(3.0, "Supertrend 배수", minval = 1.0, maxval = 10.0, step = 0.1, group = GROUP_TREND, display = display.data_window)
+int supertrendAtrLength = input.int(10, "Supertrend ATR", minval = 2, maxval = 50, group = GROUP_TREND, display = display.data_window)
+bool showVolumeProfile = input.bool(false, "근사 고정구간 매물대 (디버그)", group = GROUP_VOLUME, tooltip = "차트 OHLCV를 가격 구간에 균등 배분한 근사값입니다. TradingView 내장 Volume Profile과 동일하지 않습니다.", display = display.data_window)
+int profileLookback = input.int(240, "매물대 조회 봉", minval = 50, maxval = 1000, group = GROUP_VOLUME, display = display.data_window)
+int profileRows = input.int(28, "매물대 행 수", minval = 12, maxval = 60, group = GROUP_VOLUME, display = display.data_window)
+float profileValueArea = input.float(70.0, "Value Area %", minval = 50.0, maxval = 90.0, step = 1.0, group = GROUP_VOLUME, display = display.data_window)
+int profileMaxWidth = input.int(32, "매물대 최대 폭(봉)", minval = 8, maxval = 100, group = GROUP_VOLUME, display = display.data_window)
+int relativeVolumeLength = input.int(20, "상대 거래량 길이", minval = 5, maxval = 100, group = GROUP_VOLUME, display = display.data_window)
+int cmfLength = input.int(20, "CMF 길이", minval = 5, maxval = 100, group = GROUP_VOLUME, display = display.data_window)
+bool showSupplyDemand = input.bool(false, "거래량 확인 공급·수요대 (디버그)", group = GROUP_LEVELS, display = display.data_window)
+int zonePivotLength = input.int(5, "공급·수요 스윙 좌우 봉", minval = 2, maxval = 20, group = GROUP_LEVELS, display = display.data_window)
+float zoneRelativeVolume = input.float(1.35, "구간 최소 상대 거래량", minval = 0.5, maxval = 5.0, step = 0.05, group = GROUP_LEVELS, display = display.data_window)
+int zoneCount = input.int(3, "방향별 유지 구간", minval = 1, maxval = 8, group = GROUP_LEVELS, display = display.data_window)
+bool showSwingLevels = input.bool(false, "확정 지지·저항 (디버그)", group = GROUP_LEVELS, display = display.data_window)
+bool showFibonacci = input.bool(false, "최근 스윙 피보나치", group = GROUP_LEVELS, display = display.data_window)
+bool showPatterns = input.bool(false, "Engulfing·Pin Bar", group = GROUP_LEVELS, display = display.data_window)
+int volatilityRankLength = input.int(100, "변동성 비교 길이", minval = 20, maxval = 500, group = GROUP_LEVELS, display = display.data_window)
+int executionScoreThreshold = input.int(68, "진입 합의 점수", minval = 50, maxval = 90, group = GROUP_EXECUTION, tooltip = "ICT·MTF·추세·모멘텀·거래량·변동성의 100점 합성 점수입니다.", display = display.data_window)
+int executionScoreLead = input.int(12, "반대 방향 최소 점수차", minval = 5, maxval = 40, group = GROUP_EXECUTION, display = display.data_window)
+float add1RiskFraction = input.float(0.20, "추매1 위치 (손절거리 비율)", minval = 0.10, maxval = 0.35, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float add2RiskFraction = input.float(0.40, "추매2 위치 (손절거리 비율)", minval = 0.25, maxval = 0.55, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float add3RiskFraction = input.float(0.60, "추매3 위치 (손절거리 비율)", minval = 0.45, maxval = 0.75, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float add4RiskFraction = input.float(0.80, "추매4 위치 (손절거리 비율)", minval = 0.65, maxval = 0.90, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float baseTrancheWeight = input.float(20.0, "1차 최초진입 위험 배분 %", minval = 5.0, maxval = 60.0, step = 5.0, group = GROUP_EXECUTION, display = display.data_window)
+float add1TrancheWeight = input.float(20.0, "2차 추매1 위험 배분 %", minval = 0.0, maxval = 60.0, step = 5.0, group = GROUP_EXECUTION, display = display.data_window)
+float add2TrancheWeight = input.float(20.0, "3차 추매2 위험 배분 %", minval = 0.0, maxval = 60.0, step = 5.0, group = GROUP_EXECUTION, display = display.data_window)
+float add3TrancheWeight = input.float(20.0, "4차 추매3 위험 배분 %", minval = 0.0, maxval = 60.0, step = 5.0, group = GROUP_EXECUTION, display = display.data_window)
+float add4TrancheWeight = input.float(20.0, "5차 추매4 위험 배분 %", minval = 0.0, maxval = 60.0, step = 5.0, group = GROUP_EXECUTION, display = display.data_window)
+float maxHoldingHours = input.float(24.0, "최대 보유 시간", minval = 1.0, maxval = 72.0, step = 1.0, group = GROUP_EXECUTION, tooltip = "1·5·15분봉 어디서든 실제 시간 기준으로 계산합니다.", display = display.data_window)
+float stopAtr = input.float(1.2, "손절 최소 ATR", minval = 0.5, maxval = 5.0, step = 0.1, group = GROUP_RISK, display = display.data_window)
+float maxStopAtr = input.float(2.5, "손절 최대 ATR", minval = 1.0, maxval = 6.0, step = 0.1, group = GROUP_RISK, display = display.data_window)
+float minimumStopPercent = input.float(0.25, "비용 대비 최소 손절폭 %", minval = 0.05, maxval = 2.0, step = 0.05, group = GROUP_RISK, tooltip = "수수료·슬리피지가 손익비를 압도하는 지나치게 좁은 초단타 거래를 막습니다.", display = display.data_window)
+float rrTarget = input.float(1.8, "목표 R:R", minval = 1.0, maxval = 5.0, step = 0.1, group = GROUP_RISK, display = display.data_window)
+float accountEquity = input.float(10000.0, "기준 자산 (USDT)", minval = 100.0, maxval = 100000000.0, step = 100.0, group = GROUP_RISK, display = display.data_window)
+float maxRiskPercent = input.float(1.0, "거래당 최대 위험 %", minval = 0.1, maxval = 5.0, step = 0.1, group = GROUP_RISK, display = display.data_window)
+bool showBands = input.bool(false, "볼린저 밴드 (디버그)", group = GROUP_DISPLAY, display = display.data_window)
+bool showZones = input.bool(false, "최근 FVG/OB 구간 (디버그)", group = GROUP_DISPLAY, display = display.data_window)
+bool showRisk = input.bool(true, "최근 신호 진입/손절/목표", group = GROUP_DISPLAY, display = display.data_window)
+int riskLineBars = input.int(30, "리스크 라인 유지 봉 수", minval = 5, maxval = 300, group = GROUP_DISPLAY, display = display.data_window)
+bool showRegime = input.bool(false, "MTF 방향 배경 (디버그)", group = GROUP_DISPLAY, display = display.data_window)
+bool showDashboard = input.bool(true, "MTF 대시보드", group = GROUP_DISPLAY, display = display.data_window)
+string dashboardPosition = input.string("bottom_right", "대시보드 위치", options = ["top_left", "top_right", "bottom_left", "bottom_right"], group = GROUP_DISPLAY, display = display.data_window)
+// 두 번의 스토캐스틱 정규화를 사용하는 STC 근사값을 계산합니다.
+f_stc(float source, int fastLength, int slowLength, int cycleLength, int smoothLength) =>
+    float macdValue = ta.ema(source, fastLength) - ta.ema(source, slowLength)
+    float macdLow = ta.lowest(macdValue, cycleLength)
+    float macdHigh = ta.highest(macdValue, cycleLength)
+    float macdRange = macdHigh - macdLow
+    float cycleK = macdRange > 0.0 ? 100.0 * (macdValue - macdLow) / macdRange : 50.0
+    float cycleD = ta.ema(cycleK, smoothLength)
+    float cycleLow = ta.lowest(cycleD, cycleLength)
+    float cycleHigh = ta.highest(cycleD, cycleLength)
+    float cycleRange = cycleHigh - cycleLow
+    float cycleK2 = cycleRange > 0.0 ? 100.0 * (cycleD - cycleLow) / cycleRange : 50.0
+    float result = ta.ema(cycleK2, smoothLength)
+    math.max(0.0, math.min(100.0, result))
+
+// 현재 계산 문맥의 방향 점수와 핵심 모멘텀 값을 반환합니다.
+f_tf_metrics(int offset) =>
+    [basisValue, upperValue, lowerValue] = ta.bb(close, bbLength, bbMult)
+    float rsiValue = ta.rsi(close, rsiLength)
+    float rawKValue = ta.stoch(close, high, low, stochLength)
+    float kValue = ta.sma(rawKValue, stochSmoothK)
+    float dValue = ta.sma(kValue, stochSmoothD)
+    float stcValue = f_stc(close, stcFast, stcSlow, stcCycle, stcSmooth)
+    float trendEma = ta.ema(close, 50)
+    int bullPoints = (close > basisValue ? 1 : 0) + (basisValue > basisValue[1] ? 1 : 0) + (close > trendEma ? 1 : 0) + (rsiValue > 52.0 ? 1 : 0) + (kValue > dValue ? 1 : 0) + (stcValue > 50.0 ? 1 : 0)
+    int bearPoints = (close < basisValue ? 1 : 0) + (basisValue < basisValue[1] ? 1 : 0) + (close < trendEma ? 1 : 0) + (rsiValue < 48.0 ? 1 : 0) + (kValue < dValue ? 1 : 0) + (stcValue < 50.0 ? 1 : 0)
+    int biasValue = bullPoints - bearPoints
+    [biasValue[offset], rsiValue[offset], stcValue[offset]]
+
+// 조건이 최근 지정 봉 이내에 발생했는지 확인합니다.
+f_recent(bool condition, int bars) =>
+    int elapsed = ta.barssince(condition)
+    not na(elapsed) and elapsed <= bars
+
+// 방향 점수를 대시보드용 문자로 바꿉니다.
+f_bias_text(int biasValue) =>
+    biasValue >= 2 ? "상승 ↑" : biasValue <= -2 ? "하락 ↓" : "중립 →"
+
+// 방향 점수에 대응하는 대시보드 색상을 반환합니다.
+f_bias_color(int biasValue) =>
+    biasValue >= 2 ? color.new(color.lime, 15) : biasValue <= -2 ? color.new(color.red, 10) : color.new(color.gray, 60)
+
+// 설정 문자열을 TradingView 테이블 위치로 변환합니다.
+f_table_position(string selectedPosition) =>
+    selectedPosition == "top_left" ? position.top_left : selectedPosition == "top_right" ? position.top_right : selectedPosition == "bottom_left" ? position.bottom_left : position.bottom_right
+
+// 로컬 타임프레임 지표
+[bbBasis, bbUpper, bbLower] = ta.bb(close, bbLength, bbMult)
+float atrValue = ta.atr(atrLength)
+float rsiValue = ta.rsi(close, rsiLength)
+float stochRawK = ta.stoch(close, high, low, stochLength)
+float stochK = ta.sma(stochRawK, stochSmoothK)
+float stochD = ta.sma(stochK, stochSmoothD)
+float stcValue = f_stc(close, stcFast, stcSlow, stcCycle, stcSmooth)
+[localBias, localRsi, localStc] = f_tf_metrics(0)
+
+// 추세·강도·거래량·변동성 진단. 기존 진입 조건에는 자동으로 섞지 않습니다.
+float emaFast = ta.ema(close, emaFastLength)
+float emaTrend = ta.ema(close, emaTrendLength)
+float emaMacro = ta.ema(close, emaMacroLength)
+float sessionVwap = ta.vwap(hlc3)
+[supertrendValue, supertrendDirection] = ta.supertrend(supertrendFactor, supertrendAtrLength)
+[plusDi, minusDi, adxValue] = ta.dmi(adxLength, adxSmoothing)
+[macdLine, macdSignal, macdHistogram] = ta.macd(close, 12, 26, 9)
+float averageVolume = ta.sma(volume, relativeVolumeLength)
+float relativeVolume = averageVolume > 0.0 ? volume / averageVolume : na
+float moneyFlowMultiplier = high != low ? ((close - low) - (high - close)) / (high - low) : 0.0
+float averageMoneyFlow = ta.sma(moneyFlowMultiplier * volume, cmfLength)
+float averageCmfVolume = ta.sma(volume, cmfLength)
+float cmfValue = averageCmfVolume > 0.0 ? averageMoneyFlow / averageCmfVolume : 0.0
+float profileCenterNumerator = ta.sma(hlc3 * volume, profileLookback)
+float profileCenterVolume = ta.sma(volume, profileLookback)
+float rollingVolumeCenter = profileCenterVolume > 0.0 ? profileCenterNumerator / profileCenterVolume : na
+float volumeDeltaProxy = close > open ? volume : close < open ? -volume : 0.0
+float cvdProxy = ta.cum(volumeDeltaProxy)
+float cvdProxyAverage = ta.ema(cvdProxy, 20)
+float atrPercent = close != 0.0 ? atrValue / close * 100.0 : na
+float volatilityRank = ta.percentrank(atrPercent, volatilityRankLength)
+bool trendBull = close > emaTrend and emaFast > emaTrend and emaTrend > emaMacro and close > sessionVwap and plusDi > minusDi
+bool trendBear = close < emaTrend and emaFast < emaTrend and emaTrend < emaMacro and close < sessionVwap and minusDi > plusDi
+bool macdBull = macdLine > macdSignal and macdHistogram > 0.0
+bool macdBear = macdLine < macdSignal and macdHistogram < 0.0
+
+// 1분은 타이밍, 5분은 셋업, 15분은 방향으로 사용합니다.
+// 상위 타임프레임은 [1] + lookahead_on 조합으로 직전 확정봉만 가져옵니다.
+[rawBias1, rawRsi1, rawStc1] = request.security(syminfo.tickerid, "1", f_tf_metrics(0), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[confirmedBias5, confirmedRsi5, confirmedStc5] = request.security(syminfo.tickerid, "5", f_tf_metrics(1), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+[intrabarBias5, intrabarRsi5, intrabarStc5] = request.security(syminfo.tickerid, "5", f_tf_metrics(0), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+[rawBias15, rawRsi15, rawStc15] = request.security(syminfo.tickerid, "15", f_tf_metrics(1), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+bool isOneMinute = timeframe.isminutes and timeframe.multiplier == 1
+bool isFiveMinute = timeframe.isminutes and timeframe.multiplier == 5
+bool isFifteenMinute = timeframe.isminutes and timeframe.multiplier == 15
+bool isTargetTimeframe = isOneMinute or isFiveMinute or isFifteenMinute
+
+int bias1 = isOneMinute ? localBias : rawBias1
+// 1분 차트에서는 직전 확정 5분봉, 15분 차트에서는 마지막 5분 intrabar를 사용합니다.
+// LTF에서 lookahead_on을 쓰면 과거 첫 intrabar와 실시간 마지막 intrabar가 달라져 재도색됩니다.
+int bias5 = isFiveMinute ? localBias : isOneMinute ? confirmedBias5 : intrabarBias5
+int bias15 = isFifteenMinute ? localBias : rawBias15
+float rsi1 = isOneMinute ? localRsi : rawRsi1
+float rsi5 = isFiveMinute ? localRsi : isOneMinute ? confirmedRsi5 : intrabarRsi5
+float rsi15 = isFifteenMinute ? localRsi : rawRsi15
+float stc1 = isOneMinute ? localStc : rawStc1
+float stc5 = isFiveMinute ? localStc : isOneMinute ? confirmedStc5 : intrabarStc5
+float stc15 = isFifteenMinute ? localStc : rawStc15
+
+float weightedBias = bias1 * 0.20 + bias5 * 0.35 + bias15 * 0.45
+float agreement = math.min(99.0, 50.0 + math.abs(weightedBias) * 8.0)
+
+// 확정 스윙과 시장 구조
+float pivotHigh = ta.pivothigh(high, swingLength, swingLength)
+float pivotLow = ta.pivotlow(low, swingLength, swingLength)
+float lastSwingHigh = ta.valuewhen(not na(pivotHigh), pivotHigh, 0)
+float previousSwingHigh = ta.valuewhen(not na(pivotHigh), pivotHigh, 1)
+float lastSwingLow = ta.valuewhen(not na(pivotLow), pivotLow, 0)
+float previousSwingLow = ta.valuewhen(not na(pivotLow), pivotLow, 1)
+int lastSwingHighBar = ta.valuewhen(not na(pivotHigh), bar_index - swingLength, 0)
+int lastSwingLowBar = ta.valuewhen(not na(pivotLow), bar_index - swingLength, 0)
+float lastPivotHighRsi = ta.valuewhen(not na(pivotHigh), rsiValue[swingLength], 0)
+float previousPivotHighRsi = ta.valuewhen(not na(pivotHigh), rsiValue[swingLength], 1)
+float lastPivotLowRsi = ta.valuewhen(not na(pivotLow), rsiValue[swingLength], 0)
+float previousPivotLowRsi = ta.valuewhen(not na(pivotLow), rsiValue[swingLength], 1)
+
+bool bullishStructure = lastSwingHigh > previousSwingHigh and lastSwingLow > previousSwingLow
+bool bearishStructure = lastSwingHigh < previousSwingHigh and lastSwingLow < previousSwingLow
+bool sweepLow = not na(lastSwingLow) and low < lastSwingLow and close > lastSwingLow
+bool sweepHigh = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh
+bool recentSweepLow = f_recent(sweepLow, setupWindow)
+bool recentSweepHigh = f_recent(sweepHigh, setupWindow)
+bool bosUp = not na(lastSwingHigh) and ta.crossover(close, lastSwingHigh)
+bool bosDown = not na(lastSwingLow) and ta.crossunder(close, lastSwingLow)
+bool chochUp = bosUp and (bearishStructure[1] or recentSweepLow)
+bool chochDown = bosDown and (bullishStructure[1] or recentSweepHigh)
+bool recentChochUp = f_recent(chochUp, ictLookback)
+bool recentChochDown = f_recent(chochDown, ictLookback)
+bool bullishRsiDivergence = not na(pivotLow) and lastSwingLow < previousSwingLow and lastPivotLowRsi > previousPivotLowRsi
+bool bearishRsiDivergence = not na(pivotHigh) and lastSwingHigh > previousSwingHigh and lastPivotHighRsi < previousPivotHighRsi
+
+// 거래량이 동반된 확정 피벗 캔들로 공급·수요대를 만듭니다.
+float zonePivotHigh = ta.pivothigh(high, zonePivotLength, zonePivotLength)
+float zonePivotLow = ta.pivotlow(low, zonePivotLength, zonePivotLength)
+float pivotAverageVolume = averageVolume[zonePivotLength]
+float pivotRelativeVolume = pivotAverageVolume > 0.0 ? volume[zonePivotLength] / pivotAverageVolume : 0.0
+var array<box> supplyBoxes = array.new<box>()
+var array<box> demandBoxes = array.new<box>()
+
+if showSupplyDemand and not na(zonePivotHigh) and pivotRelativeVolume >= zoneRelativeVolume
+    float supplyTop = high[zonePivotLength]
+    float supplyBottom = math.max(open[zonePivotLength], close[zonePivotLength])
+    box newSupply = box.new(left = bar_index - zonePivotLength, top = supplyTop, right = bar_index, bottom = supplyBottom, xloc = xloc.bar_index, extend = extend.right, border_color = color.new(color.red, 35), bgcolor = color.new(color.red, 88))
+    array.push(supplyBoxes, newSupply)
+    if array.size(supplyBoxes) > zoneCount
+        box.delete(array.shift(supplyBoxes))
+
+if showSupplyDemand and not na(zonePivotLow) and pivotRelativeVolume >= zoneRelativeVolume
+    float demandTop = math.min(open[zonePivotLength], close[zonePivotLength])
+    float demandBottom = low[zonePivotLength]
+    box newDemand = box.new(left = bar_index - zonePivotLength, top = demandTop, right = bar_index, bottom = demandBottom, xloc = xloc.bar_index, extend = extend.right, border_color = color.new(color.lime, 35), bgcolor = color.new(color.lime, 89))
+    array.push(demandBoxes, newDemand)
+    if array.size(demandBoxes) > zoneCount
+        box.delete(array.shift(demandBoxes))
+
+int supplyIndex = array.size(supplyBoxes) - 1
+while supplyIndex >= 0
+    box supplyZone = array.get(supplyBoxes, supplyIndex)
+    if not showSupplyDemand or close > box.get_top(supplyZone)
+        box.delete(supplyZone)
+        array.remove(supplyBoxes, supplyIndex)
+    supplyIndex -= 1
+
+int demandIndex = array.size(demandBoxes) - 1
+while demandIndex >= 0
+    box demandZone = array.get(demandBoxes, demandIndex)
+    if not showSupplyDemand or close < box.get_bottom(demandZone)
+        box.delete(demandZone)
+        array.remove(demandBoxes, demandIndex)
+    demandIndex -= 1
+
+// 대표적인 캔들 패턴은 보조 단서로만 표시합니다.
+float bodySize = math.abs(close - open)
+float upperWick = high - math.max(open, close)
+float lowerWick = math.min(open, close) - low
+bool bullishEngulfing = close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
+bool bearishEngulfing = close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
+bool bullishPinBar = lowerWick >= bodySize * 2.0 and upperWick <= math.max(bodySize, syminfo.mintick) and close > low + (high - low) * 0.55
+bool bearishPinBar = upperWick >= bodySize * 2.0 and lowerWick <= math.max(bodySize, syminfo.mintick) and close < low + (high - low) * 0.45
+
+// 변위 캔들, FVG, 오더블럭
+float candleBody = math.abs(close - open)
+bool bullishDisplacement = close > open and candleBody >= atrValue * displacementAtr and close > high[1]
+bool bearishDisplacement = close < open and candleBody >= atrValue * displacementAtr and close < low[1]
+bool newBullFvg = low > high[2] and bullishDisplacement[1]
+bool newBearFvg = high < low[2] and bearishDisplacement[1]
+bool newBullOb = bullishDisplacement and close[1] < open[1]
+bool newBearOb = bearishDisplacement and close[1] > open[1]
+
+var float bullFvgTop = na
+var float bullFvgBottom = na
+var float bearFvgTop = na
+var float bearFvgBottom = na
+var float bullObTop = na
+var float bullObBottom = na
+var float bearObTop = na
+var float bearObBottom = na
+
+if newBullFvg
+    bullFvgTop := low
+    bullFvgBottom := high[2]
+if newBearFvg
+    bearFvgTop := low[2]
+    bearFvgBottom := high
+if newBullOb
+    bullObTop := open[1]
+    bullObBottom := low[1]
+if newBearOb
+    bearObTop := high[1]
+    bearObBottom := open[1]
+
+bool bullFvgTap = not newBullFvg and not na(bullFvgTop) and low <= bullFvgTop and high >= bullFvgBottom and close >= bullFvgBottom
+bool bearFvgTap = not newBearFvg and not na(bearFvgBottom) and high >= bearFvgBottom and low <= bearFvgTop and close <= bearFvgTop
+bool bullObTap = not newBullOb and not na(bullObTop) and low <= bullObTop and high >= bullObBottom and close >= bullObBottom
+bool bearObTap = not newBearOb and not na(bearObBottom) and high >= bearObBottom and low <= bearObTop and close <= bearObTop
+
+if not na(bullFvgBottom) and close < bullFvgBottom
+    bullFvgTop := na
+    bullFvgBottom := na
+if not na(bearFvgTop) and close > bearFvgTop
+    bearFvgTop := na
+    bearFvgBottom := na
+if not na(bullObBottom) and close < bullObBottom
+    bullObTop := na
+    bullObBottom := na
+if not na(bearObTop) and close > bearObTop
+    bearObTop := na
+    bearObBottom := na
+
+bool recentBullFvg = f_recent(newBullFvg or bullFvgTap, ictLookback)
+bool recentBearFvg = f_recent(newBearFvg or bearFvgTap, ictLookback)
+bool recentBullOb = f_recent(newBullOb or bullObTap, ictLookback)
+bool recentBearOb = f_recent(newBearOb or bearObTap, ictLookback)
+
+// OTE: 확정 스윙 구간의 62%~79% 되돌림
+float swingRange = lastSwingHigh - lastSwingLow
+float longOteLow = lastSwingHigh - swingRange * 0.79
+float longOteHigh = lastSwingHigh - swingRange * 0.62
+float shortOteLow = lastSwingLow + swingRange * 0.62
+float shortOteHigh = lastSwingLow + swingRange * 0.79
+bool longOte = swingRange > 0.0 and bullishStructure and close >= longOteLow and close <= longOteHigh
+bool shortOte = swingRange > 0.0 and bearishStructure and close >= shortOteLow and close <= shortOteHigh
+
+// 볼린저 이탈 후 복귀와 모멘텀 반전
+bool bbReclaimLong = low < bbLower and close > bbLower and close > open
+bool bbReclaimShort = high > bbUpper and close < bbUpper and close < open
+bool recentBbLong = f_recent(bbReclaimLong, setupWindow)
+bool recentBbShort = f_recent(bbReclaimShort, setupWindow)
+bool rsiTurnLong = ta.crossover(rsiValue, rsiOversold) or (rsiValue < 45.0 and rsiValue > rsiValue[1])
+bool rsiTurnShort = ta.crossunder(rsiValue, rsiOverbought) or (rsiValue > 55.0 and rsiValue < rsiValue[1])
+bool stochTurnLong = ta.crossover(stochK, stochD) and stochK < 30.0
+bool stochTurnShort = ta.crossunder(stochK, stochD) and stochK > 70.0
+bool stcTurnLong = ta.crossover(stcValue, 25.0)
+bool stcTurnShort = ta.crossunder(stcValue, 75.0)
+bool momentumLong = f_recent(rsiTurnLong or stochTurnLong or stcTurnLong, setupWindow)
+bool momentumShort = f_recent(rsiTurnShort or stochTurnShort or stcTurnShort, setupWindow)
+
+bool locationLong = recentBbLong or recentSweepLow or longOte or bullFvgTap or bullObTap
+bool locationShort = recentBbShort or recentSweepHigh or shortOte or bearFvgTap or bearObTap
+
+int longScore = (recentBbLong ? 2 : 0) + (recentSweepLow ? 2 : 0) + (recentChochUp ? 2 : 0) + (recentBullFvg ? 1 : 0) + (recentBullOb ? 1 : 0) + (longOte ? 1 : 0) + (f_recent(bullishRsiDivergence, ictLookback) ? 1 : 0) + (momentumLong ? 2 : 0)
+int shortScore = (recentBbShort ? 2 : 0) + (recentSweepHigh ? 2 : 0) + (recentChochDown ? 2 : 0) + (recentBearFvg ? 1 : 0) + (recentBearOb ? 1 : 0) + (shortOte ? 1 : 0) + (f_recent(bearishRsiDivergence, ictLookback) ? 1 : 0) + (momentumShort ? 2 : 0)
+
+bool longMtfAligned = isOneMinute ? bias5 >= 1 and bias15 >= 1 : isFiveMinute ? bias15 >= 1 : localBias >= 2
+bool shortMtfAligned = isOneMinute ? bias5 <= -1 and bias15 <= -1 : isFiveMinute ? bias15 <= -1 : localBias <= -2
+
+// 100점 실행 합의: 추세 25 + 모멘텀·강도 20 + 거래량 15 + ICT 25 + 위치·변동성 15.
+int longTrendPoints = (emaFast > emaTrend ? 5 : 0) + (close > sessionVwap ? 5 : 0) + (supertrendDirection < 0 ? 5 : 0) + (macdBull ? 5 : 0) + (longMtfAligned and weightedBias >= mtfBiasThreshold ? 5 : 0)
+int shortTrendPoints = (emaFast < emaTrend ? 5 : 0) + (close < sessionVwap ? 5 : 0) + (supertrendDirection > 0 ? 5 : 0) + (macdBear ? 5 : 0) + (shortMtfAligned and weightedBias <= -mtfBiasThreshold ? 5 : 0)
+int longMomentumPoints = (rsiValue > 50.0 ? 5 : 0) + (stochK > stochD ? 5 : 0) + (stcValue > 50.0 ? 5 : 0) + (adxValue >= adxTrendThreshold and plusDi > minusDi ? 5 : 0)
+int shortMomentumPoints = (rsiValue < 50.0 ? 5 : 0) + (stochK < stochD ? 5 : 0) + (stcValue < 50.0 ? 5 : 0) + (adxValue >= adxTrendThreshold and minusDi > plusDi ? 5 : 0)
+int longVolumePoints = (cmfValue > 0.0 ? 5 : 0) + (cvdProxy > cvdProxyAverage ? 5 : 0) + (relativeVolume >= 1.0 ? 5 : 0)
+int shortVolumePoints = (cmfValue < 0.0 ? 5 : 0) + (cvdProxy < cvdProxyAverage ? 5 : 0) + (relativeVolume >= 1.0 ? 5 : 0)
+int longIctPoints = int(math.round(math.min(12.0, float(longScore)) / 12.0 * 25.0))
+int shortIctPoints = int(math.round(math.min(12.0, float(shortScore)) / 12.0 * 25.0))
+bool volatilityUsable = volatilityRank >= 15.0 and volatilityRank <= 90.0
+int longLocationPoints = (recentBbLong ? 5 : 0) + (close >= rollingVolumeCenter ? 5 : 0) + (volatilityUsable ? 5 : 0)
+int shortLocationPoints = (recentBbShort ? 5 : 0) + (close <= rollingVolumeCenter ? 5 : 0) + (volatilityUsable ? 5 : 0)
+int longExecutionScore = longTrendPoints + longMomentumPoints + longVolumePoints + longIctPoints + longLocationPoints
+int shortExecutionScore = shortTrendPoints + shortMomentumPoints + shortVolumePoints + shortIctPoints + shortLocationPoints
+
+bool rawLongSignal = isTargetTimeframe and barstate.isconfirmed and longMtfAligned and longScore >= minScore and longExecutionScore >= executionScoreThreshold and longExecutionScore - shortExecutionScore >= executionScoreLead
+bool rawShortSignal = isTargetTimeframe and barstate.isconfirmed and shortMtfAligned and shortScore >= minScore and shortExecutionScore >= executionScoreThreshold and shortExecutionScore - longExecutionScore >= executionScoreLead
+
+var int lastLongSignalBar = na
+var int lastShortSignalBar = na
+bool longCooldownReady = na(lastLongSignalBar) or bar_index - lastLongSignalBar > cooldownBars
+bool shortCooldownReady = na(lastShortSignalBar) or bar_index - lastShortSignalBar > cooldownBars
+bool longSignal = rawLongSignal and longCooldownReady and not rawLongSignal[1]
+bool shortSignal = rawShortSignal and shortCooldownReady and not rawShortSignal[1]
+
+if longSignal
+    lastLongSignalBar := bar_index
+if shortSignal
+    lastShortSignalBar := bar_index
+
+// 실행 상태: 최초 진입과 최대 네 번의 조건부 추매가 하나의 고정 위험 예산을 나눠 씁니다.
+var int tradeDirection = 0
+var float signalEntry = na
+var float averageEntry = na
+var float signalStop = na
+var float signalTarget = na
+var float baseQuantity = na
+var float positionQuantity = na
+var array<float> addLevels = array.new<float>(4, na)
+var array<float> addQuantities = array.new<float>(4, na)
+var array<bool> addFilled = array.new<bool>(4, false)
+var int tradeStartBar = na
+var int lastRiskSignalBar = na
+var int lastExitBar = na
+var string lastExitReason = "대기"
+
+bool entryLongEvent = false
+bool entryShortEvent = false
+int addEventNumber = 0
+bool targetEvent = false
+bool stopEvent = false
+bool timeExitEvent = false
+
+float maximumRiskAmount = accountEquity * maxRiskPercent / 100.0
+float totalTrancheWeight = math.max(1.0, baseTrancheWeight + add1TrancheWeight + add2TrancheWeight + add3TrancheWeight + add4TrancheWeight)
+int maxHoldingBars = timeframe.isminutes ? math.max(1, int(math.ceil(maxHoldingHours * 60.0 / timeframe.multiplier))) : 1
+
+if tradeDirection == 0 and (longSignal or shortSignal)
+    entryLongEvent := longSignal
+    entryShortEvent := shortSignal and not longSignal
+    tradeDirection := entryLongEvent ? 1 : -1
+    tradeStartBar := bar_index
+    lastRiskSignalBar := bar_index
+    signalEntry := close
+    averageEntry := close
+    float structureDistance = tradeDirection > 0 ? (not na(lastSwingLow) and lastSwingLow < close ? close - lastSwingLow : atrValue * stopAtr) : (not na(lastSwingHigh) and lastSwingHigh > close ? lastSwingHigh - close : atrValue * stopAtr)
+    float minimumPriceRisk = close * minimumStopPercent / 100.0
+    float maximumAllowedRisk = math.max(atrValue * maxStopAtr, minimumPriceRisk)
+    float riskDistance = math.max(atrValue * stopAtr, minimumPriceRisk, math.min(structureDistance, maximumAllowedRisk))
+    signalStop := close - tradeDirection * riskDistance
+    baseQuantity := maximumRiskAmount * baseTrancheWeight / totalTrancheWeight / math.max(math.abs(signalEntry - signalStop), syminfo.mintick)
+    for addIndex = 0 to 3
+        float addFraction = addIndex == 0 ? add1RiskFraction : addIndex == 1 ? add2RiskFraction : addIndex == 2 ? add3RiskFraction : add4RiskFraction
+        float addWeight = addIndex == 0 ? add1TrancheWeight : addIndex == 1 ? add2TrancheWeight : addIndex == 2 ? add3TrancheWeight : add4TrancheWeight
+        float addLevel = close - tradeDirection * riskDistance * addFraction
+        float addQuantity = maximumRiskAmount * addWeight / totalTrancheWeight / math.max(math.abs(addLevel - signalStop), syminfo.mintick)
+        array.set(addLevels, addIndex, addLevel)
+        array.set(addQuantities, addIndex, addQuantity)
+        array.set(addFilled, addIndex, false)
+    positionQuantity := baseQuantity
+    signalTarget := averageEntry + tradeDirection * math.abs(averageEntry - signalStop) * rrTarget
+    lastExitReason := tradeDirection > 0 ? "롱 진행" : "숏 진행"
+
+if tradeDirection != 0 and bar_index > tradeStartBar
+    bool stopTouched = tradeDirection > 0 ? low <= signalStop : high >= signalStop
+    bool targetTouched = tradeDirection > 0 ? high >= signalTarget : low <= signalTarget
+    bool timeExpired = bar_index - tradeStartBar >= maxHoldingBars
+    if stopTouched
+        stopEvent := true
+        lastExitBar := bar_index
+        lastExitReason := "손절"
+        tradeDirection := 0
+    else if targetTouched
+        targetEvent := true
+        lastExitBar := bar_index
+        lastExitReason := "익절"
+        tradeDirection := 0
+    else if timeExpired
+        timeExitEvent := true
+        lastExitBar := bar_index
+        lastExitReason := "24h 청산"
+        tradeDirection := 0
+    else
+        bool directionStillValid = tradeDirection > 0 ? longExecutionScore >= executionScoreThreshold - 15 and longExecutionScore + 5 >= shortExecutionScore : shortExecutionScore >= executionScoreThreshold - 15 and shortExecutionScore + 5 >= longExecutionScore
+        int nextAddIndex = -1
+        for addIndex = 0 to 3
+            if nextAddIndex == -1 and not array.get(addFilled, addIndex) and array.get(addQuantities, addIndex) > 0.0
+                nextAddIndex := addIndex
+        if nextAddIndex >= 0
+            float nextAddLevel = array.get(addLevels, nextAddIndex)
+            bool addReclaim = tradeDirection > 0 ? low <= nextAddLevel and close > nextAddLevel and close > open : high >= nextAddLevel and close < nextAddLevel and close < open
+            if directionStillValid and addReclaim
+                float nextAddQuantity = array.get(addQuantities, nextAddIndex)
+                addEventNumber := nextAddIndex + 1
+                array.set(addFilled, nextAddIndex, true)
+                averageEntry := (averageEntry * positionQuantity + nextAddLevel * nextAddQuantity) / (positionQuantity + nextAddQuantity)
+                positionQuantity += nextAddQuantity
+                signalTarget := averageEntry + tradeDirection * math.abs(averageEntry - signalStop) * rrTarget
+
+float add1Level = array.get(addLevels, 0)
+float add2Level = array.get(addLevels, 1)
+float add3Level = array.get(addLevels, 2)
+float add4Level = array.get(addLevels, 3)
+bool add1Filled = array.get(addFilled, 0)
+bool add2Filled = array.get(addFilled, 1)
+bool add3Filled = array.get(addFilled, 2)
+bool add4Filled = array.get(addFilled, 3)
+
+// 고정 조회 구간의 OHLCV를 가격 행에 균등 배분한 근사 Volume Profile입니다.
+// POC·VAH·VAL의 의미는 표준과 같지만 내장 Volume Profile의 intrabar 재구성과는 다릅니다.
+var array<box> profileBoxes = array.new<box>()
+var line profilePocLine = na
+var line profileVahLine = na
+var line profileValLine = na
+var float profilePoc = na
+var float profileVah = na
+var float profileVal = na
+bool refreshProfile = barstate.islastconfirmedhistory or (barstate.isrealtime and barstate.isnew)
+
+if refreshProfile
+    while array.size(profileBoxes) > 0
+        box.delete(array.pop(profileBoxes))
+    if not na(profilePocLine)
+        line.delete(profilePocLine)
+        profilePocLine := na
+    if not na(profileVahLine)
+        line.delete(profileVahLine)
+        profileVahLine := na
+    if not na(profileValLine)
+        line.delete(profileValLine)
+        profileValLine := na
+    profilePoc := na
+    profileVah := na
+    profileVal := na
+
+    if showVolumeProfile
+        int availableProfileBars = math.min(profileLookback, bar_index + 1)
+        float profileHigh = ta.highest(high, availableProfileBars)
+        float profileLow = ta.lowest(low, availableProfileBars)
+        float rowHeight = (profileHigh - profileLow) / profileRows
+        if rowHeight > 0.0
+            array<float> rowVolumes = array.new<float>(profileRows, 0.0)
+            for historyOffset = 0 to availableProfileBars - 1
+                int firstRow = int(math.floor((low[historyOffset] - profileLow) / rowHeight))
+                int lastRow = int(math.floor((high[historyOffset] - profileLow) / rowHeight))
+                firstRow := math.max(0, math.min(profileRows - 1, firstRow))
+                lastRow := math.max(0, math.min(profileRows - 1, lastRow))
+                int touchedRows = math.max(1, lastRow - firstRow + 1)
+                float rowShare = nz(volume[historyOffset]) / touchedRows
+                for rowIndex = firstRow to lastRow
+                    array.set(rowVolumes, rowIndex, array.get(rowVolumes, rowIndex) + rowShare)
+
+            float maximumRowVolume = array.max(rowVolumes)
+            float totalProfileVolume = array.sum(rowVolumes)
+            int pocRow = array.indexof(rowVolumes, maximumRowVolume)
+            int valueLowRow = pocRow
+            int valueHighRow = pocRow
+            float capturedVolume = array.get(rowVolumes, pocRow)
+            float targetVolume = totalProfileVolume * profileValueArea / 100.0
+            int expansionCount = 0
+            while capturedVolume < targetVolume and expansionCount < profileRows - 1
+                float belowVolume = valueLowRow > 0 ? array.get(rowVolumes, valueLowRow - 1) : -1.0
+                float aboveVolume = valueHighRow < profileRows - 1 ? array.get(rowVolumes, valueHighRow + 1) : -1.0
+                if aboveVolume >= belowVolume and valueHighRow < profileRows - 1
+                    valueHighRow += 1
+                    capturedVolume += aboveVolume
+                else if valueLowRow > 0
+                    valueLowRow -= 1
+                    capturedVolume += belowVolume
+                expansionCount += 1
+
+            profilePoc := profileLow + (pocRow + 0.5) * rowHeight
+            profileVah := profileLow + (valueHighRow + 1.0) * rowHeight
+            profileVal := profileLow + valueLowRow * rowHeight
+            int profileLeft = bar_index + 2
+            for rowIndex = 0 to profileRows - 1
+                float rowVolume = array.get(rowVolumes, rowIndex)
+                int rowWidth = maximumRowVolume > 0.0 ? math.max(1, int(math.round(rowVolume / maximumRowVolume * profileMaxWidth))) : 1
+                float rowBottom = profileLow + rowIndex * rowHeight
+                float rowTop = rowBottom + rowHeight
+                bool inValueArea = rowIndex >= valueLowRow and rowIndex <= valueHighRow
+                color rowColor = rowIndex == pocRow ? color.new(color.yellow, 25) : inValueArea ? color.new(color.aqua, 66) : color.new(color.silver, 82)
+                box profileRowBox = box.new(left = profileLeft, top = rowTop, right = profileLeft + rowWidth, bottom = rowBottom, xloc = xloc.bar_index, border_color = na, bgcolor = rowColor)
+                array.push(profileBoxes, profileRowBox)
+
+            int lineStart = bar_index - availableProfileBars + 1
+            int lineEnd = bar_index + profileMaxWidth + 3
+            profilePocLine := line.new(lineStart, profilePoc, lineEnd, profilePoc, xloc = xloc.bar_index, color = color.yellow, width = 2)
+            profileVahLine := line.new(lineStart, profileVah, lineEnd, profileVah, xloc = xloc.bar_index, color = color.new(color.aqua, 10), style = line.style_dashed)
+            profileValLine := line.new(lineStart, profileVal, lineEnd, profileVal, xloc = xloc.bar_index, color = color.new(color.aqua, 10), style = line.style_dashed)
+
+// 차트 표시
+color regimeColor = weightedBias >= mtfBiasThreshold ? color.new(color.lime, 92) : weightedBias <= -mtfBiasThreshold ? color.new(color.red, 92) : na
+bgcolor(showRegime ? regimeColor : na, title = "MTF 방향")
+
+bbBasisPlot = plot(showBands ? bbBasis : na, "BB 기준선", color = color.new(color.blue, 20), linewidth = 1, display = display.all - display.status_line)
+bbUpperPlot = plot(showBands ? bbUpper : na, "BB 상단", color = color.new(color.red, 35), linewidth = 1, display = display.all - display.status_line)
+bbLowerPlot = plot(showBands ? bbLower : na, "BB 하단", color = color.new(color.teal, 25), linewidth = 1, display = display.all - display.status_line)
+fill(bbUpperPlot, bbLowerPlot, color = showBands ? color.new(color.blue, 94) : na, title = "BB 영역")
+
+plot(showEma ? emaFast : na, "EMA 빠름", color = color.new(color.yellow, 10), linewidth = 1, display = display.all - display.status_line)
+plot(showEma ? emaTrend : na, "EMA 추세", color = color.new(color.orange, 5), linewidth = 2, display = display.all - display.status_line)
+plot(showEma ? emaMacro : na, "EMA 장기", color = color.new(color.fuchsia, 20), linewidth = 2, display = display.all - display.status_line)
+plot(showVwap ? sessionVwap : na, "세션 VWAP", color = color.new(color.white, 15), linewidth = 2, display = display.all - display.status_line)
+plot(showSupertrend and supertrendDirection < 0 ? supertrendValue : na, "Supertrend 상승", color = color.new(color.lime, 10), linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showSupertrend and supertrendDirection > 0 ? supertrendValue : na, "Supertrend 하락", color = color.new(color.red, 10), linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+
+plot(showSwingLevels ? lastSwingHigh : na, "확정 저항", color = color.new(color.red, 40), linewidth = 1, style = plot.style_stepline, display = display.all - display.status_line)
+plot(showSwingLevels ? lastSwingLow : na, "확정 지지", color = color.new(color.lime, 45), linewidth = 1, style = plot.style_stepline, display = display.all - display.status_line)
+
+bool lastSwingWasHigh = nz(lastSwingHighBar, 0) > nz(lastSwingLowBar, 0)
+float fib50 = lastSwingWasHigh ? lastSwingHigh - swingRange * 0.50 : lastSwingLow + swingRange * 0.50
+float fib618 = lastSwingWasHigh ? lastSwingHigh - swingRange * 0.618 : lastSwingLow + swingRange * 0.618
+float fib705 = lastSwingWasHigh ? lastSwingHigh - swingRange * 0.705 : lastSwingLow + swingRange * 0.705
+float fib786 = lastSwingWasHigh ? lastSwingHigh - swingRange * 0.786 : lastSwingLow + swingRange * 0.786
+plot(showFibonacci and swingRange > 0.0 ? fib50 : na, "Fib 0.500", color = color.new(color.gray, 45), style = plot.style_stepline, display = display.all - display.status_line)
+plot(showFibonacci and swingRange > 0.0 ? fib618 : na, "Fib 0.618", color = color.new(color.blue, 25), style = plot.style_stepline, display = display.all - display.status_line)
+plot(showFibonacci and swingRange > 0.0 ? fib705 : na, "Fib 0.705", color = color.new(color.purple, 20), style = plot.style_stepline, display = display.all - display.status_line)
+plot(showFibonacci and swingRange > 0.0 ? fib786 : na, "Fib 0.786", color = color.new(color.fuchsia, 30), style = plot.style_stepline, display = display.all - display.status_line)
+
+plot(showZones ? bullFvgTop : na, "상승 FVG 상단", color = color.new(color.aqua, 20), style = plot.style_linebr, display = display.all - display.status_line)
+plot(showZones ? bullFvgBottom : na, "상승 FVG 하단", color = color.new(color.aqua, 45), style = plot.style_linebr, display = display.all - display.status_line)
+plot(showZones ? bearFvgTop : na, "하락 FVG 상단", color = color.new(color.orange, 35), style = plot.style_linebr, display = display.all - display.status_line)
+plot(showZones ? bearFvgBottom : na, "하락 FVG 하단", color = color.new(color.orange, 15), style = plot.style_linebr, display = display.all - display.status_line)
+plot(showZones ? bullObTop : na, "상승 OB 상단", color = color.new(color.green, 45), style = plot.style_stepline, display = display.all - display.status_line)
+plot(showZones ? bullObBottom : na, "상승 OB 하단", color = color.new(color.green, 65), style = plot.style_stepline, display = display.all - display.status_line)
+plot(showZones ? bearObTop : na, "하락 OB 상단", color = color.new(color.maroon, 45), style = plot.style_stepline, display = display.all - display.status_line)
+plot(showZones ? bearObBottom : na, "하락 OB 하단", color = color.new(color.maroon, 65), style = plot.style_stepline, display = display.all - display.status_line)
+
+int riskReferenceBar = tradeDirection != 0 ? tradeStartBar : lastExitBar
+bool showActiveRisk = showRisk and not na(riskReferenceBar) and (tradeDirection != 0 or bar_index - riskReferenceBar <= riskLineBars)
+plot(showActiveRisk ? averageEntry : na, "평균 진입", color = color.new(color.yellow, 0), linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showActiveRisk and not add1Filled and tradeDirection != 0 ? add1Level : na, "추매1 대기", color = color.new(color.orange, 5), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showActiveRisk and not add2Filled and tradeDirection != 0 ? add2Level : na, "추매2 대기", color = color.new(color.orange, 20), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showActiveRisk and not add3Filled and tradeDirection != 0 ? add3Level : na, "추매3 대기", color = color.new(color.orange, 35), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showActiveRisk and not add4Filled and tradeDirection != 0 ? add4Level : na, "추매4 대기", color = color.new(color.orange, 50), linewidth = 1, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showActiveRisk ? signalStop : na, "최후 손절", color = color.new(color.red, 0), linewidth = 3, style = plot.style_linebr, display = display.all - display.status_line)
+plot(showActiveRisk ? signalTarget : na, "최근 목표", color = color.new(color.lime, 0), linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+
+plotshape(entryLongEvent, title = "롱 진입", style = shape.labelup, location = location.belowbar, color = color.new(color.lime, 0), textcolor = color.black, text = "롱 진입", size = size.small, display = display.all - display.status_line)
+plotshape(entryShortEvent, title = "숏 진입", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "숏 진입", size = size.small, display = display.all - display.status_line)
+plotshape(addEventNumber == 1 and tradeDirection > 0, title = "롱 추매1 실행", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 0), textcolor = color.black, text = "추매1", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 1 and tradeDirection < 0, title = "숏 추매1 실행", style = shape.labeldown, location = location.abovebar, color = color.new(color.orange, 0), textcolor = color.black, text = "추매1", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 2 and tradeDirection > 0, title = "롱 추매2 실행", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 15), textcolor = color.black, text = "추매2", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 2 and tradeDirection < 0, title = "숏 추매2 실행", style = shape.labeldown, location = location.abovebar, color = color.new(color.orange, 15), textcolor = color.black, text = "추매2", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 3 and tradeDirection > 0, title = "롱 추매3 실행", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 30), textcolor = color.black, text = "추매3", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 3 and tradeDirection < 0, title = "숏 추매3 실행", style = shape.labeldown, location = location.abovebar, color = color.new(color.orange, 30), textcolor = color.black, text = "추매3", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 4 and tradeDirection > 0, title = "롱 추매4 실행", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 45), textcolor = color.black, text = "추매4", size = size.tiny, display = display.all - display.status_line)
+plotshape(addEventNumber == 4 and tradeDirection < 0, title = "숏 추매4 실행", style = shape.labeldown, location = location.abovebar, color = color.new(color.orange, 45), textcolor = color.black, text = "추매4", size = size.tiny, display = display.all - display.status_line)
+plotshape(targetEvent, title = "익절", style = shape.labeldown, location = location.abovebar, color = color.new(color.lime, 0), textcolor = color.black, text = "익절", size = size.small, display = display.all - display.status_line)
+plotshape(stopEvent, title = "손절", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "손절", size = size.small, display = display.all - display.status_line)
+plotshape(timeExitEvent, title = "24h 시간청산", style = shape.labeldown, location = location.abovebar, color = color.new(color.blue, 0), textcolor = color.white, text = "24h 청산", size = size.small, display = display.all - display.status_line)
+plotshape(showZones and chochUp, title = "상승 CHoCH", style = shape.triangleup, location = location.belowbar, color = color.aqua, text = "CH", textcolor = color.black, size = size.tiny, display = display.all - display.status_line)
+plotshape(showZones and chochDown, title = "하락 CHoCH", style = shape.triangledown, location = location.abovebar, color = color.orange, text = "CH", textcolor = color.black, size = size.tiny, display = display.all - display.status_line)
+plotshape(showPatterns and (bullishEngulfing or bullishPinBar), title = "상승 캔들 패턴", style = shape.circle, location = location.belowbar, color = color.new(color.lime, 15), text = "PA", textcolor = color.black, size = size.tiny, display = display.all - display.status_line)
+plotshape(showPatterns and (bearishEngulfing or bearishPinBar), title = "하락 캔들 패턴", style = shape.circle, location = location.abovebar, color = color.new(color.red, 15), text = "PA", textcolor = color.white, size = size.tiny, display = display.all - display.status_line)
+
+alertcondition(entryLongEvent, title = "실행형 롱 진입", message = "롱 진입 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(entryShortEvent, title = "실행형 숏 진입", message = "숏 진입 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(addEventNumber == 1, title = "실행형 추매1", message = "추매1 실행 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(addEventNumber == 2, title = "실행형 추매2", message = "추매2 실행 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(addEventNumber == 3, title = "실행형 추매3", message = "추매3 실행 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(addEventNumber == 4, title = "실행형 추매4", message = "추매4 실행 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(targetEvent, title = "실행형 익절", message = "익절 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(stopEvent, title = "실행형 손절", message = "손절 | {{ticker}} | {{interval}} | close={{close}}")
+alertcondition(timeExitEvent, title = "실행형 24h 청산", message = "24h 시간청산 | {{ticker}} | {{interval}} | close={{close}}")
+
+// 화면에는 분석 원재료가 아니라 실행 상태와 가격·위험만 요약합니다.
+var table dashboard = table.new(f_table_position(dashboardPosition), 4, 6, bgcolor = color.new(color.black, 15), border_color = color.new(color.gray, 60), border_width = 1)
+
+if barstate.islast and showDashboard
+    string stateText = not isTargetTimeframe ? "TF 오류" : tradeDirection > 0 ? "롱 진행" : tradeDirection < 0 ? "숏 진행" : lastExitReason
+    color stateColor = not isTargetTimeframe ? color.orange : tradeDirection > 0 ? color.lime : tradeDirection < 0 ? color.red : color.silver
+    string scoreText = "L " + str.tostring(longExecutionScore) + " / S " + str.tostring(shortExecutionScore)
+    table.cell(dashboard, 0, 0, "상태", text_color = color.white, bgcolor = color.new(color.blue, 50))
+    table.cell(dashboard, 1, 0, stateText, text_color = stateColor, bgcolor = color.new(color.blue, 72))
+    table.cell(dashboard, 2, 0, "내부 합의", text_color = color.white, bgcolor = color.new(color.blue, 50))
+    table.cell(dashboard, 3, 0, scoreText, text_color = color.white, bgcolor = color.new(color.blue, 72))
+    string averageText = na(averageEntry) ? "-" : str.tostring(averageEntry, format.mintick)
+    string add1Text = tradeDirection == 0 ? "-" : add1Filled ? "완료" : str.tostring(add1Level, format.mintick)
+    string add2Text = tradeDirection == 0 ? "-" : add2Filled ? "완료" : str.tostring(add2Level, format.mintick)
+    string add3Text = tradeDirection == 0 ? "-" : add3Filled ? "완료" : str.tostring(add3Level, format.mintick)
+    string add4Text = tradeDirection == 0 ? "-" : add4Filled ? "완료" : str.tostring(add4Level, format.mintick)
+    float holdingHours = tradeDirection == 0 ? na : (bar_index - tradeStartBar) * timeframe.multiplier / 60.0
+    string holdingText = tradeDirection == 0 ? "-" : str.tostring(holdingHours, "#.0") + " / " + str.tostring(maxHoldingHours, "#.0") + "h"
+    table.cell(dashboard, 0, 1, "평균 진입", text_color = color.yellow)
+    table.cell(dashboard, 1, 1, averageText, text_color = color.yellow)
+    table.cell(dashboard, 2, 1, "추매1 / 추매2", text_color = color.orange)
+    table.cell(dashboard, 3, 1, add1Text + " / " + add2Text, text_color = color.orange)
+    table.cell(dashboard, 0, 2, "추매3 / 추매4", text_color = color.orange)
+    table.cell(dashboard, 1, 2, add3Text + " / " + add4Text, text_color = color.orange)
+    table.cell(dashboard, 2, 2, "보유시간", text_color = color.white)
+    table.cell(dashboard, 3, 2, holdingText, text_color = color.white)
+    table.cell(dashboard, 0, 3, "최후 손절", text_color = color.red)
+    table.cell(dashboard, 1, 3, na(signalStop) ? "-" : str.tostring(signalStop, format.mintick), text_color = color.red)
+    table.cell(dashboard, 2, 3, "익절", text_color = color.lime)
+    table.cell(dashboard, 3, 3, na(signalTarget) ? "-" : str.tostring(signalTarget, format.mintick), text_color = color.lime)
+    table.cell(dashboard, 0, 4, "최대 위험", text_color = color.white)
+    table.cell(dashboard, 1, 4, str.tostring(maximumRiskAmount, "#.00") + " USDT", text_color = color.white)
+    table.cell(dashboard, 2, 4, "현재 수량", text_color = color.white)
+    table.cell(dashboard, 3, 4, tradeDirection == 0 or na(positionQuantity) ? "-" : str.tostring(positionQuantity, "#.####"), text_color = color.white)
+    table.cell(dashboard, 0, 5, "검증", text_color = color.white, bgcolor = color.new(color.red, 35))
+    table.cell(dashboard, 1, 5, "FAIL", text_color = color.white, bgcolor = color.new(color.red, 20))
+    table.cell(dashboard, 2, 5, "연구·페이퍼", text_color = color.white, bgcolor = color.new(color.red, 35))
+    table.cell(dashboard, 3, 5, "실거래 금지", text_color = color.white, bgcolor = color.new(color.red, 20))
+
+if barstate.islast and not showDashboard
+    table.clear(dashboard, 0, 0, 3, 5)

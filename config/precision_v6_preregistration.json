@@ -1,0 +1,188 @@
+{
+  "protocol": "precision_v6_external_funding_watch_forward_paper_validation",
+  "version": "1.0.0",
+  "preregistered_at_utc": "2026-08-31T07:46:27Z",
+  "forward_data_start_utc": "2026-09-01T00:00:00Z",
+  "earliest_calendar_decision_utc": "2027-09-01T00:00:00Z",
+  "decision_mode": "all_required_gates_must_pass",
+  "live_trading_automatic_promotion": false,
+  "declaration": {
+    "historical_discovery_data_already_observed": true,
+    "historical_classification": "DISCOVERY_ONLY_NOT_PREREGISTERED",
+    "historical_gate_status": "FAIL",
+    "historical_statistical_conditions_pass": false,
+    "historical_results_cannot_be_reused_for_forward_pass": true,
+    "profit_guarantee": false,
+    "pine_execution_authority": false,
+    "pine_actionable": false,
+    "pine_watch_only": true,
+    "addition_plan_validated": false
+  },
+  "universe": {
+    "exchange": "Bybit linear perpetual",
+    "symbols": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "SOL/USDT:USDT",
+      "XRP/USDT:USDT",
+      "DOGE/USDT:USDT"
+    ],
+    "signal_timeframe": "1h",
+    "display_timeframes": [
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "standard_candles_only": true,
+    "long_only": true,
+    "shorts_allowed": false
+  },
+  "fixed_opportunity_set": {
+    "name": "V5_CORE_OMEGA",
+    "entry_channel_hours": 24,
+    "exit_channel_hours": 12,
+    "atr_length": 24,
+    "stop_atr_multiple": 7.0,
+    "volatility_filter": "q60 of eligible-breakout ATR24/close in [t-365d,t), current candidate excluded, pandas linear interpolation, min 30, full 365d",
+    "entry": "confirmed 1h signal, market fill at next 1h open",
+    "opportunities_frozen_before_meta_selection": true,
+    "meta_may_only_select_or_abstain": true,
+    "abstention_or_early_exit_may_not_open_new_raw_opportunity": true,
+    "unique_event_key": [
+      "symbol",
+      "entry_time"
+    ],
+    "winner_definition": "strictly positive net R after execution cost and funding; zero R is failure"
+  },
+  "candidate": {
+    "price_gate_all_required": {
+      "return_24h_at_least": 0.02,
+      "bullish_body_at_least_previous_confirmed_atr24_multiple": 0.75,
+      "confirmed_btc_return_168h_at_least": 0.0
+    },
+    "external_gate_all_required": {
+      "funding_source": "actual Bybit settlement history",
+      "funding_interval": "(signal_time-72h, signal_time]",
+      "cumulative_funding_rate_at_most": 0.0004,
+      "pine_may_not_proxy_or_assume_this_gate": true
+    },
+    "execution_variant_for_validation_only": {
+      "initial_weight": 0.8,
+      "addition_levels_of_entry_to_final_stop_distance": [
+        0.2,
+        0.4,
+        0.6,
+        0.8
+      ],
+      "addition_weight_each": 0.05,
+      "max_additions": 4,
+      "take_profit_r": 1.0,
+      "review_and_max_holding_hours": 24,
+      "final_stop_atr_multiple": 7.0,
+      "stop_may_not_widen": true
+    },
+    "context_only_not_execution_gate": [
+      "ICT liquidity sweep",
+      "ICT FVG",
+      "ICT order-block proxy",
+      "ICT OTE proxy",
+      "Bollinger upper-band break",
+      "RSI14",
+      "DMI spread and ADX14",
+      "volume ratio",
+      "48h volume-profile price proxy"
+    ]
+  },
+  "execution_models": {
+    "strict": {
+      "cost_bps_each_side": 12.0,
+      "funding": "actual Bybit settlement debit and credit"
+    },
+    "severe": {
+      "cost_bps_each_side": 20.0,
+      "funding_debit_multiplier": 2.0,
+      "funding_credit_multiplier": 0.0
+    }
+  },
+  "forward_sample_minimums": {
+    "calendar_days": 365,
+    "meta_selected_events": 300,
+    "actual_filled_events": 300,
+    "events_each_symbol_each_severity": 30,
+    "addition_stage_reached_events_each_stage": 30,
+    "all_minimums_required": true
+  },
+  "required_gates": {
+    "meta_shadow_strict_precision_at_least": 0.6,
+    "meta_shadow_severe_precision_at_least": 0.55,
+    "actual_execution_strict_precision_at_least": 0.6,
+    "actual_execution_severe_precision_at_least": 0.55,
+    "raw_meta_coverage_of_fixed_omega_at_least": 0.2,
+    "actual_execution_coverage_of_fixed_omega_at_least": 0.15,
+    "actual_risk_committed_r_over_fixed_omega_at_least": 0.15,
+    "meta_and_actual_strict_profit_factor_at_least": 1.5,
+    "meta_and_actual_strict_risk_normalized_expectancy_r_at_least": 0.12,
+    "meta_and_actual_severe_profit_factor_at_least": 1.2,
+    "meta_and_actual_severe_risk_normalized_expectancy_r_at_least": 0.04,
+    "all_five_symbols_each_severity_precision_at_least": 0.5,
+    "bootstrap": {
+      "calendar_block_days": [
+        14,
+        28,
+        56,
+        84
+      ],
+      "samples_per_block": 10000,
+      "base_seed": 20260831,
+      "meta_and_actual_strict_precision_p05_at_least_all_blocks": 0.52,
+      "meta_and_actual_severe_precision_p05_at_least_all_blocks": 0.5,
+      "probability_precision_strictly_greater_than_half_at_least_all_blocks": 0.95,
+      "zero_accepted_bootstrap_samples_allowed": 0
+    },
+    "addition_stage_counts": {
+      "definition": "count(actual execution trades with additions >= stage)",
+      "stage_1_at_least": 30,
+      "stage_2_at_least": 30,
+      "stage_3_at_least": 30,
+      "stage_4_at_least": 30
+    },
+    "operational_realism_requirements_all_completed": true,
+    "tradingview_compile_and_runtime": {
+      "watch_60m": "0 compiler errors and 0 runtime errors on standard 60m",
+      "confirmed_overlay": "0 compiler errors and 0 runtime errors on standard 1m, 5m and 15m"
+    }
+  },
+  "operational_realism_required_before_live_review": [
+    "chronological mark-to-market account path",
+    "exchange minimum notional and quantity precision",
+    "partial fill, latency, rejection and gap slippage",
+    "cross and isolated margin replay",
+    "maintenance margin and liquidation replay",
+    "external funding lookup failure must fail closed",
+    "idempotent alert and fill ledger"
+  ],
+  "change_control": {
+    "parameter_universe_or_execution_change_creates_new_version": true,
+    "signal_or_pnl_changing_bug_fix_resets_forward_clock": true,
+    "new_version_resets_forward_clock_and_sample_count": true,
+    "no_post_hoc_gate_relaxation": true,
+    "manual_user_approval_required_after_all_gates_pass": true
+  },
+  "frozen_hashes_sha256": {
+    "historical_pipeline_composite_code_hash": "25f2db421a93e8cea970266cef24245601c8a7db72d5866bc79fa7930550543c",
+    "validate_precision_candidate_py": "83611ec0a8a549e9a63c4bfb9602fdc004fdc53e9e6ca199ea4d4a5cb74cc91b",
+    "test_validate_precision_candidate_py": "d08276bdc479f06aab95968a297bcf07616c3f5b705f3ce5aa03afff54be1f96",
+    "precision_v6_60m_watch_pine": "c8066ac8089db0b5611527c278f994364d5860a33ca113c9f83ab0007998258a",
+    "precision_v6_ltf_overlay_pine": "06d33b8a8c36d1a79eedcd5be2304691f7e5631c0b84c6e918472eff9e8173c8",
+    "validate_live_candidate_py": "93240b38a621e667133be2d4554c19f3e3de276609da68471c7d08a40aec5675",
+    "validate_pareto_candidate_py": "0ff57b26d5edada68afba41f8840dc59a66115420293395c84a94b7d3d85d2bc",
+    "validate_pareto_ensemble_py": "c60ad2f1a48028df5cb308fcd48a04c94bfeb1ab8a4e24f5787cbadd1437c02a",
+    "pareto_trial_ledger_py": "aabc6176aa1264b02e0ba9548c422d243aa49201b15e2e8a9f6b18cc2815440e"
+  },
+  "frozen_discovery_data_hashes_sha256": {
+    "core_btc_eth_1h": "c06a3301457dfec8f68b184e1f8ac8797acc49874fa96c409a6a57e6743ebac0",
+    "sol_1h": "80d7f7574d680505eb280d05bfecc4ce3bc38ff461e651b91eb122e666f04785",
+    "xrp_doge_1h": "84da1b9da6ea17ad9c3be783f0649e5eb377513305ae80179d7cea4c8e6d84ca",
+    "five_symbol_actual_funding": "e79ede6bc95add874bc3d31e70914f7403e04ee2fca7a9d6e314dac8a83edac3"
+  }
+}

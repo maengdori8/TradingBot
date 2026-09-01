@@ -1,0 +1,486 @@
+//@version=6
+strategy(
+     "PROBATION 1H Breakout Execution [1m/5m/15m]",
+     shorttitle = "BRK EXEC",
+     overlay = true,
+     initial_capital = 10000,
+     currency = currency.USD,
+     pyramiding = 5,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.08,
+     process_orders_on_close = false,
+     calc_on_order_fills = false,
+     calc_on_every_tick = false,
+     use_bar_magnifier = false,
+     margin_long = 100,
+     margin_short = 100,
+     max_labels_count = 300)
+
+// 이 전략은 이익을 보장하지 않습니다. 사전 실전 게이트를 통과하지 못한 연구·페이퍼
+// 전략이며 실거래에 사용하면 안 됩니다. TradingView의 체결 알림은 거래소 보호주문이
+// 아닙니다. 외부 실행기는 최초 진입 체결 알림을 받는 즉시 final_stop 가격에 거래소
+// native reduce-only stop-market을 등록하고, 추매 체결 때 전체 수량으로 갱신해야 합니다.
+// 실행용 알림은 주문 체결 이벤트와 {{strategy.order.alert_message}}를 사용하고, alert()
+// 이벤트는 주문 의도·추적 손절 갱신용으로 분리하며 setup_id로 반드시 중복 제거합니다.
+
+string GROUP_SIGNAL = "1. 신호"
+string GROUP_RISK = "2. 위험 관리"
+string GROUP_EXECUTION = "3. 분할 실행"
+string GROUP_DISPLAY = "4. 표시"
+
+int entryChannel = input.int(24, "1시간 진입 채널", minval = 12, maxval = 96, group = GROUP_SIGNAL, display = display.data_window)
+int exitChannel = input.int(12, "1시간 청산 채널", minval = 6, maxval = 48, group = GROUP_SIGNAL, display = display.data_window)
+int trendLength = input.int(200, "1시간 추세 SMA", minval = 50, maxval = 400, group = GROUP_SIGNAL, display = display.data_window)
+int rsiLength = input.int(14, "1시간 RSI", minval = 5, maxval = 50, group = GROUP_SIGNAL, display = display.data_window)
+int volumeLength = input.int(20, "1시간 거래량 평균", minval = 5, maxval = 100, group = GROUP_SIGNAL, display = display.data_window)
+int atrLength = input.int(24, "1시간 ATR", minval = 10, maxval = 100, group = GROUP_SIGNAL, display = display.data_window)
+float stopAtr = input.float(6.0, "최후 손절 ATR", minval = 2.0, maxval = 10.0, step = 0.5, group = GROUP_RISK, display = display.data_window)
+float riskPercent = input.float(0.25, "설정당 최대 가격위험 %", minval = 0.05, maxval = 1.0, step = 0.05, group = GROUP_RISK, tooltip = "최초와 네 추매가 모두 체결된 뒤 최후 손절에 도달할 때의 목표 가격위험입니다. 갭·수수료·슬리피지는 이 한도를 초과시킬 수 있습니다.", display = display.data_window)
+float maxNotionalPercent = input.float(100.0, "최대 명목가/자본 %", minval = 25.0, maxval = 300.0, step = 25.0, group = GROUP_RISK, display = display.data_window)
+float dailyLossLimit = input.float(1.5, "일 손실 정지 %", minval = 0.5, maxval = 5.0, step = 0.25, group = GROUP_RISK, display = display.data_window)
+float totalDrawdownLimit = input.float(10.0, "전략 최대 낙폭 정지 %", minval = 3.0, maxval = 30.0, step = 1.0, group = GROUP_RISK, display = display.data_window)
+int reviewHours = input.int(24, "추세 재심사 시간", minval = 8, maxval = 48, group = GROUP_RISK, display = display.data_window)
+int finalHoldingHours = input.int(72, "최대 보유 시간", minval = 24, maxval = 168, group = GROUP_RISK, display = display.data_window)
+float initialWeight = input.float(80.0, "최초 위험 배분 %", minval = 50.0, maxval = 100.0, step = 5.0, group = GROUP_EXECUTION, display = display.data_window)
+float addWeight = input.float(5.0, "추매별 위험 배분 %", minval = 0.0, maxval = 12.5, step = 2.5, group = GROUP_EXECUTION, tooltip = "네 추매에 동일하게 적용됩니다. 최초+4회 배분 합계를 100으로 정규화합니다.", display = display.data_window)
+float add1Fraction = input.float(0.20, "추매1 위치", minval = 0.10, maxval = 0.30, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float add2Fraction = input.float(0.40, "추매2 위치", minval = 0.25, maxval = 0.50, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float add3Fraction = input.float(0.60, "추매3 위치", minval = 0.45, maxval = 0.70, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+float add4Fraction = input.float(0.80, "추매4 위치", minval = 0.65, maxval = 0.90, step = 0.05, group = GROUP_EXECUTION, display = display.data_window)
+bool showDashboard = input.bool(true, "실행 대시보드", group = GROUP_DISPLAY, display = display.data_window)
+
+float contractStep = math.max(syminfo.mincontract, 0.00000001)
+float pointValue = math.max(syminfo.pointvalue, 0.00000001)
+
+roundQuantity(float rawQuantity) =>
+    math.floor(math.max(rawQuantity, 0.0) / contractStep) * contractStep
+
+jsonNumber(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+jsonInteger(int value) =>
+    na(value) ? "null" : str.tostring(value)
+
+setupOrderId(int activeSetupId, string suffix) =>
+    "S" + str.tostring(activeSetupId) + "-" + suffix
+
+orderJson(string eventName, int activeSetupId, string orderId, string eventId, string orderType, string side, int additionNumber, float quantity, float limitPrice, int expiresAt, float stopPrice, int activeStopRevision, bool reduceOnly) =>
+    "{\"event\":\"" + eventName + "\",\"event_id\":\"" + eventId +
+     "\",\"setup_id\":" + str.tostring(activeSetupId) + ",\"order_id\":\"" + orderId +
+     "\",\"ticker\":\"" + syminfo.tickerid + "\",\"timeframe\":\"" + timeframe.period +
+     "\",\"order_type\":\"" + orderType + "\",\"side\":\"" + side +
+     "\",\"add\":" + str.tostring(additionNumber) + ",\"qty\":" + jsonNumber(quantity) +
+     ",\"limit\":" + jsonNumber(limitPrice) + ",\"expires_at\":" + jsonInteger(expiresAt) +
+     ",\"stop\":" + jsonNumber(stopPrice) + ",\"stop_revision\":" + str.tostring(activeStopRevision) +
+     ",\"reduce_only\":" + (reduceOnly ? "true" : "false") + "}"
+
+bool isTargetTimeframe = timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5 or timeframe.multiplier == 15)
+bool fractionsValid = add1Fraction > 0.0 and add1Fraction < add2Fraction and add2Fraction < add3Fraction and add3Fraction < add4Fraction and add4Fraction < 1.0
+if barstate.isfirst and not isTargetTimeframe
+    runtime.error("이 전략은 1분·5분·15분 표준 캔들에서만 사용할 수 있습니다.")
+if barstate.isfirst and not fractionsValid
+    runtime.error("추매 위치는 0 < 추매1 < 추매2 < 추매3 < 추매4 < 1 이어야 합니다.")
+
+// 현재 진행 중인 1시간봉을 사용하지 않습니다. 새 1시간 이벤트에서 signalClose[1]은
+// 막 닫힌 돌파봉, entry channel[2]는 그 돌파봉을 제외한 이전 채널입니다. Python 후보의
+// 한 봉 지연 게이트에 맞춰 gate/ATR은 [2], 거래량 평균은 [3]을 사용합니다.
+[signalHourOpen, signalHourLow, signalClose, signalEntryHigh, signalEntryLow, hourExitLow, signalAtr, signalGateClose, signalGateSma, signalGateRsi, signalGateVolume, signalGateVolumeAverage, currentGateClose, currentGateSma, currentGateRsi, currentGateVolume, currentGateVolumeAverage] = request.security(
+     syminfo.tickerid,
+     "60",
+     [open[1], low[1], close[1], ta.highest(high, entryChannel)[2], ta.lowest(low, entryChannel)[2], ta.lowest(low, exitChannel)[1], ta.atr(atrLength)[2], close[2], ta.sma(close, trendLength)[2], ta.rsi(close, rsiLength)[2], volume[2], ta.sma(volume, volumeLength)[3], close[1], ta.sma(close, trendLength)[1], ta.rsi(close, rsiLength)[1], volume[1], ta.sma(volume, volumeLength)[2]],
+     gaps = barmerge.gaps_off,
+     lookahead = barmerge.lookahead_on)
+
+bool signalLongGate = signalGateClose > signalGateSma and signalGateRsi > 50.0 and signalGateVolume > signalGateVolumeAverage
+bool signalRiskOffGate = signalGateClose < signalGateSma and signalGateRsi < 50.0 and signalGateVolume > signalGateVolumeAverage
+bool currentLongGate = currentGateClose > currentGateSma and currentGateRsi > 50.0 and currentGateVolume > currentGateVolumeAverage
+bool confirmedLongBreakout = signalLongGate and signalClose > signalEntryHigh
+bool confirmedDownBreakout = signalRiskOffGate and signalClose < signalEntryLow
+bool newConfirmedHour = timeframe.change("60")
+bool newLongSetup = isTargetTimeframe and newConfirmedHour and confirmedLongBreakout
+bool newRiskOffSetup = isTargetTimeframe and newConfirmedHour and confirmedDownBreakout
+
+var bool entryPending = false
+var bool setupActive = false
+var bool exitPending = false
+var bool reviewCompleted = false
+var int pendingAdd = 0
+var int pendingAddBar = na
+var int pendingAddExpiresAt = na
+var int entryOrderBar = na
+var int entryExpiresAt = na
+var int addCount = 0
+var int setupId = 0
+var int stopRevision = 0
+var int lossStreak = 0
+var int observedClosedTrades = 0
+var float observedPositionSize = 0.0
+var float entryOrderQuantity = na
+var float entryLimitPrice = na
+var float pendingAddQuantity = na
+var float pendingAddLimitPrice = na
+var float setupRiskAmount = na
+var float setupNotionalLimit = na
+var float setupNetProfitStart = na
+var float setupAtr = na
+var float initialEntry = na
+var float finalStop = na
+var float trailingExit = na
+var float add1Level = na
+var float add2Level = na
+var float add3Level = na
+var float add4Level = na
+var int entryTime = na
+var string stateReason = "대기"
+var bool entryFillEvent = false
+var int addFillEvent = 0
+var bool sameBarRoundTripEvent = false
+var float dailyStartEquity = na
+var float peakEquity = na
+var bool dailyHalt = false
+var bool totalHalt = false
+
+entryFillEvent := false
+addFillEvent := 0
+sameBarRoundTripEvent := false
+
+float positionNow = strategy.position_size
+bool positionIncreased = positionNow > observedPositionSize + contractStep * 0.5
+bool initialFillObserved = entryPending and not setupActive and positionNow > 0.0 and observedPositionSize <= 0.0
+bool additionFillObserved = setupActive and pendingAdd > 0 and positionIncreased
+bool setupRoundTripClosed = entryPending and not setupActive and positionNow == 0.0 and strategy.closedtrades > observedClosedTrades
+bool activeSetupClosed = setupActive and positionNow == 0.0 and (observedPositionSize > 0.0 or strategy.closedtrades > observedClosedTrades)
+bool setupJustClosed = setupRoundTripClosed or activeSetupClosed
+
+if initialFillObserved
+    entryPending := false
+    setupActive := true
+    initialEntry := strategy.position_avg_price
+    float protectionBeforeFill = trailingExit
+    finalStop := math.max(finalStop, initialEntry - setupAtr * stopAtr)
+    float actualStopDistance = initialEntry - finalStop
+    add1Level := initialEntry - actualStopDistance * add1Fraction
+    add2Level := initialEntry - actualStopDistance * add2Fraction
+    add3Level := initialEntry - actualStopDistance * add3Fraction
+    add4Level := initialEntry - actualStopDistance * add4Fraction
+    trailingExit := math.max(math.max(trailingExit, finalStop), hourExitLow)
+    if trailingExit > protectionBeforeFill + syminfo.mintick * 0.5
+        stopRevision += 1
+        string initialProtectionOrderId = setupOrderId(setupId, "PROTECT")
+        string initialProtectionEventId = initialProtectionOrderId + "-update-R" + str.tostring(stopRevision)
+        alert(orderJson("protective_stop_update", setupId, initialProtectionOrderId, initialProtectionEventId, "stop_market", "sell", 0, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true), alert.freq_all)
+    addCount := 0
+    pendingAdd := 0
+    pendingAddBar := na
+    entryTime := time
+    entryFillEvent := true
+    stateReason := "진입 체결"
+    entryOrderQuantity := na
+    entryLimitPrice := na
+    entryExpiresAt := na
+
+if additionFillObserved
+    addCount := pendingAdd
+    addFillEvent := pendingAdd
+    pendingAdd := 0
+    pendingAddBar := na
+    pendingAddExpiresAt := na
+    pendingAddQuantity := na
+    pendingAddLimitPrice := na
+    stateReason := "추매 체결"
+
+if setupJustClosed
+    if entryPending
+        string closingEntryOrderId = setupOrderId(setupId, "L0")
+        alert(orderJson("entry_cancel_intent", setupId, closingEntryOrderId, closingEntryOrderId + "-cancel-close", "cancel", "buy", 0, entryOrderQuantity, entryLimitPrice, entryExpiresAt, finalStop, stopRevision, false), alert.freq_all)
+    if pendingAdd > 0
+        string closingAddOrderId = setupOrderId(setupId, "L" + str.tostring(pendingAdd))
+        alert(orderJson("add_cancel_intent", setupId, closingAddOrderId, closingAddOrderId + "-cancel-close", "cancel", "buy", pendingAdd, pendingAddQuantity, pendingAddLimitPrice, pendingAddExpiresAt, trailingExit, stopRevision, false), alert.freq_all)
+    strategy.cancel_all()
+    sameBarRoundTripEvent := setupRoundTripClosed
+    float setupProfit = strategy.netprofit - setupNetProfitStart
+    lossStreak := setupProfit < 0.0 ? lossStreak + 1 : 0
+    entryPending := false
+    setupActive := false
+    exitPending := false
+    reviewCompleted := false
+    pendingAdd := 0
+    pendingAddBar := na
+    pendingAddExpiresAt := na
+    entryOrderBar := na
+    entryExpiresAt := na
+    addCount := 0
+    stopRevision := 0
+    entryOrderQuantity := na
+    entryLimitPrice := na
+    pendingAddQuantity := na
+    pendingAddLimitPrice := na
+    setupRiskAmount := na
+    setupNotionalLimit := na
+    setupNetProfitStart := na
+    setupAtr := na
+    initialEntry := na
+    finalStop := na
+    trailingExit := na
+    add1Level := na
+    add2Level := na
+    add3Level := na
+    add4Level := na
+    entryTime := na
+    stateReason := setupProfit < 0.0 ? "설정 손실 청산" : "설정 청산"
+
+bool newRiskDay = timeframe.change("D")
+if na(dailyStartEquity)
+    dailyStartEquity := strategy.equity
+if na(peakEquity)
+    peakEquity := strategy.equity
+if newRiskDay
+    // 첫 일봉 경계의 손실을 리셋으로 숨기지 않도록 직전 차트봉 자산을 일 기준값으로 둡니다.
+    dailyStartEquity := nz(strategy.equity[1], strategy.equity)
+    dailyHalt := false
+peakEquity := math.max(peakEquity, strategy.equity)
+float dailyLossPercentNow = dailyStartEquity > 0.0 ? math.max((dailyStartEquity - strategy.equity) / dailyStartEquity * 100.0, 0.0) : 0.0
+float totalDrawdownPercentNow = peakEquity > 0.0 ? math.max((peakEquity - strategy.equity) / peakEquity * 100.0, 0.0) : 0.0
+if dailyLossPercentNow >= dailyLossLimit
+    dailyHalt := true
+if totalDrawdownPercentNow >= totalDrawdownLimit
+    totalHalt := true
+bool circuitHalt = dailyHalt or totalHalt
+
+if circuitHalt and entryPending and not setupActive and positionNow == 0.0 and not setupJustClosed
+    string circuitCancelledEntryOrderId = setupOrderId(setupId, "L0")
+    alert(orderJson("entry_cancel_intent", setupId, circuitCancelledEntryOrderId, circuitCancelledEntryOrderId + "-cancel-circuit", "cancel", "buy", 0, entryOrderQuantity, entryLimitPrice, entryExpiresAt, finalStop, stopRevision, false), alert.freq_all)
+    strategy.cancel_all()
+    entryPending := false
+    entryOrderBar := na
+    entryExpiresAt := na
+    entryOrderQuantity := na
+    entryLimitPrice := na
+    setupRiskAmount := na
+    setupNotionalLimit := na
+    setupNetProfitStart := na
+    setupAtr := na
+    finalStop := na
+    trailingExit := na
+    stopRevision := 0
+    stateReason := totalHalt ? "총 낙폭 정지" : "일 손실 정지"
+
+// 신호 종가 제한가는 다음 봉까지만 유효합니다. 다음 계산 시점에도 포지션 변화가 없으면
+// 위쪽 갭·증거금·최소수량 등으로 미체결된 주문과 보호주문을 함께 취소합니다.
+if entryPending and not setupActive and positionNow == 0.0 and not setupJustClosed and not na(entryOrderBar) and bar_index > entryOrderBar
+    string cancelledEntryOrderId = setupOrderId(setupId, "L0")
+    strategy.cancel("L0")
+    strategy.cancel("XL0")
+    alert(orderJson("entry_cancel_intent", setupId, cancelledEntryOrderId, cancelledEntryOrderId + "-cancel-expiry", "cancel", "buy", 0, entryOrderQuantity, entryLimitPrice, entryExpiresAt, finalStop, stopRevision, false), alert.freq_all)
+    entryPending := false
+    entryOrderBar := na
+    entryExpiresAt := na
+    entryOrderQuantity := na
+    entryLimitPrice := na
+    setupRiskAmount := na
+    setupNotionalLimit := na
+    setupNetProfitStart := na
+    setupAtr := na
+    finalStop := na
+    trailingExit := na
+    stopRevision := 0
+    stateReason := "진입 미체결"
+
+if setupActive and pendingAdd > 0 and not positionIncreased and not na(pendingAddBar) and bar_index > pendingAddBar
+    int cancelledAddition = pendingAdd
+    string cancelledAddOrderId = setupOrderId(setupId, "L" + str.tostring(cancelledAddition))
+    if pendingAdd == 1
+        strategy.cancel("L1")
+        strategy.cancel("XL1")
+    else if pendingAdd == 2
+        strategy.cancel("L2")
+        strategy.cancel("XL2")
+    else if pendingAdd == 3
+        strategy.cancel("L3")
+        strategy.cancel("XL3")
+    else
+        strategy.cancel("L4")
+        strategy.cancel("XL4")
+    alert(orderJson("add_cancel_intent", setupId, cancelledAddOrderId, cancelledAddOrderId + "-cancel-expiry", "cancel", "buy", cancelledAddition, pendingAddQuantity, pendingAddLimitPrice, pendingAddExpiresAt, trailingExit, stopRevision, false), alert.freq_all)
+    pendingAdd := 0
+    pendingAddBar := na
+    pendingAddExpiresAt := na
+    pendingAddQuantity := na
+    pendingAddLimitPrice := na
+    stateReason := "추매 미체결"
+
+float lossRiskMultiplier = lossStreak >= 4 ? 0.25 : lossStreak >= 2 ? 0.50 : 1.0
+float totalWeight = math.max(1.0, initialWeight + addWeight * 4.0)
+
+if newLongSetup and not circuitHalt and not setupJustClosed and not entryPending and not setupActive and strategy.position_size == 0.0 and strategy.opentrades == 0
+    float candidateRiskAmount = strategy.equity * riskPercent / 100.0 * lossRiskMultiplier
+    float candidateNotionalLimit = strategy.equity * maxNotionalPercent / 100.0
+    float candidateFinalStop = signalClose - signalAtr * stopAtr
+    float expectedRiskDistance = signalClose - candidateFinalStop
+    float initialRiskAllocation = candidateRiskAmount * initialWeight / totalWeight
+    float riskQuantity = initialRiskAllocation / math.max(expectedRiskDistance * pointValue, syminfo.mintick * pointValue)
+    float notionalQuantity = candidateNotionalLimit / math.max(signalClose * pointValue, syminfo.mintick * pointValue)
+    float initialQuantity = roundQuantity(math.min(riskQuantity, notionalQuantity))
+    if not na(signalAtr) and signalAtr > 0.0 and candidateFinalStop > 0.0 and initialQuantity >= contractStep
+        setupId += 1
+        string entryOrderId = setupOrderId(setupId, "L0")
+        string protectionOrderId = setupOrderId(setupId, "PROTECT")
+        int candidateExpiresAt = int(time_close + timeframe.in_seconds() * 1000)
+        entryPending := true
+        entryOrderBar := bar_index
+        entryExpiresAt := candidateExpiresAt
+        entryOrderQuantity := initialQuantity
+        entryLimitPrice := signalClose
+        setupRiskAmount := candidateRiskAmount
+        setupNotionalLimit := candidateNotionalLimit
+        setupNetProfitStart := strategy.netprofit
+        setupAtr := signalAtr
+        finalStop := candidateFinalStop
+        trailingExit := finalStop
+        stopRevision := 1
+        reviewCompleted := false
+        stateReason := "진입 주문"
+        string entryFillMessage = orderJson("entry_fill", setupId, entryOrderId, entryOrderId + "-fill", "limit", "buy", 0, initialQuantity, signalClose, candidateExpiresAt, finalStop, stopRevision, false)
+        string initialStopFillMessage = orderJson("protective_exit_fill", setupId, protectionOrderId, protectionOrderId + "-fill-R" + str.tostring(stopRevision), "stop_market", "sell", 0, initialQuantity, na, na, finalStop, stopRevision, true)
+        strategy.entry("L0", strategy.long, qty = initialQuantity, limit = signalClose, alert_message = entryFillMessage)
+        strategy.exit("XL0", "L0", stop = finalStop, alert_message = initialStopFillMessage)
+        alert(orderJson("entry_intent", setupId, entryOrderId, entryOrderId + "-intent", "limit", "buy", 0, initialQuantity, signalClose, candidateExpiresAt, finalStop, stopRevision, false), alert.freq_all)
+
+if setupActive and strategy.position_size > 0.0
+    float previousTrailingExit = trailingExit
+    float channelCandidate = math.max(finalStop, hourExitLow)
+    trailingExit := na(trailingExit) ? channelCandidate : math.max(trailingExit, channelCandidate)
+    bool trailingRaised = not na(previousTrailingExit) and trailingExit > previousTrailingExit + syminfo.mintick * 0.5
+    if trailingRaised
+        stopRevision += 1
+    string protectionOrderId = setupOrderId(setupId, "PROTECT")
+    string protectionFillEventId = protectionOrderId + "-fill-R" + str.tostring(stopRevision)
+    string protectiveFillMessage = orderJson("protective_exit_fill", setupId, protectionOrderId, protectionFillEventId, "stop_market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true)
+    strategy.exit("XL0", "L0", stop = trailingExit, alert_message = protectiveFillMessage)
+    strategy.exit("XL1", "L1", stop = trailingExit, alert_message = protectiveFillMessage)
+    strategy.exit("XL2", "L2", stop = trailingExit, alert_message = protectiveFillMessage)
+    strategy.exit("XL3", "L3", stop = trailingExit, alert_message = protectiveFillMessage)
+    strategy.exit("XL4", "L4", stop = trailingExit, alert_message = protectiveFillMessage)
+    if trailingRaised
+        alert(orderJson("protective_stop_update", setupId, protectionOrderId, protectionOrderId + "-update-R" + str.tostring(stopRevision), "stop_market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true), alert.freq_all)
+
+    float heldHours = (time - entryTime) / 3600000.0
+    float currentPriceRisk = math.max(strategy.position_avg_price - finalStop, 0.0) * math.abs(strategy.position_size) * pointValue
+    bool fillBeyondFinalStop = strategy.position_avg_price <= finalStop
+    bool riskBudgetBreached = fillBeyondFinalStop or currentPriceRisk > setupRiskAmount + syminfo.mintick * pointValue
+    if not exitPending and circuitHalt
+        exitPending := true
+        string circuitType = totalHalt ? "total_drawdown" : "daily_loss"
+        stateReason := totalHalt ? "총 낙폭 정지 청산" : "일 손실 정지 청산"
+        string circuitCloseOrderId = setupOrderId(setupId, "CIRCUIT-CLOSE")
+        string circuitCloseEventId = circuitCloseOrderId + "-" + circuitType
+        string circuitExitMessage = orderJson("circuit_exit_fill", setupId, circuitCloseOrderId, circuitCloseEventId + "-fill", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true)
+        strategy.close_all(comment = "서킷브레이커", alert_message = circuitExitMessage)
+        alert(orderJson("circuit_exit_intent", setupId, circuitCloseOrderId, circuitCloseEventId + "-intent", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true), alert.freq_all)
+    else if not exitPending and riskBudgetBreached
+        exitPending := true
+        stateReason := "가격위험 초과 청산"
+        string riskCloseOrderId = setupOrderId(setupId, "RISK-CLOSE")
+        string riskExitMessage = orderJson("risk_exit_fill", setupId, riskCloseOrderId, riskCloseOrderId + "-fill", "market", "sell", addCount, math.abs(strategy.position_size), na, na, finalStop, stopRevision, true)
+        strategy.close_all(comment = "가격위험 초과", alert_message = riskExitMessage)
+        alert(orderJson("risk_exit_intent", setupId, riskCloseOrderId, riskCloseOrderId + "-intent", "market", "sell", addCount, math.abs(strategy.position_size), na, na, finalStop, stopRevision, true), alert.freq_all)
+    else if not exitPending and newRiskOffSetup
+        exitPending := true
+        stateReason := "하락 돌파 청산"
+        string riskOffCloseOrderId = setupOrderId(setupId, "RISKOFF-CLOSE")
+        string riskOffExitMessage = orderJson("risk_off_exit_fill", setupId, riskOffCloseOrderId, riskOffCloseOrderId + "-fill", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true)
+        strategy.close_all(comment = "하락 돌파", alert_message = riskOffExitMessage)
+        alert(orderJson("risk_off_exit_intent", setupId, riskOffCloseOrderId, riskOffCloseOrderId + "-intent", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true), alert.freq_all)
+    else if not exitPending and heldHours >= finalHoldingHours
+        exitPending := true
+        stateReason := "최대 보유시간 청산"
+        string timeCloseOrderId = setupOrderId(setupId, "TIME-CLOSE")
+        string timeExitMessage = orderJson("time_exit_fill", setupId, timeCloseOrderId, timeCloseOrderId + "-fill", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true)
+        strategy.close_all(comment = "최대 보유시간", alert_message = timeExitMessage)
+        alert(orderJson("time_exit_intent", setupId, timeCloseOrderId, timeCloseOrderId + "-intent", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true), alert.freq_all)
+    else if not exitPending and not reviewCompleted and heldHours >= reviewHours
+        reviewCompleted := true
+        if not currentLongGate
+            exitPending := true
+            stateReason := "추세 재심사 청산"
+            string reviewCloseOrderId = setupOrderId(setupId, "REVIEW-CLOSE")
+            string reviewExitMessage = orderJson("review_exit_fill", setupId, reviewCloseOrderId, reviewCloseOrderId + "-fill", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true)
+            strategy.close_all(comment = "추세 재심사", alert_message = reviewExitMessage)
+            alert(orderJson("review_exit_intent", setupId, reviewCloseOrderId, reviewCloseOrderId + "-intent", "market", "sell", addCount, math.abs(strategy.position_size), na, na, trailingExit, stopRevision, true), alert.freq_all)
+    else if not exitPending and pendingAdd == 0 and addCount < 4
+        float nextAddLevel = addCount == 0 ? add1Level : addCount == 1 ? add2Level : addCount == 2 ? add3Level : add4Level
+        bool nextAddReclaim = newConfirmedHour and signalHourLow <= nextAddLevel and signalClose > nextAddLevel and signalClose > signalHourOpen and signalLongGate
+        if nextAddReclaim
+            float remainingRisk = math.max(setupRiskAmount - currentPriceRisk, 0.0)
+            float trancheRisk = math.min(setupRiskAmount * addWeight / totalWeight, remainingRisk)
+            float additionRiskPerContract = math.max((signalClose - finalStop) * pointValue, syminfo.mintick * pointValue)
+            float additionRiskQuantity = trancheRisk / additionRiskPerContract
+            float currentNotional = math.abs(strategy.position_size) * signalClose * pointValue
+            float availableNotional = math.max(setupNotionalLimit - currentNotional, 0.0)
+            float additionNotionalQuantity = availableNotional / math.max(signalClose * pointValue, syminfo.mintick * pointValue)
+            float additionQuantity = roundQuantity(math.min(additionRiskQuantity, additionNotionalQuantity))
+            if additionQuantity >= contractStep
+                int nextAddition = addCount + 1
+                int additionExpiresAt = int(time_close + timeframe.in_seconds() * 1000)
+                string additionOrderId = setupOrderId(setupId, "L" + str.tostring(nextAddition))
+                string protectionOrderId = setupOrderId(setupId, "PROTECT")
+                pendingAdd := nextAddition
+                pendingAddBar := bar_index
+                pendingAddExpiresAt := additionExpiresAt
+                pendingAddQuantity := additionQuantity
+                pendingAddLimitPrice := signalClose
+                stateReason := "조건부 추매 주문"
+                float expectedProtectedQuantity = math.abs(strategy.position_size) + additionQuantity
+                string additionFillMessage = orderJson("add_fill", setupId, additionOrderId, additionOrderId + "-fill", "limit", "buy", nextAddition, additionQuantity, signalClose, additionExpiresAt, trailingExit, stopRevision, false)
+                string additionStopFillMessage = orderJson("protective_exit_fill", setupId, protectionOrderId, protectionOrderId + "-fill-R" + str.tostring(stopRevision), "stop_market", "sell", nextAddition, expectedProtectedQuantity, na, na, trailingExit, stopRevision, true)
+                if nextAddition == 1
+                    strategy.entry("L1", strategy.long, qty = additionQuantity, limit = signalClose, alert_message = additionFillMessage)
+                else if nextAddition == 2
+                    strategy.entry("L2", strategy.long, qty = additionQuantity, limit = signalClose, alert_message = additionFillMessage)
+                else if nextAddition == 3
+                    strategy.entry("L3", strategy.long, qty = additionQuantity, limit = signalClose, alert_message = additionFillMessage)
+                else
+                    strategy.entry("L4", strategy.long, qty = additionQuantity, limit = signalClose, alert_message = additionFillMessage)
+                strategy.exit("XL0", "L0", stop = trailingExit, alert_message = additionStopFillMessage)
+                strategy.exit("XL1", "L1", stop = trailingExit, alert_message = additionStopFillMessage)
+                strategy.exit("XL2", "L2", stop = trailingExit, alert_message = additionStopFillMessage)
+                strategy.exit("XL3", "L3", stop = trailingExit, alert_message = additionStopFillMessage)
+                strategy.exit("XL4", "L4", stop = trailingExit, alert_message = additionStopFillMessage)
+                alert(orderJson("add_intent", setupId, additionOrderId, additionOrderId + "-intent", "limit", "buy", nextAddition, additionQuantity, signalClose, additionExpiresAt, trailingExit, stopRevision, false), alert.freq_all)
+
+observedPositionSize := strategy.position_size
+observedClosedTrades := strategy.closedtrades
+
+plot(strategy.position_size > 0.0 ? strategy.position_avg_price : na, "현재 평단", color = color.yellow, linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot(setupActive and addCount < 1 ? add1Level : na, "조건부 추매1", color = color.new(color.orange, 0), style = plot.style_linebr, display = display.all - display.status_line)
+plot(setupActive and addCount < 2 ? add2Level : na, "조건부 추매2", color = color.new(color.orange, 15), style = plot.style_linebr, display = display.all - display.status_line)
+plot(setupActive and addCount < 3 ? add3Level : na, "조건부 추매3", color = color.new(color.orange, 30), style = plot.style_linebr, display = display.all - display.status_line)
+plot(setupActive and addCount < 4 ? add4Level : na, "조건부 추매4", color = color.new(color.orange, 45), style = plot.style_linebr, display = display.all - display.status_line)
+plot(setupActive ? trailingExit : na, "채널 추적 청산", color = color.lime, linewidth = 2, style = plot.style_linebr, display = display.all - display.status_line)
+plot((setupActive or entryPending) ? finalStop : na, "최후 손절", color = color.red, linewidth = 3, style = plot.style_linebr, display = display.all - display.status_line)
+
+plotshape(entryFillEvent, title = "진입 체결", style = shape.labelup, location = location.belowbar, color = color.lime, textcolor = color.black, text = "진입", size = size.small, display = display.all - display.status_line)
+plotshape(sameBarRoundTripEvent, title = "동일봉 진입·청산", style = shape.labelup, location = location.belowbar, color = color.new(color.red, 10), textcolor = color.white, text = "진입↔청산", size = size.small, display = display.all - display.status_line)
+plotshape(addFillEvent == 1, title = "조건부 추매1 체결", style = shape.labelup, location = location.belowbar, color = color.orange, textcolor = color.black, text = "추매1", size = size.tiny, display = display.all - display.status_line)
+plotshape(addFillEvent == 2, title = "조건부 추매2 체결", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 15), textcolor = color.black, text = "추매2", size = size.tiny, display = display.all - display.status_line)
+plotshape(addFillEvent == 3, title = "조건부 추매3 체결", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 30), textcolor = color.black, text = "추매3", size = size.tiny, display = display.all - display.status_line)
+plotshape(addFillEvent == 4, title = "조건부 추매4 체결", style = shape.labelup, location = location.belowbar, color = color.new(color.orange, 45), textcolor = color.black, text = "추매4", size = size.tiny, display = display.all - display.status_line)
+
+var table dashboard = table.new(position.bottom_right, 4, 3, bgcolor = color.new(color.black, 12), border_color = color.new(color.gray, 55), border_width = 1)
+if barstate.islast and showDashboard
+    string stateText = totalHalt ? "총 낙폭 영구 정지" : dailyHalt ? "일 손실 정지" : entryPending ? "진입 대기" : setupActive ? stateReason : "대기"
+    table.cell(dashboard, 0, 0, "상태", text_color = color.white, bgcolor = color.new(color.blue, 45))
+    table.cell(dashboard, 1, 0, stateText, text_color = setupActive ? color.lime : color.white, bgcolor = color.new(color.blue, 70))
+    table.cell(dashboard, 2, 0, "검증", text_color = color.white, bgcolor = color.new(color.red, 35))
+    table.cell(dashboard, 3, 0, "연구 FAIL·실거래 금지", text_color = color.white, bgcolor = color.new(color.red, 15))
+    table.cell(dashboard, 0, 1, "현재 평단", text_color = color.yellow)
+    table.cell(dashboard, 1, 1, setupActive ? str.tostring(strategy.position_avg_price, format.mintick) : "-", text_color = color.yellow)
+    table.cell(dashboard, 2, 1, "조건부 추매", text_color = color.orange)
+    table.cell(dashboard, 3, 1, str.tostring(addCount) + " / 4", text_color = color.orange)
+    table.cell(dashboard, 0, 2, "채널 추적 청산", text_color = color.lime)
+    table.cell(dashboard, 1, 2, setupActive ? str.tostring(trailingExit, format.mintick) : "-", text_color = color.lime)
+    table.cell(dashboard, 2, 2, "최후 손절", text_color = color.red)
+    table.cell(dashboard, 3, 2, (setupActive or entryPending) ? str.tostring(finalStop, format.mintick) : "-", text_color = color.red)
+
+if barstate.islast and not showDashboard
+    table.clear(dashboard, 0, 0, 3, 2)

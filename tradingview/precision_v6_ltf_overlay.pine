@@ -1,0 +1,266 @@
+//@version=6
+indicator(
+     "DISCOVERY FAIL — Precision V6 Confirmed 1H WATCH [1m/5m/15m]",
+     shorttitle = "PV6 LTF",
+     overlay = true,
+     calc_bars_count = 50000,
+     max_labels_count = 100)
+
+// VALIDATION / DISCOVERY STATUS: FAIL — RESEARCH·PAPER WATCH ONLY.
+// 주문 실행 권위가 없으며 ENTRY를 표시하지 않는다. 모든 자체 심볼 60분 값은 UDF 안에서
+// 한 봉 [1] 지연한 뒤 lookahead_on으로 전달하고, BTC 레짐도 같은 confirmed 패턴을 쓴다.
+// 새 60분의 첫 1/5/15분 시점에만 직전 확정 60분 WATCH를 처리한다. 역사에서는 해당 LTF
+// 봉의 종가에 계산되므로 next-open 체결 증거가 아니라 그 시가를 사용한 계획 표시일 뿐이다.
+// 실제 거래소 72h 펀딩 누계 <=0.0004는 외부 시스템이 확인해야 하며 Pine은 대체값을
+// 만들지 않는다. alert는 execution_authority=false, actionable=false다.
+
+int HOUR_MS = 60 * 60 * 1000
+int DAY_MS = 24 * HOUR_MS
+int WINDOW_MS = 365 * DAY_MS
+float STOP_ATR = 7.0
+float TAKE_PROFIT_R = 1.0
+int PLAN_HOURS = 24
+float EXTERNAL_FUNDING_MAX_72H = 0.0004
+
+string btcTicker = input.symbol("BYBIT:BTCUSDT.P", "확정 BTC 레짐 심볼", display = display.data_window)
+bool enableHighWatch = input.bool(false, "Pine-only HIGH WATCH 관찰", tooltip = "기본 A+ WATCH에는 영향을 주지 않는 선택 옵션입니다. BTC>SMA200 및 자체 DMI spread 2봉>=20을 추가하지만 실행 신호가 아닙니다.", display = display.data_window)
+bool enableObservationAlerts = input.bool(true, "WATCH 관찰 알림", tooltip = "execution_authority=false인 외부 펀딩 확인 요청만 보냅니다.", display = display.data_window)
+
+bool targetTimeframe = timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5 or timeframe.multiplier == 15)
+if barstate.isfirst and not targetTimeframe
+    runtime.error("Precision V6 오버레이는 표준 1분·5분·15분봉에서만 사용할 수 있습니다.")
+if barstate.isfirst and not chart.is_standard
+    runtime.error("Heikin Ashi/Renko 등 비표준 차트에서는 사용할 수 없습니다.")
+
+f_boolJson(bool value) =>
+    value ? "true" : "false"
+
+f_numJson(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+f_linearQuantile(array<float> values, float quantile) =>
+    float result = na
+    int count = array.size(values)
+    if count > 0
+        array<float> ordered = array.copy(values)
+        array.sort(ordered, order.ascending)
+        float rank = (count - 1) * quantile
+        int lowerIndex = int(math.floor(rank))
+        int upperIndex = int(math.ceil(rank))
+        float lowerValue = array.get(ordered, lowerIndex)
+        float upperValue = array.get(ordered, upperIndex)
+        result := lowerValue + (upperValue - lowerValue) * (rank - lowerIndex)
+    result
+
+f_trimWindow(array<int> timestamps, array<float> values, int cutoff) =>
+    while array.size(timestamps) > 0
+        if array.get(timestamps, 0) < cutoff
+            array.shift(timestamps)
+            array.shift(values)
+        else
+            break
+    true
+
+f_contextGrade(int score) =>
+    score >= 7 ? "A" : score >= 5 ? "B" : "C"
+
+// q 배열은 이 60분 request context 안에서만 존재한다. 현재 raw 후보는 q60 계산 후 push해
+// [t-365D,t)와 pandas linear interpolation 계약을 지킨다.
+f_hourBundle() =>
+    var array<int> candidateTimes = array.new_int()
+    var array<float> candidateVolatility = array.new_float()
+    var int firstFeatureReadyTime = na
+
+    float trend = ta.sma(close, 200)
+    float momentum = ta.rsi(close, 14)
+    float volumeAverage = ta.sma(volume, 20)
+    float atrEntry = ta.atr(24)[1]
+    float entryHigh = ta.highest(high, 24)[1]
+    float entryLow = ta.lowest(low, 24)[1]
+    bool priorLongGate = close[1] > trend[1] and momentum[1] > 50.0 and volume[1] > volumeAverage[2]
+    bool featureReady = not na(atrEntry) and not na(entryHigh) and not na(entryLow) and not na(trend[1]) and not na(momentum[1]) and not na(volumeAverage[2])
+    bool coreRaw = featureReady and priorLongGate and close > entryHigh
+    float relativeAtr = atrEntry / close
+
+    if featureReady and na(firstFeatureReadyTime)
+        firstFeatureReadyTime := time
+    f_trimWindow(candidateTimes, candidateVolatility, time - WINDOW_MS)
+    int coreSamples = array.size(candidateVolatility)
+    bool coreFullWindow = not na(firstFeatureReadyTime) and time >= firstFeatureReadyTime + WINDOW_MS
+    float coreThreshold = coreRaw and coreFullWindow and coreSamples >= 30 ? f_linearQuantile(candidateVolatility, 0.60) : na
+    bool coreAccepted = coreRaw and not na(coreThreshold) and relativeAtr <= coreThreshold
+    if coreRaw and not na(relativeAtr)
+        array.push(candidateTimes, time)
+        array.push(candidateVolatility, relativeAtr)
+
+    float ret24 = not na(close[24]) and close[24] != 0.0 ? close / close[24] - 1.0 : na
+    bool ret24Pass = not na(ret24) and ret24 >= 0.02
+    bool bullishBodyPass = close > open and close - open >= 0.75 * atrEntry
+
+    [plusDi, minusDi, adxValue] = ta.dmi(14, 14)
+    float dmiSpread = plusDi - minusDi
+    float volumeRatio = volumeAverage[1] > 0.0 ? volume / volumeAverage[1] : na
+    float bbBasis = ta.sma(close, 20)
+    float bbDeviation = 2.0 * ta.stdev(close, 20)
+    bool bbPass = close > bbBasis + bbDeviation
+    float priorLiquidityLow = ta.lowest(low, 5)[1]
+    bool ictSweep = low < priorLiquidityLow and close > priorLiquidityLow
+    bool ictFvg = low > high[2]
+    bool ictOb = close[1] < open[1] and close > high[1]
+    float oteHigh = ta.highest(high, 24)[1]
+    float oteLow = ta.lowest(low, 24)[1]
+    float oteRange = oteHigh - oteLow
+    float oteLower = oteHigh - oteRange * 0.786
+    float oteUpper = oteHigh - oteRange * 0.618
+    bool ictOte = oteRange > 0.0 and low >= oteLower and low <= oteUpper and close > open
+    float profileProxy = ta.sma(hlc3 * volume, 48) / ta.sma(volume, 48)
+    bool profilePass = not na(profileProxy) and close >= profileProxy
+    bool rsiContextPass = momentum >= 60.0
+    bool dmiContextPass = dmiSpread >= 20.0 and adxValue >= 20.0
+    bool volumeContextPass = not na(volumeRatio) and volumeRatio >= 1.20
+    int contextScore = (ictSweep ? 1 : 0) + (ictFvg ? 1 : 0) + (ictOb ? 1 : 0) + (ictOte ? 1 : 0) + (bbPass ? 1 : 0) + (rsiContextPass ? 1 : 0) + (dmiContextPass ? 1 : 0) + (volumeContextPass ? 1 : 0) + (profilePass ? 1 : 0)
+
+    [time, close, atrEntry, coreAccepted, coreThreshold, coreSamples, coreFullWindow,
+     ret24Pass, bullishBodyPass, momentum, dmiSpread, dmiSpread[1], adxValue, volumeRatio,
+     ictSweep, ictFvg, ictOb, ictOte, bbPass, profilePass, contextScore]
+
+// lookahead_on과 결합되는 모든 반환값을 UDF 내부에서 한 봉 지연한다.
+f_confirmedHourBundle() =>
+    [hourTime, hourClose, atrEntry, coreAccepted, coreThreshold, coreSamples, coreFullWindow,
+     ret24Pass, bullishBodyPass, rsiValue, dmiSpread, dmiSpreadPrevious, adxValue, volumeRatio,
+     ictSweep, ictFvg, ictOb, ictOte, bbPass, profilePass, contextScore] = f_hourBundle()
+    [hourTime[1], hourClose[1], atrEntry[1], coreAccepted[1], coreThreshold[1], coreSamples[1], coreFullWindow[1],
+     ret24Pass[1], bullishBodyPass[1], rsiValue[1], dmiSpread[1], dmiSpreadPrevious[1], adxValue[1], volumeRatio[1],
+     ictSweep[1], ictFvg[1], ictOb[1], ictOte[1], bbPass[1], profilePass[1], contextScore[1]]
+
+f_confirmedBtcBundle() =>
+    float btcTrend = ta.sma(close, 200)
+    float btcRet168 = not na(close[169]) and close[169] != 0.0 ? close[1] / close[169] - 1.0 : na
+    [btcRet168, close[1] > btcTrend[1]]
+
+f_watchJson(
+     string setupId,
+     string eventId,
+     string watchGrade,
+     int signalTime,
+     float signalClose,
+     float referenceOpen,
+     float atr,
+     float threshold,
+     int samples,
+     float finalStop,
+     float add1,
+     float add2,
+     float add3,
+     float add4,
+     float takeProfit,
+     int contextScore,
+     bool ictSweep,
+     bool ictFvg,
+     bool ictOb,
+     bool ictOte,
+     bool bbPass,
+     float rsiValue,
+     float dmiSpread,
+     float adxValue,
+     float volumeRatio,
+     bool profilePass) =>
+    "{\"version\":\"precision_v6\",\"validation_status\":\"DISCOVERY_FAIL\"" +
+     ",\"execution_authority\":false,\"actionable\":false,\"watch_only\":true" +
+     ",\"event\":\"external_funding_watch\",\"event_id\":\"" + eventId + "\"" +
+     ",\"setup_id\":\"" + setupId + "\",\"watch_grade\":\"" + watchGrade + "\"" +
+     ",\"ticker\":\"" + syminfo.tickerid + "\",\"signal_timeframe\":\"60\"" +
+     ",\"display_timeframe\":\"" + timeframe.period + "\",\"signal_time\":" + str.tostring(signalTime) +
+     ",\"signal_close\":" + f_numJson(signalClose) + ",\"price_gate_pass\":true" +
+     ",\"external_funding_required\":true,\"external_funding_observed\":null" +
+     ",\"external_funding_max_72h\":" + f_numJson(EXTERNAL_FUNDING_MAX_72H) +
+     ",\"external_funding_rule\":\"actual_72h_cumulative_rate_lte_0.0004\"" +
+     ",\"plan\":{\"reference\":\"next_60m_open_watch_only\",\"reference_open\":" + f_numJson(referenceOpen) +
+     ",\"add_plan_validated\":false,\"final_sl\":" + f_numJson(finalStop) + ",\"add_20\":" + f_numJson(add1) +
+     ",\"add_40\":" + f_numJson(add2) + ",\"add_60\":" + f_numJson(add3) +
+     ",\"add_80\":" + f_numJson(add4) + ",\"take_profit_1r\":" + f_numJson(takeProfit) +
+     ",\"review_hours\":24,\"max_additions\":4}" +
+     ",\"model\":{\"atr24_entry\":" + f_numJson(atr) + ",\"q60_threshold\":" + f_numJson(threshold) +
+     ",\"q60_prior_samples\":" + str.tostring(samples) + "}" +
+     ",\"context\":{\"score\":" + str.tostring(contextScore) + ",\"grade\":\"" + f_contextGrade(contextScore) + "\"" +
+     ",\"ict_sweep\":" + f_boolJson(ictSweep) + ",\"ict_fvg\":" + f_boolJson(ictFvg) +
+     ",\"ict_ob_proxy\":" + f_boolJson(ictOb) + ",\"ict_ote_proxy\":" + f_boolJson(ictOte) +
+     ",\"bb_upper_break\":" + f_boolJson(bbPass) + ",\"rsi14\":" + f_numJson(rsiValue) +
+     ",\"dmi_spread\":" + f_numJson(dmiSpread) + ",\"adx14\":" + f_numJson(adxValue) +
+     ",\"volume_ratio\":" + f_numJson(volumeRatio) + ",\"volume_profile_proxy_pass\":" + f_boolJson(profilePass) + "}}"
+
+[confirmedHourTime, confirmedHourClose, confirmedAtr, confirmedCoreAccepted, confirmedCoreThreshold, confirmedCoreSamples, confirmedCoreFullWindow,
+ confirmedRet24Pass, confirmedBodyPass, confirmedRsi, confirmedDmiSpread, confirmedDmiSpreadPrevious, confirmedAdx, confirmedVolumeRatio,
+ confirmedIctSweep, confirmedIctFvg, confirmedIctOb, confirmedIctOte, confirmedBbPass, confirmedProfilePass, confirmedContextScore] = request.security(
+     syminfo.tickerid,
+     "60",
+     f_confirmedHourBundle(),
+     gaps = barmerge.gaps_off,
+     lookahead = barmerge.lookahead_on,
+     calc_bars_count = 50000)
+
+[confirmedBtcRet168, confirmedBtcSmaBull] = request.security(
+     btcTicker,
+     "60",
+     f_confirmedBtcBundle(),
+     gaps = barmerge.gaps_off,
+     lookahead = barmerge.lookahead_on,
+     calc_bars_count = 50000)
+
+varip int lastHandledConfirmedHour = na
+varip int lastWatchMarkerBarTime = na
+varip bool lastWatchMarkerHigh = false
+varip string lastAlertEventId = ""
+varip int planStartTime = na
+varip float planFinalStop = na
+varip float planAdd1 = na
+varip float planAdd2 = na
+varip float planAdd3 = na
+varip float planAdd4 = na
+varip float planTakeProfit = na
+
+bool newHour = timeframe.change("60")
+bool handleHour = newHour and not na(confirmedHourTime) and (na(lastHandledConfirmedHour) or confirmedHourTime != lastHandledConfirmedHour)
+
+if handleHour
+    lastHandledConfirmedHour := confirmedHourTime
+    bool btcRetPass = not na(confirmedBtcRet168) and confirmedBtcRet168 >= 0.0
+    bool priceGatePass = confirmedCoreFullWindow and confirmedCoreSamples >= 30 and confirmedCoreAccepted and confirmedRet24Pass and confirmedBodyPass and btcRetPass
+    bool highGatePass = enableHighWatch and priceGatePass and confirmedBtcSmaBull and confirmedDmiSpread >= 20.0 and confirmedDmiSpreadPrevious >= 20.0
+    if priceGatePass and not na(confirmedAtr) and confirmedAtr > 0.0
+        float referenceOpen = open
+        float stopDistance = confirmedAtr * STOP_ATR
+        planStartTime := time
+        planFinalStop := referenceOpen - stopDistance
+        planAdd1 := referenceOpen - stopDistance * 0.20
+        planAdd2 := referenceOpen - stopDistance * 0.40
+        planAdd3 := referenceOpen - stopDistance * 0.60
+        planAdd4 := referenceOpen - stopDistance * 0.80
+        planTakeProfit := referenceOpen + stopDistance * TAKE_PROFIT_R
+        lastWatchMarkerBarTime := time
+        lastWatchMarkerHigh := highGatePass
+        string setupId = "PV6|" + syminfo.tickerid + "|60|" + str.tostring(confirmedHourTime)
+        string eventId = setupId + "|WATCH"
+        string watchGrade = highGatePass ? "HIGH_WATCH" : "A_PLUS_WATCH"
+        if enableObservationAlerts and eventId != lastAlertEventId
+            alert(f_watchJson(setupId, eventId, watchGrade, confirmedHourTime, confirmedHourClose, referenceOpen, confirmedAtr, confirmedCoreThreshold, confirmedCoreSamples, planFinalStop, planAdd1, planAdd2, planAdd3, planAdd4, planTakeProfit, confirmedContextScore, confirmedIctSweep, confirmedIctFvg, confirmedIctOb, confirmedIctOte, confirmedBbPass, confirmedRsi, confirmedDmiSpread, confirmedAdx, confirmedVolumeRatio, confirmedProfilePass), alert.freq_all)
+            lastAlertEventId := eventId
+
+if not na(planStartTime) and time >= planStartTime + PLAN_HOURS * HOUR_MS
+    planStartTime := na
+    planFinalStop := na
+    planAdd1 := na
+    planAdd2 := na
+    planAdd3 := na
+    planAdd4 := na
+    planTakeProfit := na
+
+bool planVisible = not na(planStartTime)
+plotshape(time == lastWatchMarkerBarTime and not lastWatchMarkerHigh, title = "A+ WATCH", style = shape.labelup, location = location.belowbar, color = color.new(color.aqua, 0), textcolor = color.black, size = size.tiny, text = "WATCH")
+plotshape(time == lastWatchMarkerBarTime and lastWatchMarkerHigh, title = "HIGH WATCH", style = shape.labelup, location = location.belowbar, color = color.new(color.lime, 0), textcolor = color.black, size = size.tiny, text = "HIGH WATCH")
+plot(planVisible ? planAdd1 : na, "UNVALIDATED ADD PLAN 20%", color = color.new(color.orange, 55), linewidth = 1, style = plot.style_linebr)
+plot(planVisible ? planAdd2 : na, "UNVALIDATED ADD PLAN 40%", color = color.new(color.orange, 45), linewidth = 1, style = plot.style_linebr)
+plot(planVisible ? planAdd3 : na, "UNVALIDATED ADD PLAN 60%", color = color.new(color.orange, 35), linewidth = 1, style = plot.style_linebr)
+plot(planVisible ? planAdd4 : na, "UNVALIDATED ADD PLAN 80%", color = color.new(color.orange, 20), linewidth = 1, style = plot.style_linebr)
+plot(planVisible ? planTakeProfit : na, "TP 1R PLAN", color = color.new(color.lime, 0), linewidth = 2, style = plot.style_linebr)
+plot(planVisible ? planFinalStop : na, "FINAL SL 7ATR PLAN", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
