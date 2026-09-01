@@ -1,0 +1,52 @@
+{
+  "spec": "SWEEP-2026-08-31",
+  "engine": "sweep_engine.py",
+  "engine_sha256": "0130d9c9b90f63dfaa82fd00e90d70b17881ce3eda372f8019fc1149b5c562d8",
+  "generated_at": "2026-09-01T02:11:00.542481+00:00",
+  "seed": 20260831,
+  "n_rules": 1695,
+  "n_trials": 3390,
+  "input_sha256": {
+    "lab/frozen/perp_1h.parquet": "c06a3301457dfec8f68b184e1f8ac8797acc49874fa96c409a6a57e6743ebac0",
+    "lab/frozen/funding.parquet": "534642ee677424abb949492a7b8f21e43ea635bd0eb9f980e12f829f89a0a128",
+    "lab/data/sol_1h.parquet": "80d7f7574d680505eb280d05bfecc4ce3bc38ff461e651b91eb122e666f04785"
+  },
+  "window": [
+    "2021-11-21 00:00:00+00:00",
+    "2026-08-24 00:00:00+00:00"
+  ],
+  "is_end": "2024-12-31 23:59:00+00:00",
+  "constants": {
+    "RT_COST": 0.0016,
+    "RISK": 0.02,
+    "STOPLESS_NOTIONAL": 0.3333333333333333,
+    "GROSS_CAP": 10.0,
+    "MAX_POS": 3,
+    "HEAT_CAP": 0.06,
+    "DAILY_HALT": -0.05,
+    "CELL_CAPITAL": 10000.0,
+    "STOPLESS_HEAT": 0.05
+  },
+  "interior_gap_bars": {
+    "1h": {
+      "BTC": 0,
+      "ETH": 0,
+      "SOL": 0
+    },
+    "4h": {
+      "BTC": 0,
+      "ETH": 0,
+      "SOL": 0
+    }
+  },
+  "missing_funding_events": {
+    "1h": 0,
+    "4h": 0
+  },
+  "env": {
+    "python": "3.11.15",
+    "numpy": "2.4.6",
+    "pandas": "3.0.5",
+    "platform": "darwin"
+  }
+}
