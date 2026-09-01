@@ -60,6 +60,21 @@
   폐지는 본 팜 폐지의 미러. 원장·이력은 기존 변형 파일 통합 (원장 action
   enter/add/exit_signal, 이력 e24·e25 열 추가, 스키마 이월 관례). 상태는
   variant5_cells 키 (t0_variant5 write-once). 본 원장 기록 금지 방화벽 동일.
+- 변형6 셀 E26·E27 (AD = AVGDOWN 스윕 전향 검증 — scalp_farm.py 동결 명세):
+  변형5 단계 '뒤'의 **일곱째 격리 단계**, 같은 규약 (_safe_variant — 변형6
+  실패는 본·v1~v5 커밋에 무영향, 역도 성립). **자체 15m 그리드**: 본 실행의
+  1h 수집분을 쓰지 않고 BASKET_A 3종의 15m 봉을 fetch_15m_paged 로 수집한다
+  (candle 수집기의 timeframe 인자화 — 기존 1h 경로 fetch_1h_paged 는 무수정).
+  첫 호출: 본 팜 가동(last_ts>0) 후 15m 봉 V6_WARMUP_15M(1680 = 420h)개를
+  전 심볼 완전 깊이·무갭으로 수집해 warmup_v6 지표 워밍업 → 성공 시에만
+  t0_variant6 동결 (write-once, 실패 시 동결 지연 fail-closed). 이후:
+  본 팜 폐지 미러 → 15m 수집(v6since = last_ts+M15) → 신선 갭은 단계 실패·
+  노화 갭(48h)은 결측 재생(check_gaps 공용) → 펀딩 커버(본 수집분 재사용
+  또는 범위 페이지네이션) → step_variant6 재생 → 통합 파일 저장. 원장·이력
+  통합 (원장 action enter/add/exit_target, 이력 e26·e27 열 추가, 스키마
+  이월 관례 — 이력 ts 는 15m 그리드 값이 섞인다: keep-last(ts) 관례 그대로).
+  상태는 variant6_cells 키 (t0_variant6 write-once). 본 원장 기록 금지
+  방화벽 동일.
 """
 from __future__ import annotations
 
@@ -78,6 +93,7 @@ from carrybot.aggressive.scalp_farm import (
     BASKET_A,
     CELLS,
     H1,
+    M15,
     V2CELLS,
     V2LABELS,
     V3CELLS,
@@ -87,6 +103,9 @@ from carrybot.aggressive.scalp_farm import (
     V4LABELS,
     V5CELLS,
     V5LABELS,
+    V6CELLS,
+    V6LABELS,
+    V6_WARMUP_15M,
     VCELLS,
     VLABELS,
     WARMUP_1H,
@@ -100,12 +119,14 @@ from carrybot.aggressive.scalp_farm import (
     new_variant3,
     new_variant4,
     new_variant5,
+    new_variant6,
     step,
     step_variant,
     step_variant2,
     step_variant3,
     step_variant4,
     step_variant5,
+    step_variant6,
     variant2_delist,
     variant2_equities,
     variant2_from_dict,
@@ -122,11 +143,16 @@ from carrybot.aggressive.scalp_farm import (
     variant5_equities,
     variant5_from_dict,
     variant5_to_dict,
+    variant6_delist,
+    variant6_equities,
+    variant6_from_dict,
+    variant6_to_dict,
     variant_delist,
     variant_equities,
     variant_from_dict,
     variant_to_dict,
     warmup_full,
+    warmup_v6,
     warmup_x2,
 )
 
@@ -143,12 +169,12 @@ LEDGER_KEY = ["cell", "sym", "strategy", "bar_close", "action"]
 # lab/tracke_null.py 공식 10셀 계약(미지 셀 거부)을 보호한다 (기록 교차 금지)
 VLEDGER = Path("logs/tracke_variant_ledger.csv")
 VHIST = Path("logs/tracke_variant_history.csv")
-# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3)·e22~e23(변형4)·e24~e25(변형5)
-# 열 추가 (구 파일의 결여 열은 0.0 이월 = 부재 표기). equity = 행 기록 시점의
-# 변형 전 셀(전 그룹) 시가평가 합, keep-last(ts).
+# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3)·e22~e23(변형4)·e24~e25(변형5)·
+# e26~e27(변형6) 열 추가 (구 파일의 결여 열은 0.0 이월 = 부재 표기). equity =
+# 행 기록 시점의 변형 전 셀(전 그룹) 시가평가 합, keep-last(ts).
 VHIST_COLS = ["day", "ts", "equity", "e11", "e12", "e13", "e14", "e15", "e16",
               "e17", "e18", "e19", "e20", "e21", "e22", "e23", "e24", "e25",
-              "n_pos", "bars", "fills"]
+              "e26", "e27", "n_pos", "bars", "fills"]
 OFFICIAL_IDS = frozenset(s.cell for s in CELLS)     # E01~E10
 VARIANT_IDS = frozenset(s.cell for s in VCELLS)     # E11·E12
 VARIANT2_IDS = frozenset(s.cell for s in V2CELLS)   # E13~E18
@@ -495,6 +521,40 @@ def fetch_1h_paged(ex, coin: str, since: int, now_h: int) -> dict | None:
     return out
 
 
+def fetch_15m_paged(ex, coin: str, since: int, end: int) -> dict | None:
+    """닫힌 15m 봉을 since부터 페이지네이션 수집 — 변형6(E26·E27) 전용.
+
+    fetch_1h_paged 와 같은 계약을 timeframe 인자만 15m 로 바꾼 것 (기존 1h
+    경로는 무수정 — 다른 셀 경로 영향 0). {ts: (o,h,l,c)} 또는 실패 시 None.
+    거래량은 수집하지 않는다 (변형6 은 사용하지 않음 — BarE vol 기본 NaN).
+
+    Args:
+        ex: ccxt bybit 인스턴스.
+        coin: 심볼 (예: "BTC").
+        since: 시작 ts (포함, 15m 정렬 ms).
+        end: 끝 ts (미포함 — 형성중 봉 배제 경계).
+    """
+    out: dict = {}
+    cur = since
+    for _ in range(MAX_PAGES):
+        rs = _retry(ex.fetch_ohlcv, f"{coin}/USDT:USDT", "15m",
+                    since=cur, limit=1000)
+        if rs is None:
+            return None
+        rs = [r for r in rs if cur <= r[0] < end]
+        if not rs:
+            break
+        for r in rs:
+            out[int(r[0])] = (float(r[1]), float(r[2]), float(r[3]), float(r[4]))
+        nxt = int(rs[-1][0]) + M15
+        if nxt <= cur:
+            break
+        cur = nxt
+        if cur >= end:
+            break
+    return out
+
+
 def fetch_funding_range(ex, coin: str, need_from: int) -> dict | None:
     """need_from(ms)까지 덮는 펀딩 정산 맵 — endTime 후진 페이지네이션.
 
@@ -630,7 +690,9 @@ def _vhist_row(state: FarmState, v: FarmState, own_cells: tuple,
               (V4CELLS, state.variant4_cells, variant4_from_dict,
                variant4_equities),
               (V5CELLS, state.variant5_cells, variant5_from_dict,
-               variant5_equities))
+               variant5_equities),
+              (V6CELLS, state.variant6_cells, variant6_from_dict,
+               variant6_equities))
     for cells, vc, from_d, eq_fn in groups:
         if cells is own_cells:
             g = v
@@ -1361,6 +1423,169 @@ def _finalize_variant5(state: FarmState) -> None:
     _save_variant5(state, v, vfills, v.last_ts or state.last_ts, 0)
 
 
+def _save_variant6(state: FarmState, v: FarmState, vfills: list,
+                   ts_end: int, bars_done: int) -> None:
+    """변형6(E26·E27) 원장 → 이력 → 상태(variant6_cells) 순 원자적 체크포인트.
+
+    _save_variant5 와 같은 계약 — 파일 통합(VLEDGER/VHIST), 상태 키·t0 만
+    분리. 방화벽: (cell, strategy) 쌍이 V6CELLS 밖이면 기록 대신 예외.
+    t0_variant6 는 write-once — 기존 기록과 다른 t0 저장 시도는 어떤 파일도
+    쓰기 전에 예외로 죽는다. 이력 ts 는 변형6 의 15m 그리드 값 — 정시(:00)
+    값은 다른 그룹의 1h ts 와 겹칠 수 있으나 keep-last(ts) 관례 그대로다
+    (마지막 저장 그룹의 행이 남고 다른 그룹 열은 상태 스냅숏).
+    """
+    prev = state.variant6_cells
+    if prev is not None and prev.get("t0_variant6") != v.t0:
+        raise ValueError(f"t0_variant6 변경 금지 (write-once): "
+                         f"{prev.get('t0_variant6')} != {v.t0}")
+    allowed = {(s.cell, s.strategy) for s in V6CELLS}
+    bad = {(f["cell"], f["strategy"]) for f in vfills} - allowed
+    if bad:
+        raise ValueError(f"변형6 원장에 비변형6 행 기록 금지: {sorted(bad)}")
+    n = append_csv_atomic(VLEDGER, pd.DataFrame(vfills, columns=LEDGER_COLS),
+                          LEDGER_KEY)
+    if n:
+        logger.info("변형6 원장 %d행 추가 (중복 제거 후)", n)
+    row = _vhist_row(state, v, V6CELLS, ts_end, bars_done, len(vfills))
+    append_csv_atomic(VHIST, pd.DataFrame([row], columns=VHIST_COLS),
+                      key=["ts"], keep="last")
+    try:
+        state.variant6_cells = variant6_to_dict(v)
+        _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+    except BaseException:
+        state.variant6_cells = prev     # 실패 격리 롤백 (_save_variant 와 대칭)
+        raise
+    logger.info("변형6 자본 %.2f (E26+E27), 포지션 %d, 처리 봉 %d, 체결 %d",
+                sum(row[s.cell.lower()] for s in V6CELLS),
+                sum(len(c.positions) for c in v.cells.values()),
+                bars_done, len(vfills))
+
+
+def _variant6_inputs(ex, v: FarmState, fund_ev: dict, now15: int) -> tuple:
+    """변형6 재생 입력 — 15m 봉 수집 + 갭 처분 + 펀딩 커버 (fail-closed).
+
+    자체 15m 그리드라 본 실행 1h 수집분을 쓰지 않는다. 신선 갭(<48h)은 단계
+    실패(다음 실행 따라잡기), 노화 갭은 결측 재생 허용 (check_gaps 공용 —
+    엔진의 심볼별 무행동 fail-closed 가 처리). 심볼 하나라도 새 봉이 없으면
+    v6_end < v6since 로 재생이 없다 (보수적 정렬 — 폐지는 본 팜 미러 담당).
+
+    Returns:
+        (v6since, v6_end, vdata, vfund) — v6_end < v6since 면 재생 없음.
+
+    Raises:
+        RuntimeError: 봉/펀딩 수집 실패 또는 신선 갭 (변형6 단계만 실패).
+    """
+    v6since = v.last_ts + M15
+    syms = [s for s in BASKET_A if s not in v.delisted]
+    vdata: dict = {}
+    latest: dict = {}
+    for s in syms:
+        d = fetch_15m_paged(ex, s, v6since, now15)
+        if d is None:
+            raise RuntimeError(f"{s} 변형6 15m 수집 실패")
+        vdata[s] = d
+        latest[s] = max(d) if d else v.last_ts
+    if not syms:
+        return v6since, v.last_ts, {}, {}
+    v6_end = min(latest.values())
+    if v6_end < v6since:
+        return v6since, v6_end, {}, {}
+    nonempty = {s: d for s, d in vdata.items() if d}
+    reason = check_gaps(nonempty, list(range(v6since, v6_end + 1, M15)),
+                        max(latest.values()), continuing=True)
+    if reason:
+        raise RuntimeError(f"변형6 갭 — {reason}")
+    need = max(v6since, v.t0)
+    vfund: dict = {}
+    for s in syms:
+        ev = fund_ev.get(s)
+        if ev is not None and not (len(ev) >= 200 and ev and min(ev) > need):
+            vfund[s] = ev               # 본 실행 수집분이 변형6 구간을 덮는다
+            continue
+        rng = fetch_funding_range(ex, s, need)
+        if rng is None:
+            raise RuntimeError(f"{s} 변형6 펀딩 범위 수집 실패")
+        vfund[s] = rng
+    return v6since, v6_end, vdata, vfund
+
+
+def _run_variant6(ex, state: FarmState, fund_ev: dict, now15: int) -> None:
+    """변형6 셀(E26·E27) 재생 — 변형5 단계 뒤 일곱째 단계 (_safe_variant 격리).
+
+    첫 호출: 본 팜 가동(last_ts>0) 후 BASKET_A 3종의 15m 봉 V6_WARMUP_15M
+    (1680 = 420h)개를 **완전 깊이·무갭**으로 수집(fail-closed — 메이저는 상장
+    이력이 확실해 짧은 응답을 '새 상장'으로 오인 금지)해 warmup_v6 로 지표를
+    채우고, 성공 시에만 t0_variant6 동결 (write-once) 후 종료 — 다음 실행부터
+    재생. 이후: 본 팜 폐지 미러 → 15m 수집·갭 처분·펀딩 커버(_variant6_inputs)
+    → step_variant6 재생 → 통합 파일 저장. 워밍업 무주문 (t0 이전 봉은 지표
+    전용 — 엔진 live 게이트가 구조적으로 차단).
+
+    Args:
+        ex: ccxt bybit (15m 수집·펀딩 범위 수집).
+        state: 본 팜 상태 (variant6_cells 키만 갱신됨).
+        fund_ev: 본 실행이 수집한 sym -> {정산 ts: 펀딩률 합} (커버 시 재사용).
+        now15: 현재 시각의 15m 내림 정렬 ms — 형성중 봉 배제 경계
+            (마지막 닫힌 15m 봉 = now15 − M15).
+    """
+    if state.variant6_cells is None:
+        if not state.last_ts:
+            return                      # 본 팜 미가동 — 다음 실행에서 초기화
+        warm_end = now15 - M15
+        w_since = now15 - V6_WARMUP_15M * M15
+        v = new_variant6(state, t0=int(time.time() * 1000))
+        for s in [x for x in BASKET_A if x not in state.delisted]:
+            rows = fetch_15m_paged(ex, s, w_since, now15)
+            if not rows or max(rows) != warm_end:
+                raise RuntimeError(
+                    f"{s} 변형6 워밍업 수집 불완전 — t0 동결 지연 (fail-closed)")
+            if len(rows) != V6_WARMUP_15M or min(rows) != w_since \
+                    or any((t - w_since) % M15 for t in rows):
+                raise RuntimeError(
+                    f"{s} 변형6 워밍업 깊이/연속성 부족({len(rows)}/"
+                    f"{V6_WARMUP_15M}) — t0 동결 지연 (fail-closed)")
+            warmup_v6(v, s, [(t, *rows[t]) for t in sorted(rows)])
+        v.last_ts = warm_end            # 워밍업 끝 = 멱등 재생 기준 (15m 그리드)
+        try:
+            state.variant6_cells = variant6_to_dict(v)
+            # 헤더 선생성 + 이력 스키마 이월 (e26·e27 열 정렬 — 변형2~5 전례)
+            append_csv_atomic(VLEDGER, pd.DataFrame([], columns=LEDGER_COLS),
+                              LEDGER_KEY)
+            _migrate_vhist_schema()
+            _atomic_write(STATE, json.dumps(state.to_dict(), indent=1,
+                                            default=float))
+        except BaseException:
+            state.variant6_cells = None   # 미기록 t0 영속화 금지 (롤백)
+            raise
+        logger.info("변형6 t0_variant6=%d 동결 (write-once) — E26·E27: %s",
+                    v.t0, V6LABELS["E26"])
+        return
+    v = variant6_from_dict(state.variant6_cells)
+    vfills = _mirror_delist(state, v, variant6_delist)
+    v6since, v6_end, vdata, vfund = _variant6_inputs(ex, v, fund_ev, now15)
+    fills2: list = []
+    bars_done = 0
+    for t in range(v6since, v6_end + 1, M15):
+        bars = {s: BarE(t, *vdata[s][t]) for s in vdata if t in vdata[s]}
+        if not bars:
+            continue
+        fmap = {s: vfund.get(s, {}).get(t + M15, 0.0) for s in bars}
+        fills2 += step_variant6(v, bars, fmap)
+        bars_done += 1
+    _save_variant6(state, v, vfills + fills2, max(v6_end, v.last_ts), bars_done)
+
+
+def _finalize_variant6(state: FarmState) -> None:
+    """변형6(E26·E27) 종말 폐지 미러 — _finalize_variant5 와 동일 계약, 그룹 분리."""
+    if state.variant6_cells is None:
+        return
+    v = variant6_from_dict(state.variant6_cells)
+    missing = [s for s in state.delisted if s not in v.delisted]
+    if not missing:
+        return
+    vfills = _mirror_delist(state, v, variant6_delist)
+    _save_variant6(state, v, vfills, v.last_ts or state.last_ts, 0)
+
+
 def _safe_variant(fn, *args) -> None:
     """변형 단계 격리 실행 — 어떤 실패도 본 셀 커밋·중단 마커에 영향 없음.
 
@@ -1428,6 +1653,7 @@ def main() -> None:
         _safe_variant(_finalize_variant2, state)
         _safe_variant(_finalize_variant4, state)
         _safe_variant(_finalize_variant5, state)
+        _safe_variant(_finalize_variant6, state)
         return
 
     now_h = int(pd.Timestamp.now(tz="utc").floor("h").timestamp() * 1000)
@@ -1471,6 +1697,7 @@ def main() -> None:
             _safe_variant(_finalize_variant2, state)
             _safe_variant(_finalize_variant4, state)
             _safe_variant(_finalize_variant5, state)
+            _safe_variant(_finalize_variant6, state)
             return
     if not syms:
         _abort("잔여 심볼 없음 — 상태 보존")
@@ -1479,6 +1706,7 @@ def main() -> None:
         _safe_variant(_finalize_variant2, state)
         _safe_variant(_finalize_variant4, state)
         _safe_variant(_finalize_variant5, state)
+        _safe_variant(_finalize_variant6, state)
         return
 
     replay_end = min(max(d) for d in data.values())
@@ -1490,6 +1718,7 @@ def main() -> None:
         _safe_variant(_finalize_variant2, state)
         _safe_variant(_finalize_variant4, state)
         _safe_variant(_finalize_variant5, state)
+        _safe_variant(_finalize_variant6, state)
         return
     grid = list(range(since, replay_end + 1, H1))
 
@@ -1503,6 +1732,7 @@ def main() -> None:
             _safe_variant(_finalize_variant2, state)
             _safe_variant(_finalize_variant4, state)
             _safe_variant(_finalize_variant5, state)
+            _safe_variant(_finalize_variant6, state)
         return
 
     # 펀딩 — 라이브 구간이 있을 때만 필요 (워밍업 봉엔 포지션이 없다)
@@ -1544,6 +1774,9 @@ def main() -> None:
     _safe_variant(_run_variant4, ex, state, data, fund_ev, since, replay_end)
     # 변형5 셀 E24·E25 — 여섯째 단계 (볼린저 추매 BBADD, 본 팜 지표 스냅숏 상속)
     _safe_variant(_run_variant5, ex, state, data, fund_ev, since, replay_end)
+    # 변형6 셀 E26·E27 — 일곱째 단계 (AVGDOWN 전향 검증 AD, 자체 15m 그리드)
+    now15 = int(pd.Timestamp.now(tz="utc").floor("15min").timestamp() * 1000)
+    _safe_variant(_run_variant6, ex, state, fund_ev, now15)
 
 
 if __name__ == "__main__":

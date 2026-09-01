@@ -237,6 +237,62 @@
   cell·bar_close 가 있어 행 충돌 없음. 이력은 e24·e25 열 추가 스키마 이월
   관례). 본 원장(tracke_ledger.csv) 기록 금지 방화벽·E01~E23 바이트 동일성
   보증(variant5_cells 키 제외 projection)은 기존 그룹과 동일.
+
+변형6 셀 E26·E27 — 2026-09-01 사전 고정 (V6CELLS 그룹, AVGDOWN 스윕 전향 검증):
+- 지위: 공식 판정 비대상·판정 권한 없음·**승급·자본 배정 근거 사용 영구 금지**
+  (V6LABELS 동결 문구). 출처: AVGDOWN 사전등록 스윕(docs/PREREGISTRATION_
+  AVGDOWN_2026-09-01.md, 1,248 시행) — 판정 **실패** (보정 후 생존 0, RC
+  p=0.7632). 본 셀은 그 스윕이 요구한 "승급 불가·전향(신규 기간) 검증 필수"
+  절차의 이행이며 백테스트 재탕이 아니다. 선택 경위 (결과 조회 후 사전 지정):
+  E26 = 보정 전 1차 지표(일평균 순수익률) 1위 시행, E27 = 보정 전 연환산
+  Sharpe 1위 시행 — "보정 전 최고"라는 라벨을 영구 유지한다 (다중검정 보정을
+  통과하지 못한 시행의 전향 관찰이 목적. 판정 2026-10-31, 명세 §16).
+- 셀 = 스윕 시행 ID 그대로 (파라미터 변경 금지, 규칙 원전 lab/avgdown_sweep.py):
+  · E26 = AD|e=E2|f=1|sp=1|k=3|tp=A2.0|sl=-|15m (15m봉, 4트랜치, 익절 2.0×ATR)
+  · E27 = AD|e=E2|f=1|sp=1|k=2|tp=A0.5|sl=-|1h  (1h봉, 3트랜치, 익절 0.5×ATR)
+- 규칙 (롱 온리, 심볼 = BASKET_A 3종 — 스윕 심볼 동일):
+  진입 = 확정봉 Wilder RSI(14) < 30 AND 확정봉 종가 > SMA200(같은 TF 200봉,
+  확정봉 포함) → 다음 봉 시가 트랜치 1 (action "enter"). RSI·SMA 미형성 =
+  차단 (fail-closed). 추매 = 보유 중 확정봉 종가 <= 직전 트랜치의 **동결
+  트리거가**(체결가 − 1.0×ATR(24)[체결봉−1], 체결 시 동결·재귀 — 스윕 §3.3)
+  → 다음 봉 시가 트랜치 1 추가 (action "add"), 트랜치 하드캡 = spec.tranches
+  (E26=4, E27=3 — 신호·체결 이중 강제). 익절 = **평단 + tp_atr×ATR(24)
+  [마지막 체결봉−1]** (체결·추매 시 재동결 — 스윕 §3.4), **종가 확인형**:
+  확정봉 종가 >= 레벨 → 다음 봉 시가 전량 청산 (action "exit_target" —
+  봉내 리밋 아님, 스윕 결정론 D1). 손절 없음 (sl=-). 같은 봉 익절·추매 동시
+  성립 시 익절 우선 (스윕 §4.3-5·변형5 #c 관례).
+- 스윕과의 명시적 차이 (동결 — 전부 팜 엔진 공통 관례가 스윕 문언에 우선):
+  (i) 체결봉 직전 ATR 이 미형성/비양수면 그 트랜치는 **무체결** (BBADD
+      fail-closed 관례 — 스윕은 체결 후 트리거만 NaN 처리. 워밍업 후 ATR 은
+      상시 유효하므로 라이브 실질 동일, 구조적으로 더 보수적).
+  (ii) 같은 봉 청산 심볼 재진입 금지 (팜 공통 위상 규약 — 변형2 (i) 전례,
+      재진입 신호가 스윕 대비 최대 1봉 지연).
+  (iii) 펀딩은 일합 선차감(스윕 §4.4)이 아니라 실제 정산 타임스탬프에 보유
+      포지션에 적용 (본 팜 교정 7 — 정산 시각과 봉 종가 시각 일치 시에만).
+  (iv) E27 의 1h 봉은 15m 4봉 UTC 정렬 집계로 확정 (교정 4 의 4h 전례 —
+      4봉 미만 창은 폐기·무신호 fail-closed. 거래소 1h 봉과 동일 집계원).
+  (v) 체결봉 종가도 확정봉이므로 익절·추매 신호 평가에 포함 (변형5 #e 관례).
+- 사이징·리스크 (스윕 §4.4 동형): 트랜치 명목 = 체결 시점 equity ×
+  V6_TRANCHE_FRAC(1/12, 스윕 TRANCHE_FRAC 동일 — E26 만재 4/12, E27 3/12).
+  스탑 부재 heat 기여 = 명목 × V2_HEAT_FRAC(5%) — 손실 상한 아님 (진입
+  차단용 대리변수, E15/스윕 D6 관례). gross 10x·MAX_POS 3(심볼 슬롯 —
+  추매는 검사 없음)·일손실 −5% 진입·추매 정지(청산 없음)·비용 왕복 16bp
+  (cost_model="")·펀딩은 공통 그대로. 셀당 신규 $10,000.
+- 상태: variant6_cells 키, t0_variant6 write-once. **본 팜 지표 스냅숏을
+  상속하지 않는다** (본 팜 지표는 1h 기반 — 15m 그리드 상태에 무의미):
+  러너가 t0 동결 전 15m 봉 V6_WARMUP_15M(1680 = 420h, 본 팜 워밍업과 같은
+  실시간 깊이)개를 수집해 warmup_v6 로 지표만 채운다 (수집 실패 시 동결
+  지연 fail-closed, 워밍업 무주문). last_ts 는 **15m 그리드** — 멱등·재생
+  기준이 15m 봉 단위다 (그룹 자체 완결, 본 팜 last_ts 와 정렬하지 않음).
+- 포지션 상태 (FarmPos 필드 재사용 — 스키마 불변, v1~v5 바이트 동일성 유지):
+  e = 평균 단가(추매 갱신), hold = 트랜치 수, tgt = 다음 추매 트리거가(동결),
+  **stop = 익절 레벨(동결·재동결 — 손절 아님, V6 한정 재사용)**, risk_d =
+  평균 단가 × V2_HEAT_FRAC, kind = "AD".
+- 원장·이력: 기존 변형 파일 통합 (이력 e26·e27 열 추가 스키마 이월 관례.
+  E26 의 bar_close 는 15m 봉 종가 시각, E27 은 1h 봉 종가 시각 — 유일키에
+  cell 이 있어 행 충돌 없음). 본 원장 기록 금지 방화벽·E01~E25 바이트
+  동일성 보증(variant6_cells 키 제외 projection)은 기존 그룹과 동일 —
+  변형6 은 _step_cells 를 아예 쓰지 않는 전용 step_variant6 로만 돈다.
 """
 from __future__ import annotations
 
@@ -313,6 +369,21 @@ V5_TRANCHES = 4                # 심볼 예산 4등분 트랜치 하드캡 (추�
 V5_TRANCHE_FRAC = V2_NOTIONAL_FRAC / V5_TRANCHES   # 트랜치 명목 = equity × 1/12
 V5_ADD_ATR = 1.0               # 추매 트리거 ATR(24) 배수 (체결 시 동결 — #a)
 
+# --- 변형6 셀(E26·E27) 동결 상수 — AVGDOWN 스윕 전향 검증 (전략 AD, 스윕
+#     시행 ID 그대로 — 파라미터 변경 금지). 규칙·차이는 모듈 docstring ---
+M15 = 900_000                  # 15m (ms) — 변형6 전용 그리드
+V6_RSI_N = 14                  # 진입 RSI 길이 (스윕 RSI_N — Wilder)
+V6_RSI_LO = 30.0               # 진입 임계 (확정봉 RSI < 30, 스윕 RSI_TH)
+V6_SMA_N = 200                 # 추세 필터 SMA (같은 TF 200봉 — 스윕 TREND_N)
+V6_ATR_N = 24                  # ATR 길이 (스윕 ATR_N — 트리거·익절 공용)
+V6_ADD_ATR = 1.0               # 추매 간격 sp=1 (×ATR, 체결 시 동결·재귀)
+V6_TRANCHE_FRAC = 1.0 / 12.0   # 트랜치 명목 = equity × 1/12 (스윕 TRANCHE_FRAC)
+V6_WARMUP_15M = 4 * WARMUP_1H  # 워밍업 15m 봉 수 (1680 = 420h — 본 팜과 동일 깊이)
+V6_TRIAL_IDS: dict = {         # 스윕 시행 ID (동결 — 감사 추적용)
+    "E26": "AD|e=E2|f=1|sp=1|k=3|tp=A2.0|sl=-|15m",
+    "E27": "AD|e=E2|f=1|sp=1|k=2|tp=A0.5|sl=-|1h",
+}
+
 
 @dataclass(frozen=True)
 class CellSpec:
@@ -320,7 +391,9 @@ class CellSpec:
 
     risk/max_pos/cost_model/heat_clamp 는 변형3(E19~E21) 파라미터화용 기본값
     필드 — 기존 셀(E01~E18)은 전부 기본값이라 행동이 바이트 단위로 불변이다
-    (tests/test_scalp_farm.py 회귀 테스트가 보증).
+    (tests/test_scalp_farm.py 회귀 테스트가 보증). tf/tranches/tp_atr 는
+    변형6(E26·E27, 전략 AD) 파라미터화용 기본값 필드 — 같은 원칙으로 기존
+    셀은 전부 기본값이며 어떤 기존 경로도 이 필드를 읽지 않는다.
     """
 
     cell: str
@@ -331,6 +404,9 @@ class CellSpec:
     max_pos: int = MAX_POS         # 셀당 동시 최대 포지션
     cost_model: str = ""           # "" = 균일 COST_SIDE, "major8_alt11" = 2단계
     heat_clamp: bool = False       # True: heat 잔여로 수량 클램프 (리스크 '최대')
+    tf: str = "1h"                 # 변형6 전용 — 셀 봉 그리드 ("15m"|"1h")
+    tranches: int = 0              # 변형6 전용 — 트랜치 하드캡 (kmax+1)
+    tp_atr: float = 0.0            # 변형6 전용 — 익절 ATR 배수 (평단 + n×ATR)
 
     def __post_init__(self) -> None:
         """cost_model 오타가 레거시 비용으로 조용히 폴백하는 것 방지 (Codex 검토)."""
@@ -423,6 +499,22 @@ V5CELLS: tuple[CellSpec, ...] = (
 V5LABELS: dict = {
     "E24": "볼린저 추매 변형 · 승률 제조 구조 시연 · 미검증 · 판정 권한 없음",
     "E25": "볼린저 추매 변형 · 승률 제조 구조 시연 · 미검증 · 판정 권한 없음",
+}
+
+# 변형6 셀(E26·E27) — 위 다섯 그룹과 분리된 그룹 (t0_variant6 별도 write-once).
+# 전략 AD = AVGDOWN 스윕 보정 전 최고 시행 2개의 전향 검증 (스윕 ID 그대로 —
+# V6_TRIAL_IDS). 자체 15m 그리드 전용 step_variant6 로만 돈다 (_step_cells 미사용).
+V6CELLS: tuple[CellSpec, ...] = (
+    CellSpec("E26", "AD", "A", 0, tf="15m", tranches=4, tp_atr=2.0),
+    CellSpec("E27", "AD", "A", 0, tf="1h", tranches=3, tp_atr=0.5),
+)
+
+# 변형6 셀 고정 라벨 (동결 문구 — 성과와 무관, 변경 금지)
+V6LABELS: dict = {
+    "E26": "AVGDOWN 스윕 전향 검증 · 보정 후 유의성 0 (보정 전 최고) · 미검증 · "
+           "승급·자본 배정 근거 사용 금지",
+    "E27": "AVGDOWN 스윕 전향 검증 · 보정 후 유의성 0 (보정 전 최고) · 미검증 · "
+           "승급·자본 배정 근거 사용 금지",
 }
 
 # 대시보드 바스켓 표기 (표시 전용 — _tracke_variant_spec 이 발견하면 사용.
@@ -606,6 +698,103 @@ def warmup_full(v: FarmState, sym: str, rows: list) -> None:
         _update_1h(ind, BarE(0, o, h, lo, c, vol))
 
 
+def _new_tf6() -> dict:
+    """변형6 타임프레임 지표 상태 초기값 (15m 측·1h 측 공용 구조).
+
+    pc/atr/u/d = TR·ATR(24)·Wilder RSI(14) 스트리밍 상태 (봉 처리 '후' 갱신 —
+    다음 봉에서 [i-1] 값), c = 최근 V6_SMA_N 종가 (현재 봉 제외).
+    """
+    return {"pc": None, "atr": None, "u": None, "d": None, "c": []}
+
+
+def _new_ind6() -> dict:
+    """변형6 심볼 지표 상태 초기값 — 본 팜 _new_ind 와 완전 별개 구조.
+
+    최상위 "pc" = 마지막 유효 15m 종가 (_equities/_cell_mtm/_delist_cells 의
+    마크 계약 유지). "m" = 15m 지표 (E26), "h" = 1h 지표 + 15m→1h 집계 창
+    (E27 — w/wo/wh/wl/wc/n 은 창 누적 상태, 나머지는 _new_tf6 지표).
+    """
+    h = _new_tf6()
+    h.update({"w": None, "wo": 0.0, "wh": 0.0, "wl": 0.0, "wc": 0.0, "n": 0})
+    return {"pc": None, "m": _new_tf6(), "h": h}
+
+
+def _v6_update(d: dict, high: float, low: float, close: float) -> None:
+    """변형6 TF 지표 1봉 반영 (봉 처리 '후' 호출 — 다음 봉에서 [i-1] 값).
+
+    TR 은 previous close 기준 (첫 봉 = h−l — 스윕 bb.atr 동형), ATR 은 Wilder
+    ewm(alpha=1/24, adjust=False) 동치, RSI 평활은 첫 diff 시드 (pandas ewm
+    선행 NaN 스킵 동치 — 스윕 rsi_wilder 동형), 종가 이력은 V6_SMA_N 캡.
+    """
+    pc = d["pc"]
+    tr = high - low if pc is None else max(high - low,
+                                           abs(high - pc), abs(low - pc))
+    a0 = d["atr"]
+    d["atr"] = tr if a0 is None else a0 + (tr - a0) / V6_ATR_N
+    if pc is not None:
+        diff = close - pc
+        ux, dx = max(diff, 0.0), max(-diff, 0.0)
+        d["u"] = ux if d["u"] is None else d["u"] + (ux - d["u"]) / V6_RSI_N
+        d["d"] = dx if d["d"] is None else d["d"] + (dx - d["d"]) / V6_RSI_N
+    d["c"].append(close)
+    del d["c"][:-V6_SMA_N]
+    d["pc"] = close
+
+
+def _v6_agg_1h(h: dict, b: BarE):
+    """15m 봉을 1h 창(UTC [00,15,30,45) 정렬)에 누적 — 4봉 전부 있을 때만 확정.
+
+    교정 4·5 의 4h 집계(_update_4h) 전례 그대로: 미완성 창은 폐기·경고
+    (fail-closed — E27 은 그 시간대 무신호·무행동).
+
+    Returns:
+        창 확정 시 집계 1h BarE (ts = 창 시작), 아니면 None.
+    """
+    w = b.ts - (b.ts % H1)
+    if h["w"] != w:
+        if h["w"] is not None and h["n"] not in (0, 4):
+            logger.warning("변형6 1h 창 %d 미완성(%d/4) — 폐기 (fail-closed)",
+                           h["w"], h["n"])
+        h["w"], h["wo"], h["wh"], h["wl"], h["wc"], h["n"] = \
+            w, b.open, b.high, b.low, b.close, 1
+    else:
+        h["wh"] = max(h["wh"], b.high)
+        h["wl"] = min(h["wl"], b.low)
+        h["wc"] = b.close
+        h["n"] += 1
+    if b.ts % H1 == H1 - M15:           # 창의 마지막 15m 슬롯
+        n, o, hh, ll, cc = h["n"], h["wo"], h["wh"], h["wl"], h["wc"]
+        h["w"], h["n"] = None, 0
+        if n == 4:
+            return BarE(w, o, hh, ll, cc)
+        logger.warning("변형6 1h 창 미완성(%d/4) — 봉 없음 (fail-closed)", n)
+    return None
+
+
+def warmup_v6(v: FarmState, sym: str, rows: list) -> None:
+    """변형6 심볼 지표 워밍업 — (ts, o, h, l, c) 15m 시퀀스를 시간순 반영 (주문 없음).
+
+    t0_variant6 동결 전 1회 전용: 15m 지표(m)와 15m→1h 집계·1h 지표(h)를
+    함께 채운다 — 본 팜 지표 상속 없음 (1h 기반이라 15m 그리드에 무의미).
+    NaN OHLC 봉은 결측 관례(엔진 공통 fail-closed)로 건너뛴다 (건너뛴 봉이
+    낀 1h 창은 집계가 미완성 폐기).
+
+    Args:
+        v: 변형6 서브상태 (new_variant6 직후).
+        sym: 심볼.
+        rows: [(ts, open, high, low, close), ...] 시간 오름차순 (ts = 15m 정렬).
+    """
+    ind = v.ind.setdefault(sym, _new_ind6())
+    for ts, o, hi, lo, c in rows:
+        if any(math.isnan(x) for x in (o, hi, lo, c)):
+            continue
+        r = _v6_agg_1h(ind["h"], BarE(ts, o, hi, lo, c))
+        _v6_update(ind["m"], hi, lo, c)
+        ind["pc"] = c
+        if r is not None:
+            _v6_update(ind["h"], r.high, r.low, r.close)
+
+
 @dataclass
 class FarmState:
     """팜 전체 상태 — JSON 직렬화 가능 (라이브 러너가 보존)."""
@@ -628,6 +817,9 @@ class FarmState:
     variant4_cells: dict | None = None
     # 변형5(E24·E25) 서브상태 — 동일 계약, 키·t0(t0_variant5)만 분리.
     variant5_cells: dict | None = None
+    # 변형6(E26·E27) 서브상태 — 동일 계약, 키·t0(t0_variant6)만 분리
+    # (last_ts 는 15m 그리드 — 그룹 자체 완결).
+    variant6_cells: dict | None = None
 
     def to_dict(self) -> dict:
         """JSON 직렬화 (셀 gross 계산용 마지막 유효 종가 마크맵 주입)."""
@@ -640,7 +832,8 @@ class FarmState:
                     variant2_cells=self.variant2_cells,
                     variant3_cells=self.variant3_cells,
                     variant4_cells=self.variant4_cells,
-                    variant5_cells=self.variant5_cells)
+                    variant5_cells=self.variant5_cells,
+                    variant6_cells=self.variant6_cells)
 
     @classmethod
     def from_dict(cls, d: dict) -> "FarmState":
@@ -652,7 +845,8 @@ class FarmState:
                  variant2_cells=d.get("variant2_cells"),
                  variant3_cells=d.get("variant3_cells"),
                  variant4_cells=d.get("variant4_cells"),
-                 variant5_cells=d.get("variant5_cells"))
+                 variant5_cells=d.get("variant5_cells"),
+                 variant6_cells=d.get("variant6_cells"))
         st.cells = {c: CellState.from_dict(s) for c, s in d.get("cells", {}).items()}
         return st
 
@@ -765,6 +959,25 @@ def new_variant5(state: FarmState, t0: int) -> FarmState:
                      cells={spec.cell: CellState() for spec in V5CELLS})
 
 
+def new_variant6(state: FarmState, t0: int) -> FarmState:
+    """변형6 서브팜(E26·E27) 초기화 — t0_variant6 동결 시점에 1회 (write-once).
+
+    기존 그룹과 달리 **본 팜 지표 스냅숏을 상속하지 않는다** — 본 팜 지표는
+    1h 기반이라 15m 그리드 상태에 무의미하다. 러너가 t0 동결 전 15m 봉
+    V6_WARMUP_15M 개를 수집해 warmup_v6 로 지표만 채우고 last_ts 를 마지막
+    워밍업 15m 봉으로 맞춘다 (t0_variant6 이전 봉 재생·주문 생성 구조적 차단
+    — 워밍업 무주문, 기존 T0 원칙 그대로). 셀은 BASKET_A 전용이라 basket_b
+    슬롯은 비워 두고, 폐지 목록은 본 팜을 승계한다 (폐지 미러 관례).
+
+    Args:
+        state: 본 팜 상태 (변형되지 않음 — delisted 만 읽는다).
+        t0: t0_variant6 (epoch ms) — 기록 후 불변.
+    """
+    return FarmState(t0=t0, last_ts=0, basket_b=[],
+                     delisted=list(state.delisted),
+                     cells={spec.cell: CellState() for spec in V6CELLS})
+
+
 def _vgroup_to_dict(v: FarmState, key: str) -> dict:
     """변형 그룹 직렬화 공용 — t0 를 그룹 키로 개명, 서브상태 중첩 제거."""
     d = v.to_dict()
@@ -773,6 +986,7 @@ def _vgroup_to_dict(v: FarmState, key: str) -> dict:
     d.pop("variant3_cells", None)
     d.pop("variant4_cells", None)
     d.pop("variant5_cells", None)
+    d.pop("variant6_cells", None)
     d[key] = d.pop("t0")
     return d
 
@@ -800,6 +1014,11 @@ def variant4_to_dict(v: FarmState) -> dict:
 def variant5_to_dict(v: FarmState) -> dict:
     """변형5 서브상태 직렬화 — 'variant5_cells' 키 계약 (t0_variant5 명명)."""
     return _vgroup_to_dict(v, "t0_variant5")
+
+
+def variant6_to_dict(v: FarmState) -> dict:
+    """변형6 서브상태 직렬화 — 'variant6_cells' 키 계약 (t0_variant6 명명)."""
+    return _vgroup_to_dict(v, "t0_variant6")
 
 
 def _vgroup_from_dict(d: dict | None, key: str, cells: tuple) -> FarmState:
@@ -847,6 +1066,11 @@ def variant4_from_dict(d: dict | None) -> FarmState:
 def variant5_from_dict(d: dict | None) -> FarmState:
     """'variant5_cells' 키 역직렬화 — 손상 시 fail-closed (E24·E25)."""
     return _vgroup_from_dict(d, "t0_variant5", V5CELLS)
+
+
+def variant6_from_dict(d: dict | None) -> FarmState:
+    """'variant6_cells' 키 역직렬화 — 손상 시 fail-closed (E26·E27)."""
+    return _vgroup_from_dict(d, "t0_variant6", V6CELLS)
 
 
 def cell_syms(spec: CellSpec, state: FarmState) -> tuple:
@@ -905,6 +1129,11 @@ def variant4_equities(v: FarmState) -> dict:
 def variant5_equities(v: FarmState) -> dict:
     """변형5 셀(E24·E25) 시가평가 — 변형5 서브상태 전용."""
     return _equities(v, V5CELLS)
+
+
+def variant6_equities(v: FarmState) -> dict:
+    """변형6 셀(E26·E27) 시가평가 — 변형6 서브상태 전용 (마크 = 마지막 15m 종가)."""
+    return _equities(v, V6CELLS)
 
 
 def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
@@ -1586,6 +1815,265 @@ def step_variant5(state: FarmState, bars: dict, funding: dict | None = None) -> 
     return _step_cells(state, bars, funding, V5CELLS)
 
 
+def _v6_fill_tranche(cell: CellState, spec: CellSpec, s: str, b: BarE,
+                     tf_ind: dict, bar_ms: int, px: dict, fills: list) -> bool:
+    """변형6 트랜치 체결 (진입=신규 슬롯 / 추매=보유 수량 추가) — 공용 산술.
+
+    _try_open 명목 모드·_try_add(변형5)와 같은 정의: 트랜치 명목 = 체결 시점
+    equity × V6_TRANCHE_FRAC, heat 기여 = 명목 × V2_HEAT_FRAC, gross 캡 클램프·
+    halted·비용 차감 동일. 체결봉 직전 ATR(tf_ind["atr"])이 미형성/비양수면
+    **무체결** (fail-closed — 트리거·익절 레벨 산정 불가, BBADD 관례. 모듈
+    docstring 차이 (i)). 체결 시 동결 (스윕 §3.3~3.4): 다음 추매 트리거가
+    tgt = 체결가 − V6_ADD_ATR × ATR, 익절 레벨 stop = 새 평단 + spec.tp_atr ×
+    ATR (재동결 — stop 필드는 V6 한정 익절 레벨 재사용, 손절 아님).
+
+    Returns:
+        체결이 발생했으면 True.
+    """
+    p = cell.positions.get(s)
+    if cell.halted:
+        return False
+    if p is None:
+        if len(cell.positions) >= spec.max_pos:
+            return False
+    elif p.hold >= spec.tranches:
+        return False                    # 트랜치 하드캡 (체결 단계 이중 강제)
+    a = tf_ind["atr"]                   # 신호봉까지 갱신된 ATR = 체결봉 직전 봉
+    if a is None or a <= 0:
+        return False                    # 레벨 산정 불가 — 무체결 (fail-closed)
+    fill = b.open
+    eq = cell.equity
+    if eq <= 0 or fill <= 0:
+        return False
+    gross = sum(pp.u * px.get(ss, pp.e) for ss, pp in cell.positions.items())
+    if gross >= GROSS_CAP * eq:
+        return False
+    dist = fill * V2_HEAT_FRAC          # 스탑 부재 heat 기여 단가 (V2 동결 정의)
+    u = min(V6_TRANCHE_FRAC * eq / fill,
+            max(0.0, GROSS_CAP * eq - gross) / fill)
+    if u <= 0:
+        return False
+    heat = sum(pp.risk_d * pp.u for pp in cell.positions.values())
+    if heat + u * dist > HEAT_CAP * eq * (1 + 1e-9):
+        logger.info("%s %s 트랜치 차단 — heat 캡 %.0f%%", spec.cell, s,
+                    HEAT_CAP * 100)
+        return False
+    cost = u * fill * _cost_side(spec, s)
+    cell.equity -= cost
+    cell.cost += cost
+    cell.turnover += u * fill
+    if p is None:
+        fills.append(_ev(spec, s, b.ts + bar_ms, "enter", fill, u, 0.0, cost, 1))
+        cell.positions[s] = FarmPos(d=1, u=u, e=fill,
+                                    stop=fill + spec.tp_atr * a, kind="AD",
+                                    tgt=fill - V6_ADD_ATR * a, hold=1,
+                                    risk_d=fill * V2_HEAT_FRAC)
+    else:
+        fills.append(_ev(spec, s, b.ts + bar_ms, "add", fill, u, 0.0, cost, 1))
+        new_u = p.u + u
+        p.e = (p.e * p.u + fill * u) / new_u        # 평균 단가 갱신
+        p.u = new_u
+        p.hold += 1                                 # 트랜치 수
+        p.tgt = fill - V6_ADD_ATR * a               # 추매 트리거 재동결 (재귀)
+        p.stop = p.e + spec.tp_atr * a              # 익절 레벨 재동결 (새 평단)
+        p.risk_d = p.e * V2_HEAT_FRAC
+    px[s] = fill            # 이후 같은 봉 체결 사이징은 실제 체결가로 마크
+    return True
+
+
+def _v6_manage(cell: CellState, spec: CellSpec, s: str, b: BarE,
+               bar_ms: int) -> None:
+    """변형6 보유 포지션 신호 평가 (봉내 청산 없음 — 스탑 부재, BBADD 관례).
+
+    ① 익절 신호 (우선 — 스윕 §4.3-5·변형5 #c): 확정봉 종가 >= 동결 익절
+       레벨(p.stop) → 다음 봉 시가 전량 청산 (종가 확인형 — 봉내 리밋 아님,
+       스윕 D1). ② 추매 신호: 익절 신호가 없고 트랜치 잔여가 있으며 확정봉
+       종가 <= 동결 트리거가(p.tgt, 경계 <=) → 다음 봉 시가 트랜치 추가.
+       체결봉 종가도 확정봉이므로 이 평가에 포함된다 (변형5 #e 관례).
+    """
+    p = cell.positions.get(s)
+    if p is None:
+        return
+    if b.close >= p.stop:
+        p.pending_exit = "target"
+    elif p.hold < spec.tranches and b.close <= p.tgt:
+        cell.pending[s] = {"kind": "AD_ADD", "d": 1, "ets": b.ts + bar_ms}
+
+
+def _v6_signal(cell: CellState, spec: CellSpec, s: str, b: BarE, tf_ind: dict,
+               bar_ms: int) -> None:
+    """변형6 신규 진입 신호 (확정봉 종가 기준 — 스윕 E2·F1).
+
+    진입 = Wilder RSI(14)[확정봉] < 30 AND 확정봉 종가 > SMA200(같은 TF
+    200봉, 확정봉 포함) → 다음 봉 시가 트랜치 1 대기 (롱 온리). SMA·RSI
+    미형성(이력 부족) = 차단 (fail-closed).
+    """
+    c = tf_ind["c"]
+    if len(c) < V6_SMA_N - 1:
+        return                          # SMA200 미형성 — 차단 (fail-closed)
+    rsi = _rsi_next(tf_ind["u"], tf_ind["d"], b.close - c[-1], V6_RSI_N)
+    sma = float(np.mean(c[-(V6_SMA_N - 1):] + [b.close]))
+    if rsi < V6_RSI_LO and b.close > sma:
+        cell.pending[s] = {"kind": "AD", "d": 1, "ets": b.ts + bar_ms}
+
+
+def step_variant6(state: FarmState, bars: dict, funding: dict | None = None) -> list:
+    """닫힌 15m 봉 1개(전 심볼)를 변형6 셀(E26·E27)에 처리한다 — 전용 경로.
+
+    _step_cells 를 재사용하지 않는다 (15m 그리드·이중 타임프레임 — 기존 경로
+    바이트 불변의 구조적 보증). 봉 내 사건 순서는 본 팜 인과 규약 그대로:
+    대기 청산(시가) → 대기 진입·추매(시가) → 신호 평가(종가 — 체결봉 포함) →
+    펀딩(봉 종가 시각 정산) → 일손실 판정. E26 은 매 15m 봉, E27 은 1h 창
+    확정 이터레이션([:45] 봉, 4/4 완성)에서만 같은 순서로 처리된다.
+
+    Args:
+        state: 변형6 서브상태 (variant6_from_dict 결과, 변형됨).
+        bars: sym -> 15m BarE (동일 ts 필수, ts 는 15m 정렬).
+        funding: sym -> 이 15m 봉 **종가 시각**에 정산되는 펀딩률 합 (없으면 0).
+            정산 시각은 시간 경계라 [:45] 봉에서만 비영 — E27 의 1h 봉 종가와
+            같은 순간이다 (해당 시간대 1h 창이 미완성이면 E27 은 무정산
+            fail-closed — 결측 봉 무행동 관례).
+
+    Returns:
+        체결 이벤트 목록 (cell 은 E26/E27 만 — bar_close 는 각 TF 봉 종가 시각).
+    """
+    if not bars:
+        return []
+    ts_set = {b.ts for b in bars.values()}
+    if len(ts_set) != 1:
+        raise ValueError(f"봉 ts 불일치: {sorted(ts_set)}")
+    ts = ts_set.pop()
+    if ts % M15:
+        raise ValueError(f"변형6 봉 ts 15m 비정렬: {ts}")
+    if ts <= state.last_ts:
+        logger.warning("이미 처리한 봉 ts=%d — 무시 (멱등)", ts)
+        return []
+    funding = funding or {}
+    fills: list = []
+
+    ok_bars = {}
+    for s, b in bars.items():
+        if s in state.delisted:
+            continue
+        if any(math.isnan(x) for x in (b.open, b.high, b.low, b.close)):
+            logger.warning("%s 봉 NaN — 결측 처리 (fail-closed)", s)
+            continue
+        ok_bars[s] = b
+
+    # 0) 15m→1h 집계 (이 봉 종가에 확정 — E27 은 확정 이터레이션에서만 행동)
+    h1bars = {}
+    for s, b in ok_bars.items():
+        ind = state.ind.setdefault(s, _new_ind6())
+        r = _v6_agg_1h(ind["h"], b)
+        if r is not None:
+            h1bars[s] = r
+
+    live = state.t0 > 0 and ts >= state.t0
+    for spec in V6CELLS:
+        if spec.tf == "1h":
+            if ts % H1 != H1 - M15:
+                continue            # 시간 경계 아님 — E27 은 이 이터레이션 무봉
+            cbars, bar_ms, tfk = h1bars, H1, "h"
+        else:
+            cbars, bar_ms, tfk = ok_bars, M15, "m"
+        cell = state.cells[spec.cell]
+        prev_px = {s: i_[tfk]["pc"] for s, i_ in state.ind.items()
+                   if isinstance(i_.get(tfk), dict)
+                   and i_[tfk].get("pc") is not None}
+        cur_px = dict(prev_px)
+        cur_px.update({s: cb.close for s, cb in cbars.items()})
+        tf_ts = next(iter(cbars.values())).ts if cbars else ts
+        day_key = str(datetime.fromtimestamp(tf_ts / 1000,
+                                             tz=timezone.utc).date())
+        if cell.day != day_key:                    # UTC 일 경계 (TF 봉 기준)
+            cell.day, cell.halted = day_key, False
+            cell.day_eq = _cell_mtm(cell, prev_px)
+        act = []
+        for s in cell_syms(spec, state):
+            if s in state.delisted:
+                continue
+            if s in cbars:
+                act.append(s)
+                continue
+            if s in cell.pending:                  # 다음 봉 시가 체결 불가 — 취소
+                cell.pending.pop(s)
+                logger.warning("%s %s 봉 결측 — 대기주문 취소 (fail-closed)",
+                               spec.cell, s)
+            if s in cell.positions:
+                logger.warning("%s %s 봉 결측 — 무행동 (fail-closed)",
+                               spec.cell, s)
+        touched = set()
+        marks = dict(prev_px)          # 셀 로컬 마크맵 — 체결 확정가로 갱신됨
+        # 1) 대기 청산 — 봉 시가 (익절 시가 체결이 봉내·종가 사건보다 먼저)
+        for s in act:
+            p = cell.positions.get(s)
+            if p is not None and p.pending_exit:
+                _close(cell, spec, s, cbars[s].ts + bar_ms, cbars[s].open,
+                       "exit_" + p.pending_exit, fills)
+                touched.add(s)
+        # 2) 대기 진입·추매 — 봉 시가 (ets 연속성·보유 여부 fail-closed)
+        for s in act:
+            if s in touched:
+                continue
+            pend = cell.pending.get(s)
+            if pend is None:
+                continue
+            cell.pending.pop(s)
+            if not live:
+                continue
+            if pend.get("ets") != cbars[s].ts:
+                logger.warning("%s %s 대기주문 취소 — 다음 봉 연속성 붕괴 "
+                               "(fail-closed)", spec.cell, s)
+                continue
+            if pend["kind"] == "AD_ADD" and s not in cell.positions:
+                logger.warning("%s %s 추매 대기주문 취소 — 보유 포지션 없음 "
+                               "(fail-closed)", spec.cell, s)
+                continue
+            if pend["kind"] == "AD" and s in cell.positions:
+                continue
+            if _v6_fill_tranche(cell, spec, s, cbars[s], state.ind[s][tfk],
+                                bar_ms, marks, fills):
+                touched.add(s)
+        # 3) 신호 평가 — 봉 종가 (체결봉 종가 포함 — #e 관례. 봉내 청산이
+        #    없으므로 touched 는 청산 체결 심볼만 재진입 차단에 쓰인다)
+        for s in act:
+            _v6_manage(cell, spec, s, cbars[s], bar_ms)
+        if live:
+            for s in act:
+                if s in touched or s in cell.positions or s in cell.pending:
+                    continue
+                _v6_signal(cell, spec, s, cbars[s], state.ind[s][tfk], bar_ms)
+        # 4) 펀딩 — 이 TF 봉 종가 시각 정산분 (교정 7) — 일손실 판정보다 먼저
+        for s, p in cell.positions.items():
+            f = funding.get(s, 0.0)
+            b = cbars.get(s)
+            if f and b is not None:
+                amt = p.d * f * p.u * b.close
+                cell.equity -= amt
+                cell.fund += amt
+                fills.append(_ev(spec, s, b.ts + bar_ms, "funding", b.close,
+                                 p.u, -amt, 0.0, p.d, fund=-amt))
+        # 5) 일손실 트리거 (도달=<=) — 신규 진입·추매만 정지, 청산하지 않음
+        mtm = _cell_mtm(cell, cur_px)
+        if not cell.halted and cell.day_eq > 0 \
+                and mtm / cell.day_eq - 1 <= DAILY_HALT:
+            cell.halted = True
+            cell.halts += 1
+            logger.warning("%s 일손실 -5%% 트리거 — 당일 신규 진입 정지 "
+                           "(청산 아님)", spec.cell)
+
+    # TF 지표 갱신 — 마지막에 하여 다음 봉의 ATR[i-1]·SMA·RSI 이력을 만든다
+    for s, b in ok_bars.items():
+        ind = state.ind[s]
+        _v6_update(ind["m"], b.high, b.low, b.close)
+        ind["pc"] = b.close
+        hb = h1bars.get(s)
+        if hb is not None:
+            _v6_update(ind["h"], hb.high, hb.low, hb.close)
+    state.last_ts = ts
+    return fills
+
+
 def _step_cells(state: FarmState, bars: dict, funding: dict | None,
                 cells: tuple) -> list:
     """닫힌 1h 봉 1개를 cells 전체에 처리하는 내부 공용 구현 (인과 규약 준수)."""
@@ -1744,6 +2232,16 @@ def variant4_delist(v: FarmState, sym: str, last_px: float | None = None) -> lis
 def variant5_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
     """변형5 셀(E24·E25) 폐지 처리 — variant_delist 와 동일 관례, 그룹만 분리."""
     return _delist_cells(v, sym, last_px, V5CELLS)
+
+
+def variant6_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
+    """변형6 셀(E26·E27) 폐지 처리 — variant_delist 와 동일 관례, 그룹만 분리.
+
+    공용 구현(_delist_cells)의 force_exit 이벤트 시각은 last_ts + H1 관례를
+    그대로 쓴다 — 변형6 의 last_ts 는 15m 그리드라 실제 봉 종가와 45분까지
+    어긋날 수 있으나 원장 유일키용 시각일 뿐이다 (공시·동결).
+    """
+    return _delist_cells(v, sym, last_px, V6CELLS)
 
 
 def _delist_cells(state: FarmState, sym: str, last_px: float | None,
