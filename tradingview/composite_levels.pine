@@ -1,0 +1,81 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────────────────────
+// 단타 팜 컴포짓 지표 — 진입·손절·목표·추매 레벨 (TradingBot 대시보드와 동일 산식)
+// 관측 도구 — 이 지표 조합의 예측력은 검증 결과 우연 수준(SWEEP-2026-08-31).
+// 레벨·상태 표시용이며 매매 신호가 아님. PAPER ONLY 연구의 시각화 이식본.
+// 1시간봉 차트에서 사용 권장 (채널 24/96봉 = 24h/96h).
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("단타 팜 컴포짓 · 레벨", overlay=true, max_labels_count=50)
+
+// ── 입력 ──
+lenBB    = input.int(20,  "볼린저 기간")
+mulBB    = input.float(2.0, "볼린저 승수")
+lenFast  = input.int(20,  "SMA fast")
+lenSlow  = input.int(200, "SMA slow")
+lenRSI   = input.int(14,  "RSI")
+lenATR   = input.int(24,  "ATR (스탑·추매)")
+chFast   = input.int(24,  "돌파 채널 (봉)")
+chSlow   = input.int(96,  "장기 채널 (봉)")
+stopMult = input.float(6.0, "손절 = 진입 − n×ATR")
+addMult  = input.float(1.0, "추매 간격 (×ATR)")
+rrTP     = input.float(1.5, "익절 손익비 (R)")
+showLv   = input.bool(true, "레벨 표시")
+
+// ── 지표 (엔진 동일식: 확정봉 기준 — Pine 은 기본이 확정봉) ──
+basis = ta.sma(close, lenBB)
+dev   = mulBB * ta.stdev(close, lenBB)          // ddof=0 동일 (Pine stdev = 모표준편차)
+upBB  = basis + dev
+loBB  = basis - dev
+smaF  = ta.sma(close, lenFast)
+smaS  = ta.sma(close, lenSlow)
+rsi   = ta.rsi(close, lenRSI)
+atr   = ta.atr(lenATR)                          // Wilder RMA — 엔진과 동일 평활
+chHi  = ta.highest(high, chFast)[1]             // 직전 N봉 (shift 1 — 룩어헤드 방지)
+chLo  = ta.lowest(low,  chFast)[1]
+chHiS = ta.highest(high, chSlow)[1]
+volAvg = ta.sma(volume, 20)[1]
+
+// ── 컴포짓 −100~+100 (대시보드 동결 산식 이식) ──
+f_clip(x, lim) => math.max(-lim, math.min(lim, x))
+trendRaw = f_clip((close / smaS - 1) * 100, 10) * 1.5 + (smaF > smaS ? 5 : -5)
+cTrend  = f_clip(trendRaw, 20)
+cMom    = f_clip((rsi - 50) * 0.4, 20)
+pctB    = (upBB - loBB) > 0 ? (close - loBB) / (upBB - loBB) : 0.5
+cBand   = f_clip((0.5 - pctB) * 40, 20)
+surge   = volAvg > 0 ? volume / volAvg : 1.0
+cVol    = f_clip(math.log(surge) / math.log(2) * 10, 20)
+dBrk    = chHi > 0 ? (chHi - close) / close * 100 : na
+cBrk    = na(dBrk) ? 0 : (dBrk <= 0 ? 20.0 : 20.0 / (1 + dBrk))
+score   = f_clip(cTrend + cMom + cBand + cVol + cBrk, 100)
+
+// ── 오버레이 ──
+pB = plot(upBB, "BB 상단", color=color.new(color.gray, 60))
+pL = plot(loBB, "BB 하단", color=color.new(color.gray, 60))
+fill(pB, pL, color=color.new(color.gray, 92))
+plot(basis, "BB 중심(SMA20)", color=color.new(color.silver, 30))
+plot(smaS,  "SMA200", color=color.new(color.orange, 30), linewidth=2)
+plot(chHi,  "돌파 채널 상단(24)", color=color.new(color.aqua, 40), style=plot.style_linebr)
+plot(chHiS, "장기 채널 상단(96)", color=color.new(color.gray, 70), style=plot.style_linebr)
+
+// ── 레벨 (전략 기준: 돌파 진입 가정) ──
+entryLv = chHi
+stopLv  = entryLv - stopMult * atr
+tpLv    = entryLv + rrTP * (entryLv - stopLv)
+add1    = loBB - addMult * atr                   // 볼린저 진입 후 1차 추매 예시
+plot(showLv ? entryLv : na, "진입(돌파)", color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
+plot(showLv ? stopLv  : na, "손절",       color=color.new(color.red, 20), style=plot.style_linebr)
+plot(showLv ? tpLv    : na, "목표(1.5R)", color=color.new(color.green, 20), style=plot.style_linebr)
+plot(showLv ? add1    : na, "추매(BB−1ATR)", color=color.new(color.blue, 30), style=plot.style_linebr)
+
+// ── 게이지 테이블 ──
+var table t = table.new(position.top_right, 7, 2, border_width=1)
+if barstate.islast
+    col = score > 15 ? color.new(color.green, 60) : score < -15 ? color.new(color.red, 60) : color.new(color.gray, 60)
+    table.cell(t, 0, 0, "컴포짓", bgcolor=color.new(color.black, 40), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 1, str.tostring(score, "#"), bgcolor=col, text_color=color.white)
+    table.cell(t, 1, 0, "추세",   text_size=size.tiny), table.cell(t, 1, 1, str.tostring(cTrend, "#.#"), text_size=size.tiny)
+    table.cell(t, 2, 0, "모멘텀", text_size=size.tiny), table.cell(t, 2, 1, str.tostring(cMom, "#.#"), text_size=size.tiny)
+    table.cell(t, 3, 0, "밴드",   text_size=size.tiny), table.cell(t, 3, 1, str.tostring(cBand, "#.#"), text_size=size.tiny)
+    table.cell(t, 4, 0, "거래량", text_size=size.tiny), table.cell(t, 4, 1, str.tostring(cVol, "#.#"), text_size=size.tiny)
+    table.cell(t, 5, 0, "돌파",   text_size=size.tiny), table.cell(t, 5, 1, str.tostring(cBrk, "#.#"), text_size=size.tiny)
+    table.cell(t, 6, 0, "⚠", text_size=size.tiny), table.cell(t, 6, 1, "관측용·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
