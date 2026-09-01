@@ -1432,3 +1432,216 @@ class TestMarketScanRender:
         assert st["market_scan"]["available"] is True
         live = json.loads(client.get("/api/live").data)
         assert "market_scan" not in live          # 시간당 데이터 — 초단위 비대상
+
+
+class TestTrackeLevels:
+    """셀 상세 레벨(손절·목표·추매) + 미니 레벨 바 — 표시 전용, 크래시 금지."""
+
+    def _state(self, tmp_path, cells, ind=None):
+        (tmp_path / "tracke_state.json").write_text(json.dumps(
+            {"t0": 1787813928812, "cells": cells, "ind": ind or {}}),
+            encoding="utf-8")
+
+    def _patch_all(self, monkeypatch, tmp_path):
+        orig_t, orig_v, orig_l = (dash._load_tracke, dash._load_tracke_variant,
+                                  dash._tracke_live)
+        monkeypatch.setattr(dash, "_load_tracke",
+                            lambda logs_dir=None: orig_t(logs_dir=tmp_path))
+        monkeypatch.setattr(dash, "_load_tracke_variant",
+                            lambda logs_dir=None: orig_v(logs_dir=tmp_path))
+        monkeypatch.setattr(dash, "_tracke_live",
+                            lambda logs_dir=None: orig_l(logs_dir=tmp_path))
+
+    def test_엔진_실스키마_stop_tgt이_거리와_함께_상세에_실린다(self, tmp_path,
+                                                    monkeypatch):
+        # 픽스처는 엔진 동결 계약(FarmPos.stop/tgt 실키)에서 직접 생성 —
+        # 키 개명 등 스키마 표류를 자동 검출한다 (carrybot 은 import 만).
+        from carrybot.aggressive.scalp_farm import CellState, FarmPos
+        cell = CellState(equity=10000.0)
+        cell.positions = {"BTC": FarmPos(d=1, u=0.1, e=80000.0, stop=76000.0,
+                                         kind="BRKTP", tgt=84000.0)}
+        self._state(tmp_path, {"E01": cell.to_dict()})
+        monkeypatch.setattr(dash, "_live_price", lambda s: 80000.0)
+        p = dash._tracke_live(
+            logs_dir=tmp_path)["cells_detail"]["E01"]["positions"][0]
+        assert p["stop"] == pytest.approx(76000.0)
+        assert p["tgt"] == pytest.approx(84000.0)
+        assert p["stop_pct"] == pytest.approx(-5.0)     # 현재가 대비 −5%
+        assert p["tgt_pct"] == pytest.approx(5.0)       # 현재가 대비 +5%
+        assert p["add"] is None and p["add_pct"] is None
+        bar = p["bar"]
+        # 마커 좌표: 손절 < 진입=현재가 < 목표 (4~96% 매핑)
+        assert bar["stop"] == pytest.approx(4.0)
+        assert bar["tgt"] == pytest.approx(96.0)
+        assert bar["entry"] == bar["mark"] == pytest.approx(50.0)
+        assert bar["add"] is None
+
+    def test_0_센티널과_키_부재는_None으로_바도_없다(self, tmp_path, monkeypatch):
+        # 엔진 계약: stop=0.0/tgt=0.0 은 "레벨 없음" 센티널 (스탑 없는 출판 시스템)
+        from carrybot.aggressive.scalp_farm import CellState, FarmPos
+        cell = CellState(equity=10000.0)
+        cell.positions = {"CL": FarmPos(d=1, u=1.0, e=100.0, stop=0.0,
+                                        kind="MRPUB", tgt=0.0)}
+        self._state(tmp_path, {"E01": cell.to_dict()})
+        monkeypatch.setattr(dash, "_live_price", lambda s: 110.0)
+        p = dash._tracke_live(
+            logs_dir=tmp_path)["cells_detail"]["E01"]["positions"][0]
+        assert p["stop"] is None and p["tgt"] is None and p["add"] is None
+        assert p["stop_pct"] is None and p["tgt_pct"] is None
+        assert p["bar"] is None                          # 레벨 전무 — 바 없음
+        # 키 자체 부재(구형/최소 상태 dict)도 동일하게 None (크래시 금지)
+        self._state(tmp_path, {"E02": dict(
+            equity=10000.0, positions={"BTC": dict(d=1, u=0.1, e=80000.0)})})
+        p2 = dash._tracke_live(
+            logs_dir=tmp_path)["cells_detail"]["E02"]["positions"][0]
+        assert p2["stop"] is None and p2["tgt"] is None and p2["bar"] is None
+
+    def test_v5_BBADD는_tgt키가_추매가로_재매핑된다(self, tmp_path, monkeypatch):
+        # 엔진 실스키마(확정 #a): BBADD 는 FarmPos.tgt 에 추매 트리거가를 싣는다 —
+        # 목표가가 아니라 추매가로 표시해야 한다 (감사 MAJOR 2 교정)
+        self._state(tmp_path, {"E01": dict(
+            equity=10000.0,
+            positions={"BTC": dict(d=1, u=0.1, e=100.0, kind="BBADD",
+                                   stop=0.0, tgt=94.0)})})
+        monkeypatch.setattr(dash, "_live_price", lambda s: 100.0)
+        p = dash._tracke_live(
+            logs_dir=tmp_path)["cells_detail"]["E01"]["positions"][0]
+        assert p["add"] == pytest.approx(94.0)
+        assert p["tgt"] is None                          # 목표가로 오표시 금지
+        assert p["stop"] is None                         # 0.0 = 센티널
+        bar = p["bar"]
+        assert bar["add"] is not None and bar["tgt"] is None
+
+    def test_비BBADD는_tgt키가_목표가로_남는다(self, tmp_path, monkeypatch):
+        self._state(tmp_path, {"E01": dict(
+            equity=10000.0,
+            positions={"BTC": dict(d=1, u=0.1, e=100.0, kind="BRK",
+                                   stop=95.0, tgt=110.0)})})
+        monkeypatch.setattr(dash, "_live_price", lambda s: 100.0)
+        p = dash._tracke_live(
+            logs_dir=tmp_path)["cells_detail"]["E01"]["positions"][0]
+        assert p["tgt"] == pytest.approx(110.0)
+        assert p["add"] is None
+
+    def test_숏은_손절이_현재가_오른쪽이다(self, tmp_path, monkeypatch):
+        self._state(tmp_path, {"E01": dict(
+            equity=10000.0,
+            positions={"SOL": dict(d=-1, u=10.0, e=100.0, stop=110.0,
+                                   tgt=80.0)})})
+        monkeypatch.setattr(dash, "_live_price", lambda s: 95.0)
+        p = dash._tracke_live(
+            logs_dir=tmp_path)["cells_detail"]["E01"]["positions"][0]
+        bar = p["bar"]
+        assert bar["tgt"] < bar["mark"] < bar["entry"] < bar["stop"]
+        assert p["stop_pct"] == pytest.approx(15.79, abs=0.01)   # 위쪽 +%
+        assert p["tgt_pct"] == pytest.approx(-15.79, abs=0.01)
+
+    def test_상세에_레벨_열과_바가_렌더된다(self, client, tmp_path, monkeypatch):
+        # fixture 가 가격 조회 차단(None) → ind 종가 폴백 마크로 렌더
+        self._state(tmp_path, {"E01": dict(
+            equity=10000.0,
+            positions={"BTC": dict(d=1, u=0.1, e=80000.0, stop=76000.0,
+                                   tgt=84000.0)})},
+            ind={"BTC": dict(pc=80000.0)})
+        self._patch_all(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        e01 = html.split('id="trackeDetailBody-E01"')[1].split(
+            'id="trackeDetail-E02"')[0]
+        assert "손절가" in e01 and "목표가" in e01 and "추매가" in e01
+        assert "76000" in e01 and "84000" in e01
+        assert "(-5.0%)" in e01 and "(+5.0%)" in e01     # 현재가 대비 거리
+        assert 'class="lvlbar"' in e01                   # 미니 레벨 바
+        assert "lvl-stop" in e01 and "lvl-tgt" in e01 and "lvl-dot" in e01
+        assert "&mdash;" in e01                          # 추매가 부재 — "—"
+
+    def test_레벨_없는_포지션도_렌더된다(self, client, tmp_path, monkeypatch):
+        self._state(tmp_path, {"E01": dict(
+            equity=10000.0,
+            positions={"BTC": dict(d=1, u=0.1, e=80000.0)})},
+            ind={"BTC": dict(pc=80000.0)})
+        self._patch_all(monkeypatch, tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200                   # 크래시 금지
+        e01 = resp.data.decode().split('id="trackeDetailBody-E01"')[1].split(
+            'id="trackeDetail-E02"')[0]
+        assert e01.count("&mdash;") >= 4                 # 손절·목표·추매·바 전부 "—"
+        assert 'class="lvlbar"' not in e01
+
+
+class TestScannerGauges:
+    """전 코인 스캐너 — BB %b 게이지 + 돌파 근접 게이지 (표시 전용)."""
+
+    _FIXTURE = TestMarketScanRender._FIXTURE
+
+    def test_게이지가_렌더된다(self, client, monkeypatch):
+        monkeypatch.setattr(dash, "_load_market_scan",
+                            lambda *a, **k: dict(self._FIXTURE))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'class="bbgauge"' in html                 # %b 게이지 (숫자 대신)
+        assert "하단" in html and "중심" in html and "상단" in html
+        assert "bb-dot up" in html                       # %b 1.02 — 상단 밖 초록 점
+        assert 'class="distgauge brk"' in html           # dist96h −1.2% — 돌파 초록
+        assert "%b 1.02" in html                         # 정확값은 title 로 보존
+        assert "+0.5" in html.replace("+0.50", "+0.5")   # 돌파 거리 수치 병기
+
+    def test_결손_필드는_대시로_렌더되고_크래시_없다(self, client, monkeypatch, tmp_path):
+        (tmp_path / "market_scan.json").write_text(json.dumps(
+            {"generated_at_utc": "2026-08-28T03:00:00+00:00",
+             "coins": [{"coin": "BTC"}]}), encoding="utf-8")
+        data = dash._load_market_scan(logs_dir=tmp_path)   # 실로더 산출물 (전부 None)
+        monkeypatch.setattr(dash, "_load_market_scan", lambda *a, **k: data)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "BTC" in html
+        assert 'class="bbgauge"' not in html             # None → 게이지 없이 '-'
+        assert 'class="distgauge"' not in html
+
+    def test_코인_순서는_파일_순서_그대로다(self, client, monkeypatch):
+        # 게이지 추가 후에도 재정렬 금지 (거래대금 순 고정 — 표시 규율)
+        two = dict(self._FIXTURE)
+        second = dict(two["coins"][0])
+        second.update(coin="ETH", symbol="ETH/USDT:USDT", bb_pctb=-0.10,
+                      dist24h_pct=12.0, dist96h_pct=None)
+        two["coins"] = [two["coins"][0], second]
+        monkeypatch.setattr(dash, "_load_market_scan", lambda *a, **k: two)
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert html.index(">BTC<") < html.index(">ETH<")
+        assert "bb-dot dn" in html                       # %b < 0 — 하단 밖 빨강 점
+
+
+class TestVariant5Recognition:
+    """v5(E24·E25) — 기존 정규식(V*CELLS·variant*_cells)의 자동 인식 확인."""
+
+    def _fake_v5(self):
+        from types import SimpleNamespace
+        specs = tuple(SimpleNamespace(cell=c, strategy=s, basket=b)
+                      for c, s, b in [("E24", "PARETO5", "A"),
+                                      ("E25", "PARETO5", "B")])
+        labels = {"E24": "파레토 앙상블 · 미검증 · 판정 권한 없음",
+                  "E25": "파레토 앙상블 · 미검증 · 판정 권한 없음"}
+        return SimpleNamespace(V5CELLS=specs, V5LABELS=labels)
+
+    def test_V5CELLS와_variant5_cells를_무수정_인식한다(self, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "carrybot.aggressive.scalp_farm",
+                            self._fake_v5())
+        cells, labels, _ = dash._tracke_variant_spec()
+        assert [c[0] for c in cells] == ["E24", "E25"]   # V5CELLS 매치
+        assert "파레토" in labels["E24"]                  # V5LABELS 매치
+        st = {"cells": {}, "variant5_cells": {
+            "t0_variant5": 1791234567890,
+            "cells": {"E24": dict(equity=10100.0)}}}
+        assert len(dash._tracke_variant_blocks(st)) == 1  # variant5_cells 매치
+        (tmp_path / "tracke_state.json").write_text(
+            json.dumps(st), encoding="utf-8")
+        v = dash._load_tracke_variant(logs_dir=tmp_path)
+        assert v["available"] is True
+        by_id = {c["id"]: c for c in v["cells"]}
+        assert by_id["E24"]["pct"] == pytest.approx(1.0)
+        assert by_id["E25"]["pct"] is None               # 미가동 → "대기"

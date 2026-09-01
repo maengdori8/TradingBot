@@ -1494,6 +1494,86 @@ def _tracks_live(logs_dir: Path | None = None) -> dict:
     return out
 
 
+# 셀 상세 포지션 레벨 키 — 실키는 엔진 동결 계약(carrybot.aggressive.scalp_farm
+# 의 FarmPos: stop·tgt, 0.0 = "레벨 없음" 센티널)을 import 로 확인했다 (수정 금지).
+# 추매가는 v5(E24·E25) 상태에 실릴 수 있는 후보 키를 관용 수용한다 (부재 = None).
+_TRACKE_POS_LEVEL_KEYS: dict[str, tuple[str, ...]] = {
+    "stop": ("stop", "pstop", "sl"),
+    "tgt": ("tgt", "ptgt", "tp", "target"),
+    "add": ("next_add", "add_px", "padd", "add"),
+}
+
+
+def _tracke_pos_level(pp: dict, names: tuple[str, ...]) -> float | None:
+    """포지션 상태 dict 에서 레벨 후보 키 중 첫 유효 양수 가격을 읽는다.
+
+    엔진 계약상 0.0 은 "레벨 없음" 센티널이므로 0 이하·비수치·부재는 전부
+    None 을 반환한다 (표시부는 "—", 크래시 금지).
+
+    Args:
+        pp: 포지션 상태 dict ({"d", "u", "e", "stop", "tgt", ...}).
+        names: 우선순위 순 후보 키 목록.
+
+    Returns:
+        첫 유효 레벨 가격 — 없으면 None.
+    """
+    for n in names:
+        v = pp.get(n)
+        if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                and v == v and v > 0):
+            return float(v)
+    return None
+
+
+def _tracke_level_dist(level: float | None, px: float) -> float | None:
+    """현재가 대비 레벨까지의 부호 있는 거리 % — 계산 불가 시 None.
+
+    Args:
+        level: 레벨 가격 (없으면 None).
+        px: 현재가 (폴백 포함).
+
+    Returns:
+        (level/px − 1)×100 (%) — level 부재·px≤0 이면 None.
+    """
+    if level is None or px <= 0:
+        return None
+    return round((level / px - 1.0) * 100.0, 2)
+
+
+def _tracke_level_bar(entry: float, mark: float, stop: float | None,
+                      tgt: float | None, add: float | None) -> dict | None:
+    """미니 레벨 바 마커 좌표(0~100%)를 계산한다 (표시 전용 — 정렬·강조 없음).
+
+    가격축을 [최소 레벨, 최대 레벨] 구간으로 선형 매핑해 각 마커를 4~96%
+    사이에 놓는다 (끝 마커 클리핑 방지). 숏이면 손절이 현재가 오른쪽에
+    오는 것이 자연스럽고 정직한 배치다. 손절·목표·추매가 하나도 없거나
+    구간이 퇴화(전 가격 동일)하면 None ("—" 표시, 크래시 금지).
+
+    Args:
+        entry: 진입가.
+        mark: 현재가 (조회 실패 시 폴백 마크).
+        stop: 손절가 or None.
+        tgt: 목표가 or None.
+        add: 다음 추매가 or None.
+
+    Returns:
+        {"stop", "entry", "mark", "tgt", "add"} 좌표(%) dict — 불가 시 None.
+    """
+    if stop is None and tgt is None and add is None:
+        return None
+    pts = [p for p in (stop, entry, mark, tgt, add) if p is not None]
+    lo, hi = min(pts), max(pts)
+    if hi <= lo:
+        return None
+
+    def _x(v: float | None) -> float | None:
+        return (None if v is None
+                else round(4.0 + 92.0 * (v - lo) / (hi - lo), 2))
+
+    return dict(stop=_x(stop), entry=_x(entry), mark=_x(mark),
+                tgt=_x(tgt), add=_x(add))
+
+
 def _tracke_mtm_cell(cs: dict, ind: dict,
                      px_cache: dict[str, tuple[float, bool]],
                      fallback: list[str]) -> dict | None:
@@ -1515,7 +1595,10 @@ def _tracke_mtm_cell(cs: dict, ind: dict,
                     cost(누적 수수료)/fund(누적 펀딩)/positions(개별 상세)}}
         — equity 손상 시 None (셀 스킵). detail 은 행 펼침 상세 표시 전용이며
         positions 항목은 {sym, dir(롱/숏), entry, mark(현재가 or 폴백), qty,
-        upnl(개별 미실현 $), upnl_pct(진입가 대비 방향 반영 %)} 이다.
+        upnl(개별 미실현 $), upnl_pct(진입가 대비 방향 반영 %),
+        stop/tgt/add(손절·목표·다음 추매가 — 부재·0.0 센티널은 None),
+        stop_pct/tgt_pct/add_pct(현재가 대비 거리 %),
+        bar(미니 레벨 바 마커 좌표 — _tracke_level_bar, 불가 시 None)} 이다.
     """
     try:
         equity = float(cs.get("equity", TRACKE_CELL_CAPITAL))
@@ -1547,6 +1630,13 @@ def _tracke_mtm_cell(cs: dict, ind: dict,
                 fallback.append(sym)
             upnl = u_ * (px - e_) * d_
             unrealized += upnl
+            stop_lv = _tracke_pos_level(pp, _TRACKE_POS_LEVEL_KEYS["stop"])
+            tgt_lv = _tracke_pos_level(pp, _TRACKE_POS_LEVEL_KEYS["tgt"])
+            add_lv = _tracke_pos_level(pp, _TRACKE_POS_LEVEL_KEYS["add"])
+            # BBADD(v5): FarmPos 스키마 재사용으로 추매 트리거가가 tgt 키에 실린다
+            # (엔진 확정 #a) — 목표가가 아니라 추매가로 재매핑 (감사 MAJOR 2 교정)
+            if pp.get("kind") == "BBADD":
+                add_lv, tgt_lv = tgt_lv, None
             pos_detail.append(dict(
                 sym=sym, dir=("롱" if d_ > 0 else "숏"),
                 entry=e_, mark=round(px, 6), qty=u_,
@@ -1554,6 +1644,10 @@ def _tracke_mtm_cell(cs: dict, ind: dict,
                 upnl_pct=(round((px / e_ - 1.0) * 100.0
                                 * (1 if d_ > 0 else -1), 4)
                           if e_ > 0 else 0.0),
+                stop=stop_lv, stop_pct=_tracke_level_dist(stop_lv, px),
+                tgt=tgt_lv, tgt_pct=_tracke_level_dist(tgt_lv, px),
+                add=add_lv, add_pct=_tracke_level_dist(add_lv, px),
+                bar=_tracke_level_bar(e_, px, stop_lv, tgt_lv, add_lv),
             ))
     return dict(
         mtm=equity + unrealized,

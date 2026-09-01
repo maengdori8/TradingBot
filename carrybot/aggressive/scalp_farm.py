@@ -179,6 +179,64 @@
   cell 이 있어 행 충돌 없음, 이력은 e22·e23 열 추가 스키마 이월 관례). 본 원장
   (tracke_ledger.csv) 기록 금지 방화벽·E01~E21 바이트 동일성 보증
   (variant4_cells 키 제외 projection)은 기존 그룹과 동일.
+
+변형5 셀 E24·E25 — 2026-09-01 사전 고정, 성과 조회 전 동결 (V5CELLS 그룹):
+- 지위: 공식 판정 비대상·판정 권한 없음 (V5LABELS 동결 문구 — "볼린저 추매
+  변형 · 승률 제조 구조 시연 · 미검증 · 판정 권한 없음"). 규칙은 사용자가
+  **결과 조회 전에** 지정했으므로 사후선택이 아니다.
+- 사전 예측 (동결 기록): 승률 65~80% 예상, 기대값 개선 없음 예상, 추세
+  하락장에서 4트랜치 만재 상태의 깊은 드로다운 예상 — 승률과 기대값이
+  분리되는 라이브 시연이 본 그룹의 목적. **포지션 스탑의 부재**가 승률을
+  제조하는 메커니즘임을 라벨에 명시한다 (출판 BBMR 관례 유지).
+- 전략 BBADD = BBMR(E15/E16, 출판 볼린저 평균회귀)의 추매(DCA) 변형, 롱 온리:
+  진입 = 확정봉 종가 < BB(20, 2σ, ddof=0 모표준편차, 중심 SMA20) 하단밴드 →
+  다음 봉 시가 트랜치 1 매수 (원장 action "enter"). 익절 = 확정봉 종가 >=
+  SMA20 → 다음 봉 시가 **전량** 청산 (action "exit_signal"). 포지션 스탑 없음.
+  밴드·SMA 이력은 본 팜 cl(최근 24 종가, MR_SMA_N >= BB_N)에서 계산 —
+  변형2의 x2 확장 지표·별도 워밍업 수집이 불필요 (E22 전례의 스냅숏 상속).
+- 추매 (동결): 보유 중, 확정봉 종가 <= 직전 트랜치의 **동결 트리거가**(아래
+  #a) → 다음 봉 시가 트랜치 1 추가 (action "add"). **최대 3회 추매 = 총
+  4트랜치 하드캡** (V5_TRANCHES) — 소진 후엔 어떤 조건에도 추가 매수 없음
+  (신호 단계 _manage 와 체결 단계 _try_add 이중 강제).
+- 명세 미결 확정 (T0 코드 동결 전 결정 — 결과 조회 전이므로 사후선택 아님):
+  (#a) 추매 트리거가는 각 트랜치 **체결 시**(다음 봉 시가)에 동결한다:
+       tgt = 체결가 − V5_ADD_ATR(1.0) × ATR(24)[체결봉−1] (= 신호봉까지
+       갱신된 atr1 — MR 스탑 산정과 같은 관례). 이후 봉들은 저장된 tgt 와
+       확정봉 종가만 비교한다 ("다음 추매 트리거가를 상태에 보존" 요건의
+       이행 — 매 봉 ATR 재계산 부동 트리거 아님). ATR 미형성이면 그 체결은
+       무체결 (fail-closed — 트리거가 산정 불가).
+  (#b) 트랜치 명목 = **각 트랜치 체결 시점** equity × V5_TRANCHE_FRAC(1/12 =
+       심볼 예산 equity×1/3 의 4등분) — V2 명목 사이징 관례(체결 시점
+       equity × 1/3)의 트랜치 확장. 예산을 진입 시점에 동결하지 않으므로
+       트랜치 간 명목이 비용·펀딩만큼 미세히 다를 수 있다 (공시).
+  (#c) 같은 봉에서 익절 신호와 추매 신호가 동시 성립하면 **익절 우선**
+       (추매 미대기 — 평균회귀 완료 시 구조 종료).
+  (#d) 추매 판정 경계는 <= (문구 그대로), 익절 판정 경계는 >= .
+  (#e) 체결봉 종가도 확정봉이므로 익절·추매 신호 평가에 포함 (변형2 BBMR
+       (ii) 관례 — _step_cells 3단계 예외에 BBADD 추가, 체결·청산은 전부
+       다음 봉 시가라 인과 무결).
+- 리스크: 사이징은 #b (스탑 부재 — 2% 스탑거리 역산 미적용), heat 기여 =
+  명목 × 5% (V2_HEAT_FRAC 동결 정의) — 3심볼 × 4트랜치 만재 ≈ 5% <= 캡 6%.
+  heat 는 손실 상한이 아니다 (스탑이 없어 포지션 최대 손실은 명목 전체 —
+  진입 차단용 대리변수, E15 관례 명기). MAX_POS 3 은 **심볼 슬롯** 기준 —
+  추매는 새 슬롯이 아니므로 검사하지 않는다 (_try_add). 일손실 -5% 진입정지는
+  트랜치 1·추매 모두 차단 (체결 시점 halted 검사 — 청산은 막지 않음).
+  비용 왕복 16bp (cost_model="")·펀딩·gross 10x 캡은 공통 그대로.
+- 포지션 상태 (FarmPos 필드 재사용 — 스키마 불변, v1~v4 바이트 동일성 유지):
+  e = 평균 단가(추매 시 갱신), hold = 트랜치 수(진입=1, 최대 4 — MR 보유봉
+  카운트 필드의 그룹 한정 재사용), tgt = 다음 추매 트리거가(#a), risk_d =
+  평균 단가 × V2_HEAT_FRAC (heat 단가 — 추매 시 갱신), stop = 0.0 센티널
+  (BBMR 관례 — _post_fill_check 스킵 목록에 BBADD 포함).
+- E24 = 바스켓 A, E25 = 동결 바스켓 B 재사용. 셀당 신규 $10,000.
+- 상태: variant5_cells 키, t0_variant5 write-once. 지표는 E11/E22 전례대로
+  본 팜 '시장 전용 지표 상태'의 깊은 스냅숏을 상속하고 last_ts 를 본 팜과
+  정렬한다 (별도 워밍업 수집 없음). t0_variant5 이전 봉 재생·주문 생성이
+  구조적으로 불가능 (워밍업 무주문).
+- 원장·이력: 기존 변형 파일 통합 (tracke_variant_ledger/history.csv — 원장
+  action 은 enter(트랜치 1)/add(추매)/exit_signal(중심선 익절), 유일키에
+  cell·bar_close 가 있어 행 충돌 없음. 이력은 e24·e25 열 추가 스키마 이월
+  관례). 본 원장(tracke_ledger.csv) 기록 금지 방화벽·E01~E23 바이트 동일성
+  보증(variant5_cells 키 제외 projection)은 기존 그룹과 동일.
 """
 from __future__ import annotations
 
@@ -248,6 +306,12 @@ V3_COST_SIDE_ALT = 0.0011      # 비메이저(BASKET_A 외) 편도 = taker 6 + �
 # --- 변형4 셀(E22·E23) 동결 상수 — 손익비 1.5:1 익절 (최대보유 제한 없음).
 #     사용자가 결과 조회 전 지정한 수치 (사후선택 아님). 규칙은 모듈 docstring ---
 V4_TP_R = 1.5                  # BRK24R15 익절 배수 (1.5R) — 최대보유 캡 없음
+
+# --- 변형5 셀(E24·E25) 동결 상수 — 볼린저 추매(BBADD): BBMR 진입·청산 +
+#     4트랜치 DCA 추매, 스탑 없음. 규칙·미결 확정(#a~#e)은 모듈 docstring ---
+V5_TRANCHES = 4                # 심볼 예산 4등분 트랜치 하드캡 (추매 최대 3회)
+V5_TRANCHE_FRAC = V2_NOTIONAL_FRAC / V5_TRANCHES   # 트랜치 명목 = equity × 1/12
+V5_ADD_ATR = 1.0               # 추매 트리거 ATR(24) 배수 (체결 시 동결 — #a)
 
 
 @dataclass(frozen=True)
@@ -349,6 +413,18 @@ V4LABELS: dict = {
     "E23": "손익비 1.5:1 익절 변형 · 미검증 · 판정 권한 없음",
 }
 
+# 변형5 셀(E24·E25) — 위 네 그룹과 분리된 그룹 (t0_variant5 별도 write-once).
+# 전략 BBADD = BBMR 진입·청산 + 4트랜치 추매 (스탑 없음 — 승률 제조 구조 시연).
+V5CELLS: tuple[CellSpec, ...] = (
+    CellSpec("E24", "BBADD", "A", 0), CellSpec("E25", "BBADD", "B", 0),
+)
+
+# 변형5 셀 고정 라벨 (동결 문구 — 성과와 무관, 변경 금지)
+V5LABELS: dict = {
+    "E24": "볼린저 추매 변형 · 승률 제조 구조 시연 · 미검증 · 판정 권한 없음",
+    "E25": "볼린저 추매 변형 · 승률 제조 구조 시연 · 미검증 · 판정 권한 없음",
+}
+
 # 대시보드 바스켓 표기 (표시 전용 — _tracke_variant_spec 이 발견하면 사용.
 # "A"/"B" 는 대시보드 폴백 표기 유지, "U" 만 여기서 공급)
 VBASKET_LABELS: dict = {"U": "거래량 상위 40 고정 코호트 (T0 동결)"}
@@ -372,17 +448,24 @@ class BarE:
 
 @dataclass
 class FarmPos:
-    """한 셀·한 심볼의 포지션."""
+    """한 셀·한 심볼의 포지션.
+
+    변형5(BBADD)는 스키마 불변 원칙(기존 그룹 바이트 동일성) 아래 기존 필드를
+    그룹 한정으로 재사용한다: e = 평균 단가(추매 갱신), hold = 트랜치 수,
+    tgt = 다음 추매 트리거가, risk_d = 평균 단가 × V2_HEAT_FRAC (모듈 docstring).
+    """
 
     d: int                 # +1 롱 / -1 숏
     u: float               # 수량
-    e: float               # 진입가
+    e: float               # 진입가 (BBADD 는 평균 단가 — 추매 시 갱신)
     stop: float            # 스탑 레벨
-    kind: str              # "BRK"|"MR"|"RSIDIV"
-    tgt: float = 0.0       # 목표가 (RSIDIV 2R / BRKTP 1R / BRKR15 1.5R)
-    hold: int = 0          # MR 보유 1h봉 수 (진입봉 = 1)
+    kind: str              # "BRK"|"MR"|"RSIDIV"|파생 변형 (BBMR·BBADD 등)
+    tgt: float = 0.0       # 목표가 (RSIDIV 2R / BRKTP 1R / BRKR15 1.5R) —
+                           # BBADD 는 다음 추매 트리거가 (변형5 #a)
+    hold: int = 0          # MR 보유 1h봉 수 (진입봉 = 1) — BBADD 는 트랜치 수
     n4_entry: int = 0      # RSIDIV 신호 4h봉 인덱스
-    risk_d: float = 0.0    # 진입 시 단위당 스탑거리 (heat 계산)
+    risk_d: float = 0.0    # 진입 시 단위당 스탑거리 (heat 계산) — 스탑 없는
+                           # 종류는 단가 × V2_HEAT_FRAC (BBADD 는 평균 단가 기준)
     pending_exit: str = "" # 다음 봉 시가 청산 사유 (""=없음)
 
 
@@ -543,6 +626,8 @@ class FarmState:
     variant3_cells: dict | None = None
     # 변형4(E22·E23) 서브상태 — 동일 계약, 키·t0(t0_variant4)만 분리.
     variant4_cells: dict | None = None
+    # 변형5(E24·E25) 서브상태 — 동일 계약, 키·t0(t0_variant5)만 분리.
+    variant5_cells: dict | None = None
 
     def to_dict(self) -> dict:
         """JSON 직렬화 (셀 gross 계산용 마지막 유효 종가 마크맵 주입)."""
@@ -554,7 +639,8 @@ class FarmState:
                     variant_cells=self.variant_cells,
                     variant2_cells=self.variant2_cells,
                     variant3_cells=self.variant3_cells,
-                    variant4_cells=self.variant4_cells)
+                    variant4_cells=self.variant4_cells,
+                    variant5_cells=self.variant5_cells)
 
     @classmethod
     def from_dict(cls, d: dict) -> "FarmState":
@@ -565,7 +651,8 @@ class FarmState:
                  variant_cells=d.get("variant_cells"),
                  variant2_cells=d.get("variant2_cells"),
                  variant3_cells=d.get("variant3_cells"),
-                 variant4_cells=d.get("variant4_cells"))
+                 variant4_cells=d.get("variant4_cells"),
+                 variant5_cells=d.get("variant5_cells"))
         st.cells = {c: CellState.from_dict(s) for c, s in d.get("cells", {}).items()}
         return st
 
@@ -658,6 +745,26 @@ def new_variant4(state: FarmState, t0: int) -> FarmState:
                      cells={spec.cell: CellState() for spec in V4CELLS})
 
 
+def new_variant5(state: FarmState, t0: int) -> FarmState:
+    """변형5 서브팜(E24·E25) 초기화 — t0_variant5 동결 시점에 1회 (write-once).
+
+    E11/E22 전례(new_variant/new_variant4)와 완전 동일한 계약: 본 팜의 동결
+    바스켓 B·폐지 목록 재사용 + '시장 전용 지표 상태' 깊은 스냅숏 상속 +
+    last_ts 정렬 (t0_variant5 이전 봉 재생·주문 생성 구조적 차단). BBADD 는
+    본 팜이 이미 추적하는 지표(cl 종가 이력 — MR_SMA_N(24) >= BB_N(20) —
+    과 atr1)만 쓰므로 확장 지표(x2) 워밍업 수집이 필요 없다.
+
+    Args:
+        state: 본 팜 상태 (변형되지 않음).
+        t0: t0_variant5 (epoch ms) — 기록 후 불변.
+    """
+    return FarmState(t0=t0, last_ts=state.last_ts,
+                     basket_b=list(state.basket_b),
+                     delisted=list(state.delisted),
+                     ind=copy.deepcopy(state.ind),
+                     cells={spec.cell: CellState() for spec in V5CELLS})
+
+
 def _vgroup_to_dict(v: FarmState, key: str) -> dict:
     """변형 그룹 직렬화 공용 — t0 를 그룹 키로 개명, 서브상태 중첩 제거."""
     d = v.to_dict()
@@ -665,6 +772,7 @@ def _vgroup_to_dict(v: FarmState, key: str) -> dict:
     d.pop("variant2_cells", None)
     d.pop("variant3_cells", None)
     d.pop("variant4_cells", None)
+    d.pop("variant5_cells", None)
     d[key] = d.pop("t0")
     return d
 
@@ -687,6 +795,11 @@ def variant3_to_dict(v: FarmState) -> dict:
 def variant4_to_dict(v: FarmState) -> dict:
     """변형4 서브상태 직렬화 — 'variant4_cells' 키 계약 (t0_variant4 명명)."""
     return _vgroup_to_dict(v, "t0_variant4")
+
+
+def variant5_to_dict(v: FarmState) -> dict:
+    """변형5 서브상태 직렬화 — 'variant5_cells' 키 계약 (t0_variant5 명명)."""
+    return _vgroup_to_dict(v, "t0_variant5")
 
 
 def _vgroup_from_dict(d: dict | None, key: str, cells: tuple) -> FarmState:
@@ -729,6 +842,11 @@ def variant3_from_dict(d: dict | None) -> FarmState:
 def variant4_from_dict(d: dict | None) -> FarmState:
     """'variant4_cells' 키 역직렬화 — 손상 시 fail-closed (E22·E23)."""
     return _vgroup_from_dict(d, "t0_variant4", V4CELLS)
+
+
+def variant5_from_dict(d: dict | None) -> FarmState:
+    """'variant5_cells' 키 역직렬화 — 손상 시 fail-closed (E24·E25)."""
+    return _vgroup_from_dict(d, "t0_variant5", V5CELLS)
 
 
 def cell_syms(spec: CellSpec, state: FarmState) -> tuple:
@@ -784,6 +902,11 @@ def variant4_equities(v: FarmState) -> dict:
     return _equities(v, V4CELLS)
 
 
+def variant5_equities(v: FarmState) -> dict:
+    """변형5 셀(E24·E25) 시가평가 — 변형5 서브상태 전용."""
+    return _equities(v, V5CELLS)
+
+
 def _ev(spec: CellSpec, s: str, ts_close: int, action: str, price: float,
         qty: float, pnl: float, cost: float, d: int, fund: float = 0.0) -> dict:
     """원장 이벤트 — 유일키 (cell, sym, strategy, bar_close, action).
@@ -822,16 +945,21 @@ def _close(cell: CellState, spec: CellSpec, s: str, ts_close: int, px: float,
 
 def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: float,
               stop: float, kind: str, px: dict, fills: list,
-              tgt: float = 0.0, n4_entry: int = 0, notional: bool = False) -> bool:
+              tgt: float = 0.0, n4_entry: int = 0, notional: bool = False,
+              notional_frac: float = V2_NOTIONAL_FRAC) -> bool:
     """진입 시도 — 리스크 역산 사이징 + 그로스/heat 캡 + 같은 봉 스탑 비관 처리.
 
     Args:
         px: 그로스 마크용 가격 — 직전 봉 종가에 **이번 봉 확정 체결가를 덮어쓴**
             셀 로컬 마크맵 (체결 시점에 이번 봉 종가는 미지 — 인과 규약).
             체결 성공 시 이 맵의 s 마크를 체결가로 갱신한다. 없는 심볼은 진입가.
-        notional: 스탑 없는 셀(BBMR·RSI2)의 명목 사이징 모드 — 수량 =
-            equity × 1/3 / fill (2% 스탑 역산 미적용, stop 인자 무시=0.0),
-            heat 기여 단가 = fill × V2_HEAT_FRAC (risk_d 로 동결, 명목 기준 정의).
+        notional: 스탑 없는 셀(BBMR·RSI2·BBADD)의 명목 사이징 모드 — 수량 =
+            equity × notional_frac / fill (2% 스탑 역산 미적용, stop 인자
+            무시=0.0), heat 기여 단가 = fill × V2_HEAT_FRAC (risk_d 로 동결,
+            명목 기준 정의).
+        notional_frac: 명목 모드 비율 — 기본 V2_NOTIONAL_FRAC(1/3, BBMR·RSI2),
+            변형5 BBADD 트랜치 1 은 V5_TRANCHE_FRAC(1/12) (기존 호출부는
+            기본값이라 행동이 바이트 단위로 불변).
 
     Returns:
         진입 체결이 발생했으면 True. 같은 봉 스탑/목표 비관 검사는 호출자가
@@ -854,7 +982,7 @@ def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: fl
     gross = sum(pp.u * px.get(ss, pp.e) for ss, pp in cell.positions.items())
     if gross >= GROSS_CAP * eq:
         return False
-    want = V2_NOTIONAL_FRAC * eq / fill if notional else spec.risk * eq / dist
+    want = notional_frac * eq / fill if notional else spec.risk * eq / dist
     u = min(want, max(0.0, GROSS_CAP * eq - gross) / fill)
     heat = sum(pp.risk_d * pp.u for pp in cell.positions.values())
     if spec.heat_clamp:
@@ -879,14 +1007,71 @@ def _try_open(cell: CellState, spec: CellSpec, s: str, b: BarE, d: int, fill: fl
     return True
 
 
+def _try_add(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
+             px: dict, fills: list) -> bool:
+    """변형5(BBADD) 추매 트랜치 체결 — 보유 포지션에 명목 1트랜치 추가 (슬롯 불변).
+
+    사이징·비용·heat 는 _try_open 명목 모드와 같은 정의 (트랜치 명목 = 체결
+    시점 equity × V5_TRANCHE_FRAC — 미결 #b, heat 기여 = 명목 × V2_HEAT_FRAC)
+    이되, 이미 보유한 심볼에 수량을 더하므로 MAX_POS 검사가 없다 (새 슬롯이
+    아님). halted·gross 캡 클램프·heat 캡·비용 차감은 동일하게 적용한다.
+    체결 후 평균 단가(e)·트랜치 수(hold)·다음 추매 트리거가(tgt = 체결가 −
+    V5_ADD_ATR × ATR[체결봉−1] — 미결 #a 동결)·heat 단가(risk_d = 평균 단가 ×
+    V2_HEAT_FRAC)를 갱신한다. 4트랜치 하드캡(V5_TRANCHES)은 신호 단계
+    (_manage)와 여기서 이중으로 강제한다 — 소진 후 어떤 조건에도 추가 매수
+    없음 (동결).
+
+    Returns:
+        추매 체결이 발생했으면 True.
+    """
+    p = cell.positions.get(s)
+    if p is None or cell.halted or p.hold >= V5_TRANCHES:
+        return False
+    a = ind["atr1"]                # 신호봉까지 갱신된 ATR = 체결봉 직전 봉 ATR
+    if a is None or a <= 0:
+        return False               # 다음 트리거가 산정 불가 — 무체결 (fail-closed)
+    fill = b.open
+    eq = cell.equity
+    if eq <= 0 or fill <= 0:
+        return False
+    gross = sum(pp.u * px.get(ss, pp.e) for ss, pp in cell.positions.items())
+    if gross >= GROSS_CAP * eq:
+        return False
+    dist = fill * V2_HEAT_FRAC     # 스탑 부재 heat 기여 단가 (V2 동결 정의)
+    u = min(V5_TRANCHE_FRAC * eq / fill,
+            max(0.0, GROSS_CAP * eq - gross) / fill)
+    if u <= 0:
+        return False
+    heat = sum(pp.risk_d * pp.u for pp in cell.positions.values())
+    if heat + u * dist > HEAT_CAP * eq * (1 + 1e-9):
+        logger.info("%s %s 추매 차단 — heat 캡 %.0f%%", spec.cell, s,
+                    HEAT_CAP * 100)
+        return False
+    cost = u * fill * _cost_side(spec, s)
+    cell.equity -= cost
+    cell.cost += cost
+    cell.turnover += u * fill
+    fills.append(_ev(spec, s, b.ts + H1, "add", fill, u, 0.0, cost, p.d))
+    new_u = p.u + u
+    p.e = (p.e * p.u + fill * u) / new_u   # 평균 단가 갱신
+    p.u = new_u
+    p.hold += 1                            # 트랜치 수 (그룹 한정 재사용)
+    p.tgt = fill - V5_ADD_ATR * a          # 다음 추매 트리거가 동결 (#a)
+    p.risk_d = p.e * V2_HEAT_FRAC
+    px[s] = fill            # 이후 같은 봉 진입 사이징은 실제 체결가로 마크
+    return True
+
+
 def _post_fill_check(cell: CellState, spec: CellSpec, s: str, b: BarE,
                      fills: list) -> None:
     """방금 체결된 포지션의 같은 봉 스탑(우선)·목표 비관 검사 (터틀 전례)."""
     p = cell.positions.get(s)
     if p is None:
         return
-    if p.kind in ("BBMR", "RSI2"):
-        return          # 스탑·목표 없는 종류 — stop=0.0 센티널 오검(숏 즉시청산) 방지
+    if p.kind in ("BBMR", "RSI2", "BBADD"):
+        # 스탑·목표 없는 종류 — stop=0.0 센티널 오검(숏 즉시청산) 방지.
+        # BBADD 의 tgt 는 익절 목표가 아니라 추매 트리거가라 검사 대상이 아니다
+        return
     ts_close = b.ts + H1
     if (p.d > 0 and b.low <= p.stop) or (p.d < 0 and b.high >= p.stop):
         _close(cell, spec, s, ts_close, p.stop, "same_bar_stop", fills)
@@ -1056,16 +1241,41 @@ def _fill_pending(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
                   live: bool, px: dict, fills: list) -> bool:
     """대기 진입 주문을 이번 봉 시가에 체결 시도한다 (교정 3).
 
+    변형5 추매 주문(kind "BBADD_ADD")만 예외적으로 **보유 중** 체결이 유효하다
+    (새 슬롯이 아닌 수량 추가 — _try_add). 그 외 kind 는 기존 그대로 보유 중
+    무효 (v1~v4 행동 바이트 단위 불변).
+
     Returns:
         체결(같은 봉 청산 포함) 발생 여부.
     """
     pend = cell.pending.pop(s, None)
-    if pend is None or s in cell.positions or not live:
+    if pend is None or not live:
+        return False
+    if pend["kind"] == "BBADD_ADD":
+        if pend.get("ets") != b.ts:
+            logger.warning("%s %s 추매 대기주문 취소 — 다음 봉 연속성 붕괴 "
+                           "(fail-closed)", spec.cell, s)
+            return False
+        if s not in cell.positions:
+            logger.warning("%s %s 추매 대기주문 취소 — 보유 포지션 없음 "
+                           "(fail-closed)", spec.cell, s)
+            return False
+        return _try_add(cell, spec, s, b, ind, px, fills)
+    if s in cell.positions:
         return False
     if pend.get("ets") != b.ts:
         logger.warning("%s %s 대기주문 취소 — 다음 봉 연속성 붕괴 (fail-closed)",
                        spec.cell, s)
         return False
+    if pend["kind"] == "BBADD":
+        # 변형5 트랜치 1 — 명목 1/12 사이징, 다음 추매 트리거가를 체결 시 동결
+        # (tgt = 체결가 − V5_ADD_ATR × ATR[체결봉−1] — 미결 #a, MR 스탑 관례)
+        a = ind["atr1"]            # 신호봉까지 갱신된 ATR = 체결봉 직전 봉 ATR
+        if a is None or a <= 0:
+            return False           # 트리거가 산정 불가 — 무체결 (fail-closed)
+        return _try_open(cell, spec, s, b, pend["d"], b.open, 0.0, "BBADD",
+                         px, fills, tgt=b.open - V5_ADD_ATR * a, notional=True,
+                         notional_frac=V5_TRANCHE_FRAC)
     if pend["kind"] in ("BBMR", "RSI2"):
         # 스탑 없는 출판 시스템 — 명목 사이징 (equity × 1/3), stop=0.0 센티널
         return _try_open(cell, spec, s, b, pend["d"], b.open, 0.0, pend["kind"],
@@ -1150,6 +1360,21 @@ def _manage(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
             mid = float(np.mean(x2["c2"][-(BB_N - 1):] + [b.close]))
             if b.close >= mid:
                 p.pending_exit = "signal"
+    elif spec.strategy == "BBADD":
+        # 변형5 — 스탑 없음 (BBMR 관례, 봉내 청산 없음 — touched 불증가).
+        # ① 익절 신호 (우선 — 미결 #c): 확정봉 종가 >= SMA20(현재 종가 포함
+        #    20봉, 이력은 본 팜 cl — MR_SMA_N(24) >= BB_N(20)) → 다음 봉 시가
+        #    **전량** 청산 (exit_signal). ② 추매 신호: 익절 신호가 없고 트랜치
+        #    잔여가 있으며 확정봉 종가 <= p.tgt(직전 트랜치 체결 시 동결된
+        #    트리거가 — #a·#d) → 다음 봉 시가 트랜치 1 추가 (BBADD_ADD 대기).
+        #    4트랜치 소진(hold >= V5_TRANCHES) 후엔 어떤 조건에도 추매 없음.
+        cl = ind["cl"]
+        if len(cl) >= BB_N - 1:
+            mid = float(np.mean(cl[-(BB_N - 1):] + [b.close]))
+            if b.close >= mid:
+                p.pending_exit = "signal"
+        if not p.pending_exit and p.hold < V5_TRANCHES and b.close <= p.tgt:
+            cell.pending[s] = {"kind": "BBADD_ADD", "d": 1, "ets": b.ts + H1}
     elif spec.strategy == "RSI2":
         # 스탑 없음 — 청산: 롱 close > SMA5 / 숏 close < SMA5 (현재 종가 포함)
         # → 다음 봉 시가 (lab run_connors 1:1, 체결봉 종가 평가 포함)
@@ -1225,6 +1450,18 @@ def _signal(cell: CellState, spec: CellSpec, s: str, b: BarE, ind: dict,
         sd = float(np.std(w))               # ddof=0 모표준편차 (출판 기본값)
         if b.close < mid - BB_K * sd:       # 롱 온리 — 상단밴드 숏 없음 (동결)
             cell.pending[s] = {"kind": "BBMR", "d": 1, "ets": b.ts + H1}
+    elif spec.strategy == "BBADD":
+        # 변형5 트랜치 1 진입 — BBMR 와 같은 밴드 신호 (확정봉 종가 < 하단밴드,
+        # 종가 기준·롱 온리·미형성 무신호), 이력 출처만 본 팜 cl (x2 불필요 —
+        # 스냅숏 상속). 체결(다음 봉 시가)·트리거가 동결은 _fill_pending 분기.
+        cl = ind["cl"]
+        if len(cl) < BB_N - 1:
+            return
+        w = cl[-(BB_N - 1):] + [b.close]
+        mid = float(np.mean(w))
+        sd = float(np.std(w))               # ddof=0 모표준편차 (출판 기본값)
+        if b.close < mid - BB_K * sd:       # 롱 온리 — 상단밴드 숏 없음 (동결)
+            cell.pending[s] = {"kind": "BBADD", "d": 1, "ets": b.ts + H1}
     elif spec.strategy == "RSI2":
         # Connors 원전: 롱 close>SMA200 ∧ RSI(2)<5 / 숏 close<SMA200 ∧ RSI(2)>95
         # → 다음 봉 시가 (U1 실행 규약). SMA200·RSI 는 현재 확정 종가 포함.
@@ -1332,6 +1569,23 @@ def step_variant4(state: FarmState, bars: dict, funding: dict | None = None) -> 
     return _step_cells(state, bars, funding, V4CELLS)
 
 
+def step_variant5(state: FarmState, bars: dict, funding: dict | None = None) -> list:
+    """변형5 서브팜(E24·E25) 전용 step — 본 셀과 같은 내부 경로, 상태·셀만 분리.
+
+    BBADD 는 본 팜이 이미 추적하는 지표(cl 종가 이력·atr1)만 쓰므로
+    step_variant2/3 의 x2 시딩이 없다 (E22·E23 의 step_variant4 와 동일 구조).
+
+    Args:
+        state: 변형5 서브상태 (variant5_from_dict 결과, 변형됨).
+        bars: sym -> BarE (동일 ts 필수).
+        funding: sym -> 이 봉 종가 시각에 정산되는 펀딩률 합 (없으면 0).
+
+    Returns:
+        체결 이벤트 목록 (cell 은 E24/E25 만).
+    """
+    return _step_cells(state, bars, funding, V5CELLS)
+
+
 def _step_cells(state: FarmState, bars: dict, funding: dict | None,
                 cells: tuple) -> list:
     """닫힌 1h 봉 1개를 cells 전체에 처리하는 내부 공용 구현 (인과 규약 준수)."""
@@ -1408,10 +1662,11 @@ def _step_cells(state: FarmState, bars: dict, funding: dict | None,
         for s in newly:
             _post_fill_check(cell, spec, s, ok_bars[s], fills)
         # 3) 봉내 청산·관리 (이번 봉 시가 체결분 제외 — 단 스탑 없는 신호청산형
-        #    BBMR·RSI2 는 체결봉 종가도 확정봉 종가이므로 청산 '신호' 평가에
-        #    포함한다: 원전 lab 1:1, 실제 청산은 다음 봉 시가라 인과 무결.
-        #    두 전략의 _manage 는 봉내 청산이 없어 touched 를 늘리지 않는다)
-        sigexit = spec.strategy in ("BBMR", "RSI2")
+        #    BBMR·RSI2·BBADD 는 체결봉 종가도 확정봉 종가이므로 청산(·추매)
+        #    '신호' 평가에 포함한다: 원전 lab 1:1(BBADD 는 변형5 미결 #e),
+        #    실제 체결은 다음 봉 시가라 인과 무결.
+        #    세 전략의 _manage 는 봉내 청산이 없어 touched 를 늘리지 않는다)
+        sigexit = spec.strategy in ("BBMR", "RSI2", "BBADD")
         for s in act:
             if (s not in touched or sigexit) and _manage(cell, spec, s, ok_bars[s],
                                                          state.ind[s], fills):
@@ -1484,6 +1739,11 @@ def variant3_delist(v: FarmState, sym: str, last_px: float | None = None) -> lis
 def variant4_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
     """변형4 셀(E22·E23) 폐지 처리 — variant_delist 와 동일 관례, 그룹만 분리."""
     return _delist_cells(v, sym, last_px, V4CELLS)
+
+
+def variant5_delist(v: FarmState, sym: str, last_px: float | None = None) -> list:
+    """변형5 셀(E24·E25) 폐지 처리 — variant_delist 와 동일 관례, 그룹만 분리."""
+    return _delist_cells(v, sym, last_px, V5CELLS)
 
 
 def _delist_cells(state: FarmState, sym: str, last_px: float | None,

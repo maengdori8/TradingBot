@@ -215,12 +215,66 @@
             font-size: 0.74rem; margin-bottom: 6px;
         }
         .tracke-detail-summary .td-k { color: var(--muted); margin-right: 5px; }
-        .tracke-mini { max-width: 560px; }
+        .tracke-mini { max-width: 860px; }
         .tracke-mini td, .tracke-mini th {
             font-size: 0.72rem; padding: 2px 8px; white-space: nowrap;
         }
         .tracke-detail-cell .mono.positive { color: var(--green); }
         .tracke-detail-cell .mono.negative { color: var(--red); }
+        /* 미니 레벨 바 — 손절(빨강)·진입(회색)·현재가(점)·목표(초록)·추매(파랑).
+           좌표는 서버(_tracke_level_bar) 또는 pollLive 가 계산 — 표시 전용 */
+        .lvl-dist { font-size: 0.66rem; color: var(--muted); }
+        .lvlbar {
+            position: relative; display: inline-block; vertical-align: middle;
+            width: 110px; height: 10px; background: #161b22;
+            border: 1px solid #21262d; border-radius: 5px;
+        }
+        .lvl-tick {
+            position: absolute; top: 1px; bottom: 1px; width: 2px;
+            transform: translateX(-50%); border-radius: 1px;
+        }
+        .lvl-stop { background: var(--red); }
+        .lvl-tgt { background: var(--green); }
+        .lvl-add { background: var(--blue); }
+        .lvl-entry { background: #8b949e; opacity: 0.7; }
+        .lvl-dot {
+            position: absolute; top: 50%; width: 6px; height: 6px;
+            margin-top: -3px; transform: translateX(-50%);
+            border-radius: 50%; background: #e6edf3;
+        }
+        /* 전 코인 스캐너 — BB %b 게이지(하단·중심·상단 눈금) + 돌파 근접 게이지 */
+        .bbgauge {
+            position: relative; display: inline-block; vertical-align: middle;
+            width: 84px; height: 10px; background: #161b22;
+            border: 1px solid #21262d; border-radius: 5px;
+        }
+        .bb-band {
+            position: absolute; left: 16.7%; right: 16.7%; top: 2px; bottom: 2px;
+            background: rgba(139, 148, 158, 0.18); border-radius: 3px;
+        }
+        .bb-tick {
+            position: absolute; top: 1px; bottom: 1px; width: 1px;
+            background: #30363d; transform: translateX(-50%);
+        }
+        .bb-tick.bb-mid { background: #8b949e; }
+        .bb-dot {
+            position: absolute; top: 50%; width: 6px; height: 6px;
+            margin-top: -3px; transform: translateX(-50%);
+            border-radius: 50%; background: #e6edf3;
+        }
+        .bb-dot.up { background: var(--green); }
+        .bb-dot.dn { background: var(--red); }
+        .distwrap { white-space: nowrap; }
+        .distgauge {
+            position: relative; display: inline-block; vertical-align: middle;
+            width: 56px; height: 8px; background: #161b22;
+            border: 1px solid #21262d; border-radius: 4px; overflow: hidden;
+        }
+        .dist-fill {
+            position: absolute; left: 0; top: 0; bottom: 0;
+            background: var(--blue); opacity: 0.7;
+        }
+        .distgauge.brk .dist-fill { background: var(--green); opacity: 0.85; }
         .watch-item {
             background: #161b22;
             border: 1px solid #21262d;
@@ -496,7 +550,7 @@
     {% if det.positions %}
     <div style="overflow-x:auto;">
         <table class="table table-sm tracke-mini mb-0">
-            <thead><tr><th>코인</th><th>방향</th><th class="text-end">진입가</th><th class="text-end">현재가</th><th class="text-end">평가손익 $</th><th class="text-end">%</th></tr></thead>
+            <thead><tr><th>코인</th><th>방향</th><th class="text-end">진입가</th><th class="text-end">현재가</th><th class="text-end">손절가</th><th class="text-end">목표가</th><th class="text-end">추매가</th><th title="손절(빨강) · 진입(회색) · 현재가(점) · 목표(초록) · 추매(파랑) 위치">레벨</th><th class="text-end">평가손익 $</th><th class="text-end">%</th></tr></thead>
             <tbody>
             {% for p in det.positions %}
             <tr>
@@ -504,6 +558,11 @@
                 <td>{{ p.dir }}</td>
                 <td class="text-end mono">{{ ("%.6f"|format(p.entry)).rstrip('0').rstrip('.') }}</td>
                 <td class="text-end mono">{{ ("%.6f"|format(p.mark)).rstrip('0').rstrip('.') }}</td>
+                {% for lv, pct in [(p.get('stop'), p.get('stop_pct')), (p.get('tgt'), p.get('tgt_pct')), (p.get('add'), p.get('add_pct'))] %}
+                <td class="text-end mono">{% if lv is not none %}{{ ("%.6f"|format(lv)).rstrip('0').rstrip('.') }}{% if pct is not none %} <span class="lvl-dist">({{ "%+.1f"|format(pct) }}%)</span>{% endif %}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                {% endfor %}
+                {% set bar = p.get('bar') %}
+                <td>{% if bar %}<div class="lvlbar" title="손절(빨강) · 진입(회색) · 현재가(점) · 목표(초록) · 추매(파랑)">{% if bar.stop is not none %}<span class="lvl-tick lvl-stop" style="left:{{ bar.stop }}%"></span>{% endif %}{% if bar.tgt is not none %}<span class="lvl-tick lvl-tgt" style="left:{{ bar.tgt }}%"></span>{% endif %}{% if bar.add is not none %}<span class="lvl-tick lvl-add" style="left:{{ bar.add }}%"></span>{% endif %}<span class="lvl-tick lvl-entry" style="left:{{ bar.entry }}%"></span><span class="lvl-dot" style="left:{{ bar.mark }}%"></span></div>{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
                 <td class="text-end mono {{ 'positive' if p.upnl >= 0 else 'negative' }}">{{ "%+.2f"|format(p.upnl) }}</td>
                 <td class="text-end mono {{ 'positive' if p.upnl >= 0 else 'negative' }}">{{ "%+.2f"|format(p.upnl_pct) }}%</td>
             </tr>
@@ -627,6 +686,19 @@
         <div class="sd-line"></div>
     </div>
     <!-- 전 코인 스캐너 (carrybot/live/market_scanner.py 산출물 — 표시 전용, /api/live 비대상) -->
+    {# BB %b 게이지 — 눈금: 하단 0 · 중심 0.5 · 상단 1 (표시 범위 −0.25~1.25 클램프).
+       밴드 밖(%b>1 초록 / %b<0 빨강)만 점 색으로 표기 — 정확값은 title #}
+    {% macro bb_gauge(pctb) -%}
+    {%- if pctb is none -%}<span class="text-muted mono">-</span>{%- else -%}
+    {%- set x = 100.0 * (pctb + 0.25) / 1.5 -%}
+    {%- set x = 2.0 if x < 2.0 else (98.0 if x > 98.0 else x) -%}
+    <span class="bbgauge" title="%b {{ "%.2f"|format(pctb) }} — 하단 0 · 중심 0.5 · 상단 1{{ ' · 상단 밖' if pctb > 1 else (' · 하단 밖' if pctb < 0 else '') }}"><span class="bb-band"></span><span class="bb-tick" style="left:16.7%"></span><span class="bb-tick bb-mid" style="left:50%"></span><span class="bb-tick" style="left:83.3%"></span><span class="bb-dot{{ ' up' if pctb > 1 else (' dn' if pctb < 0 else '') }}" style="left:{{ "%.1f"|format(x) }}%"></span></span>{%- endif -%}
+    {%- endmacro %}
+    {# 돌파 근접 게이지 — 채널 상단까지 거리 10%→0% 를 채움으로, ≤0(돌파)은 초록 가득 #}
+    {% macro dist_gauge(dist) -%}
+    {%- if dist is none -%}<span class="text-muted mono">-</span>{%- else -%}
+    <span class="distwrap" title="채널 상단까지 {{ "%+.2f"|format(dist) }}%{{ ' — 돌파' if dist <= 0 else '' }}"><span class="distgauge{{ ' brk' if dist <= 0 else '' }}"><span class="dist-fill" style="width:{{ "%.0f"|format(100 if dist <= 0 else (0 if dist >= 10 else 100 - dist * 10)) }}%"></span></span> <span class="lvl-dist mono">{{ "%+.1f"|format(dist) }}%</span></span>{%- endif -%}
+    {%- endmacro %}
     <div class="card p-3 mb-3">
         <div class="section-title">
             전 코인 스캐너
@@ -648,10 +720,10 @@
                     <th>코인</th>
                     <th class="text-end">현재가</th>
                     <th class="text-end">24h%</th>
-                    <th class="text-end" title="24h 채널 상단까지 거리 % (음수 = 확정 종가가 이미 상단 위)">돌파 24h</th>
-                    <th class="text-end" title="96h 채널 상단까지 거리 % (음수 = 확정 종가가 이미 상단 위)">돌파 96h</th>
+                    <th class="text-end" title="24h 채널 상단까지 거리 % (음수 = 확정 종가가 이미 상단 위) — 게이지: 10% 밖 빈 칸 → 상단 도달 가득, 돌파 시 초록">돌파 24h</th>
+                    <th class="text-end" title="96h 채널 상단까지 거리 % (음수 = 확정 종가가 이미 상단 위) — 게이지: 10% 밖 빈 칸 → 상단 도달 가득, 돌파 시 초록">돌파 96h</th>
                     <th class="text-end">RSI14</th>
-                    <th class="text-end">BB %b</th>
+                    <th class="text-center" title="볼린저 %b 게이지 — 눈금: 하단 0 · 중심 0.5 · 상단 1, 점 = 현재 위치 (정확값은 마우스 오버)">BB %b<br><span style="font-weight:400; font-size:0.6rem; text-transform:none;">하단 &middot; 중심 &middot; 상단</span></th>
                     <th class="text-center" title="3중 게이트 (추세·RSI50·거래량) 롱 충족">롱</th>
                     <th class="text-center" title="3중 게이트 (추세·RSI50·거래량) 숏 충족">숏</th>
                 </tr>
@@ -662,10 +734,10 @@
                     <td class="mono fw-bold">{{ c.coin }}</td>
                     <td class="text-end mono">{{ ("%.8f"|format(c.price)).rstrip('0').rstrip('.') if c.price is not none else '-' }}</td>
                     <td class="text-end mono {{ 'positive' if c.chg24h_pct is not none and c.chg24h_pct >= 0 else ('negative' if c.chg24h_pct is not none else '') }}">{{ ("%+.2f"|format(c.chg24h_pct)) ~ '%' if c.chg24h_pct is not none else '-' }}</td>
-                    <td class="text-end mono">{{ ("%+.2f"|format(c.dist24h_pct)) ~ '%' if c.dist24h_pct is not none else '-' }}</td>
-                    <td class="text-end mono">{{ ("%+.2f"|format(c.dist96h_pct)) ~ '%' if c.dist96h_pct is not none else '-' }}</td>
+                    <td class="text-end">{{ dist_gauge(c.dist24h_pct) }}</td>
+                    <td class="text-end">{{ dist_gauge(c.dist96h_pct) }}</td>
                     <td class="text-end mono">{{ ("%.1f"|format(c.rsi14)) if c.rsi14 is not none else '-' }}</td>
-                    <td class="text-end mono">{{ ("%.2f"|format(c.bb_pctb)) if c.bb_pctb is not none else '-' }}</td>
+                    <td class="text-center">{{ bb_gauge(c.bb_pctb) }}</td>
                     <td class="text-center mono">{{ '●' if c.gate_long else '○' }}</td>
                     <td class="text-center mono">{{ '●' if c.gate_short else '○' }}</td>
                 </tr>
@@ -755,10 +827,11 @@
                             <th>심볼</th><th>방향</th><th>진입가</th><th>현재가</th>
                             <th>평가손익</th><th>수익률</th><th>수량</th>
                             <th>손절가</th><th>목표가</th>
+                            <th title="손절(빨강) · 진입(회색) · 현재가(점) · 목표(초록) 위치">레벨</th>
                         </tr>
                         </thead>
                         <tbody id="livePositions">
-                        <tr><td colspan="9" class="text-center text-muted py-3">불러오는 중…</td></tr>
+                        <tr><td colspan="10" class="text-center text-muted py-3">불러오는 중…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1056,6 +1129,32 @@
     const TRACKE_CELL_CAPITAL = {{ tracke_cell_capital }};
     let trackeDetailLast = {{ tracke_detail_json | safe }};
     const fmtPx = (n) => Number(n).toFixed(6).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+    // ── 레벨 시각화 공용 (손절·목표·추매 + 미니 레벨 바 — 표시 전용) ──
+    // 레벨 칸: "가격 (현재가 대비 ±d.d%)" — 없으면 "—" (크래시 금지)
+    const lvlCell = (v, pct) => v == null ? '<span class="text-muted">—</span>'
+        : fmtPx(v) + (pct != null ? ` <span class="lvl-dist">(${signed(pct, 1)}%)</span>` : '');
+    // 미니 레벨 바 렌더 — 서버(_tracke_level_bar) 좌표 dict 그대로 배치
+    function lvlBarHtml(bar) {
+        if (!bar) return '<span class="text-muted">—</span>';
+        let h = '<div class="lvlbar" title="손절(빨강) · 진입(회색) · 현재가(점) · 목표(초록) · 추매(파랑)">';
+        if (bar.stop != null) h += `<span class="lvl-tick lvl-stop" style="left:${bar.stop}%"></span>`;
+        if (bar.tgt != null) h += `<span class="lvl-tick lvl-tgt" style="left:${bar.tgt}%"></span>`;
+        if (bar.add != null) h += `<span class="lvl-tick lvl-add" style="left:${bar.add}%"></span>`;
+        h += `<span class="lvl-tick lvl-entry" style="left:${bar.entry}%"></span>`;
+        h += `<span class="lvl-dot" style="left:${bar.mark}%"></span></div>`;
+        return h;
+    }
+    // 클라이언트 측 좌표 계산 (ICT 오픈 포지션용) — 서버 _tracke_level_bar 와 동일 매핑
+    function lvlBarFrom(entry, mark, stop, tgt) {
+        const lv = (v) => (typeof v === 'number' && isFinite(v) && v > 0) ? v : null;
+        stop = lv(stop); tgt = lv(tgt);
+        if (stop == null && tgt == null) return null;
+        const pts = [stop, entry, mark, tgt].filter(v => v != null);
+        const lo = Math.min(...pts), hi = Math.max(...pts);
+        if (!(hi > lo)) return null;
+        const x = v => v == null ? null : Math.round((4 + 92 * (v - lo) / (hi - lo)) * 100) / 100;
+        return {stop: x(stop), entry: x(entry), mark: x(mark), tgt: x(tgt), add: null};
+    }
     function trackeDetailHtml(det) {
         if (!det) return '<div class="text-muted" style="font-size:0.74rem;">대기 — 셀 상태가 기록되면 상세가 표시됩니다.</div>';
         const box = (k, v, cls='') =>
@@ -1071,13 +1170,19 @@
         } else {
             html += '<div style="overflow-x:auto;"><table class="table table-sm tracke-mini mb-0">'
                 + '<thead><tr><th>코인</th><th>방향</th><th class="text-end">진입가</th>'
-                + '<th class="text-end">현재가</th><th class="text-end">평가손익 $</th>'
+                + '<th class="text-end">현재가</th><th class="text-end">손절가</th>'
+                + '<th class="text-end">목표가</th><th class="text-end">추매가</th>'
+                + '<th>레벨</th><th class="text-end">평가손익 $</th>'
                 + '<th class="text-end">%</th></tr></thead><tbody>'
                 + det.positions.map(p => {
                     const cls = p.upnl >= 0 ? 'positive' : 'negative';
                     return `<tr><td class="mono">${p.sym}</td><td>${p.dir}</td>`
                         + `<td class="text-end mono">${fmtPx(p.entry)}</td>`
                         + `<td class="text-end mono">${fmtPx(p.mark)}</td>`
+                        + `<td class="text-end mono">${lvlCell(p.stop, p.stop_pct)}</td>`
+                        + `<td class="text-end mono">${lvlCell(p.tgt, p.tgt_pct)}</td>`
+                        + `<td class="text-end mono">${lvlCell(p.add, p.add_pct)}</td>`
+                        + `<td>${lvlBarHtml(p.bar)}</td>`
                         + `<td class="text-end mono ${cls}">${signed(p.upnl)}</td>`
                         + `<td class="text-end mono ${cls}">${signed(p.upnl_pct)}%</td></tr>`;
                 }).join('')
@@ -1120,21 +1225,27 @@
             // 포지션 테이블
             const tb = document.getElementById('livePositions');
             if (!d.open_positions.length) {
-                tb.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">보유 포지션 없음</td></tr>';
+                tb.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-3">보유 포지션 없음</td></tr>';
             } else {
                 tb.innerHTML = d.open_positions.map(p => {
                     const cls = p.unrealized_pnl >= 0 ? 'positive' : 'negative';
                     const badge = p.direction === 'long' ? 'badge-long' : 'badge-short';
+                    const px = Number(p.current_price);
+                    const sl = Number(p.stop_loss), tp = Number(p.take_profit);
+                    // 레벨 부재(0/NaN)는 "—" — 현재가 대비 거리 % 병기 (크래시 금지)
+                    const distSuf = (lv) => (lv > 0 && px > 0)
+                        ? ` <span class="lvl-dist">(${signed((lv / px - 1) * 100, 1)}%)</span>` : '';
                     return `<tr>
                         <td class="fw-bold">${p.symbol.split('/')[0]}</td>
                         <td><span class="badge ${badge}">${p.direction.toUpperCase()}</span></td>
                         <td class="mono">${Number(p.entry_price).toFixed(2)}</td>
-                        <td class="mono">${Number(p.current_price).toFixed(2)}</td>
+                        <td class="mono">${px.toFixed(2)}</td>
                         <td class="mono ${cls}">${signed(p.unrealized_pnl, 4)}</td>
                         <td class="mono ${cls}">${signed(p.unrealized_pct)}%</td>
                         <td class="mono">${Number(p.qty).toFixed(4)}</td>
-                        <td class="mono negative">${Number(p.stop_loss).toFixed(2)}</td>
-                        <td class="mono positive">${Number(p.take_profit).toFixed(2)}</td>
+                        <td class="mono negative">${sl > 0 ? sl.toFixed(2) + distSuf(sl) : '—'}</td>
+                        <td class="mono positive">${tp > 0 ? tp.toFixed(2) + distSuf(tp) : '—'}</td>
+                        <td>${lvlBarHtml(lvlBarFrom(Number(p.entry_price), px, sl, tp))}</td>
                     </tr>`;
                 }).join('');
             }

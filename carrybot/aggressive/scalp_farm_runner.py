@@ -52,6 +52,14 @@
   폐지의 미러. 원장·이력은 기존 변형 파일 통합 (이력 e22·e23 열 추가, 스키마
   이월 관례). 상태는 variant4_cells 키 (t0_variant4 write-once). 본 원장 기록
   금지 방화벽 동일.
+- 변형5 셀 E24·E25 (BBADD = 볼린저 추매 — scalp_farm.py 동결 명세): 변형4
+  단계 '뒤'의 **여섯째 격리 단계**, 같은 규약 (_safe_variant — 변형5 실패는
+  본·v1~v4 커밋에 무영향, 역도 성립). 지표는 본 팜 스냅숏 상속(E11/E22
+  전례 — BBADD 는 본 팜이 추적하는 cl·atr1 만 사용)이라 별도 워밍업 수집이
+  없고, 본 팜 미가동(last_ts=0)이면 t0 를 동결하지 않는다 (fail-closed).
+  폐지는 본 팜 폐지의 미러. 원장·이력은 기존 변형 파일 통합 (원장 action
+  enter/add/exit_signal, 이력 e24·e25 열 추가, 스키마 이월 관례). 상태는
+  variant5_cells 키 (t0_variant5 write-once). 본 원장 기록 금지 방화벽 동일.
 """
 from __future__ import annotations
 
@@ -77,6 +85,8 @@ from carrybot.aggressive.scalp_farm import (
     V3_UNIVERSE_N,
     V4CELLS,
     V4LABELS,
+    V5CELLS,
+    V5LABELS,
     VCELLS,
     VLABELS,
     WARMUP_1H,
@@ -89,11 +99,13 @@ from carrybot.aggressive.scalp_farm import (
     new_variant2,
     new_variant3,
     new_variant4,
+    new_variant5,
     step,
     step_variant,
     step_variant2,
     step_variant3,
     step_variant4,
+    step_variant5,
     variant2_delist,
     variant2_equities,
     variant2_from_dict,
@@ -106,6 +118,10 @@ from carrybot.aggressive.scalp_farm import (
     variant4_equities,
     variant4_from_dict,
     variant4_to_dict,
+    variant5_delist,
+    variant5_equities,
+    variant5_from_dict,
+    variant5_to_dict,
     variant_delist,
     variant_equities,
     variant_from_dict,
@@ -127,11 +143,11 @@ LEDGER_KEY = ["cell", "sym", "strategy", "bar_close", "action"]
 # lab/tracke_null.py 공식 10셀 계약(미지 셀 거부)을 보호한다 (기록 교차 금지)
 VLEDGER = Path("logs/tracke_variant_ledger.csv")
 VHIST = Path("logs/tracke_variant_history.csv")
-# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3)·e22~e23(변형4) 열 추가 (구
-# 파일의 결여 열은 0.0 이월 = 부재 표기). equity = 행 기록 시점의 변형 전
-# 셀(전 그룹) 시가평가 합, keep-last(ts).
+# 이력 스키마 — e13~e18(변형2)·e19~e21(변형3)·e22~e23(변형4)·e24~e25(변형5)
+# 열 추가 (구 파일의 결여 열은 0.0 이월 = 부재 표기). equity = 행 기록 시점의
+# 변형 전 셀(전 그룹) 시가평가 합, keep-last(ts).
 VHIST_COLS = ["day", "ts", "equity", "e11", "e12", "e13", "e14", "e15", "e16",
-              "e17", "e18", "e19", "e20", "e21", "e22", "e23",
+              "e17", "e18", "e19", "e20", "e21", "e22", "e23", "e24", "e25",
               "n_pos", "bars", "fills"]
 OFFICIAL_IDS = frozenset(s.cell for s in CELLS)     # E01~E10
 VARIANT_IDS = frozenset(s.cell for s in VCELLS)     # E11·E12
@@ -612,7 +628,9 @@ def _vhist_row(state: FarmState, v: FarmState, own_cells: tuple,
               (V3CELLS, state.variant3_cells, variant3_from_dict,
                variant3_equities),
               (V4CELLS, state.variant4_cells, variant4_from_dict,
-               variant4_equities))
+               variant4_equities),
+              (V5CELLS, state.variant5_cells, variant5_from_dict,
+               variant5_equities))
     for cells, vc, from_d, eq_fn in groups:
         if cells is own_cells:
             g = v
@@ -1245,6 +1263,104 @@ def _finalize_variant4(state: FarmState) -> None:
     _save_variant4(state, v, vfills, v.last_ts or state.last_ts, 0)
 
 
+def _save_variant5(state: FarmState, v: FarmState, vfills: list,
+                   ts_end: int, bars_done: int) -> None:
+    """변형5(E24·E25) 원장 → 이력 → 상태(variant5_cells) 순 원자적 체크포인트.
+
+    _save_variant4 와 같은 계약 — 파일 통합(VLEDGER/VHIST), 상태 키·t0 만
+    분리. 방화벽: (cell, strategy) 쌍이 V5CELLS 밖이면 기록 대신 예외
+    (셀·전략 집합 독립 검사는 교차 오염을 놓친다 — 변형2 전례).
+    t0_variant5 는 write-once — 기존 기록과 다른 t0 저장 시도는 어떤 파일도
+    쓰기 전에 예외로 죽는다.
+    """
+    prev = state.variant5_cells
+    if prev is not None and prev.get("t0_variant5") != v.t0:
+        raise ValueError(f"t0_variant5 변경 금지 (write-once): "
+                         f"{prev.get('t0_variant5')} != {v.t0}")
+    allowed = {(s.cell, s.strategy) for s in V5CELLS}
+    bad = {(f["cell"], f["strategy"]) for f in vfills} - allowed
+    if bad:
+        raise ValueError(f"변형5 원장에 비변형5 행 기록 금지: {sorted(bad)}")
+    n = append_csv_atomic(VLEDGER, pd.DataFrame(vfills, columns=LEDGER_COLS),
+                          LEDGER_KEY)
+    if n:
+        logger.info("변형5 원장 %d행 추가 (중복 제거 후)", n)
+    row = _vhist_row(state, v, V5CELLS, ts_end, bars_done, len(vfills))
+    append_csv_atomic(VHIST, pd.DataFrame([row], columns=VHIST_COLS),
+                      key=["ts"], keep="last")
+    try:
+        state.variant5_cells = variant5_to_dict(v)
+        _atomic_write(STATE, json.dumps(state.to_dict(), indent=1, default=float))
+    except BaseException:
+        state.variant5_cells = prev     # 실패 격리 롤백 (_save_variant 와 대칭)
+        raise
+    logger.info("변형5 자본 %.2f (E24+E25), 포지션 %d, 처리 봉 %d, 체결 %d",
+                sum(row[s.cell.lower()] for s in V5CELLS),
+                sum(len(c.positions) for c in v.cells.values()),
+                bars_done, len(vfills))
+
+
+def _run_variant5(ex, state: FarmState, data: dict, fund_ev: dict,
+                  since: int, replay_end: int) -> None:
+    """변형5 셀(E24·E25) 재생 — 변형4 단계 뒤 여섯째 단계 (_safe_variant 격리).
+
+    첫 호출: 본 팜이 봉을 처리한 적이 있어야(last_ts>0) t0_variant5 동결
+    (write-once) — 지표는 본 팜 스냅숏 상속(BBADD 는 본 팜이 추적하는
+    cl·atr1 만 사용)이므로 별도 워밍업 수집이 없고, 본 팜 미가동 상태의 빈
+    지표로 동결하지 않는다 (fail-closed, 다음 실행 재시도). 동결 실행은
+    재생 없이 종료하고 다음 실행부터 재생한다. 이후: E11·E22 와 동일한
+    폐지 미러 → 따라잡기 수집 → 재생 → 통합 파일 저장.
+
+    Args:
+        ex: ccxt bybit (따라잡기 수집 전용 — 정상 경로에서는 미사용).
+        state: 본 팜 상태 (variant5_cells 키만 갱신됨).
+        data: 본 실행이 수집한 sym -> {ts: ohlc} (읽기 전용으로 사용).
+        fund_ev: 본 실행이 수집한 sym -> {정산 ts: 펀딩률 합}.
+        since: 본 실행 재생 시작 ts.
+        replay_end: 본 실행 재생 끝 ts (변형5도 같은 끝으로 정렬).
+    """
+    if state.variant5_cells is None:
+        if not state.last_ts:
+            return                      # 본 팜 미가동 — 다음 실행에서 초기화
+        v = new_variant5(state, t0=int(time.time() * 1000))
+        try:
+            state.variant5_cells = variant5_to_dict(v)
+            # 헤더 선생성 + 이력 스키마 이월 (e24·e25 열 정렬 — 변형2/3/4 전례)
+            append_csv_atomic(VLEDGER, pd.DataFrame([], columns=LEDGER_COLS),
+                              LEDGER_KEY)
+            _migrate_vhist_schema()
+            _atomic_write(STATE, json.dumps(state.to_dict(), indent=1,
+                                            default=float))
+        except BaseException:
+            state.variant5_cells = None   # 미기록 t0 영속화 금지 (롤백)
+            raise
+        logger.info("변형5 t0_variant5=%d 동결 (write-once) — E24·E25: %s",
+                    v.t0, V5LABELS["E24"])
+        return
+    v = variant5_from_dict(state.variant5_cells)
+    if v.basket_b != list(state.basket_b):
+        raise ValueError(f"변형5 바스켓 B 불일치: {v.basket_b} != {state.basket_b}")
+    if v.last_ts > state.last_ts:
+        raise ValueError(f"변형5 last_ts({v.last_ts})가 본 팜({state.last_ts}) 초과")
+    vfills = _mirror_delist(state, v, variant5_delist)
+    vsince, vdata, vfund = _variant_inputs(ex, v, data, fund_ev, since, replay_end)
+    fills2, bars_done = _replay_variant(v, vdata, vfund, vsince, replay_end,
+                                        step_variant5)
+    _save_variant5(state, v, vfills + fills2, replay_end, bars_done)
+
+
+def _finalize_variant5(state: FarmState) -> None:
+    """변형5(E24·E25) 종말 폐지 미러 — _finalize_variant4 와 동일 계약, 그룹 분리."""
+    if state.variant5_cells is None:
+        return
+    v = variant5_from_dict(state.variant5_cells)
+    missing = [s for s in state.delisted if s not in v.delisted]
+    if not missing:
+        return
+    vfills = _mirror_delist(state, v, variant5_delist)
+    _save_variant5(state, v, vfills, v.last_ts or state.last_ts, 0)
+
+
 def _safe_variant(fn, *args) -> None:
     """변형 단계 격리 실행 — 어떤 실패도 본 셀 커밋·중단 마커에 영향 없음.
 
@@ -1311,6 +1427,7 @@ def main() -> None:
         _safe_variant(_finalize_variant, state)    # 변형 폐지 미러 (미실현 방치 금지)
         _safe_variant(_finalize_variant2, state)
         _safe_variant(_finalize_variant4, state)
+        _safe_variant(_finalize_variant5, state)
         return
 
     now_h = int(pd.Timestamp.now(tz="utc").floor("h").timestamp() * 1000)
@@ -1353,6 +1470,7 @@ def main() -> None:
             _safe_variant(_finalize_variant, state)
             _safe_variant(_finalize_variant2, state)
             _safe_variant(_finalize_variant4, state)
+            _safe_variant(_finalize_variant5, state)
             return
     if not syms:
         _abort("잔여 심볼 없음 — 상태 보존")
@@ -1360,6 +1478,7 @@ def main() -> None:
         _safe_variant(_finalize_variant, state)
         _safe_variant(_finalize_variant2, state)
         _safe_variant(_finalize_variant4, state)
+        _safe_variant(_finalize_variant5, state)
         return
 
     replay_end = min(max(d) for d in data.values())
@@ -1370,6 +1489,7 @@ def main() -> None:
         _safe_variant(_finalize_variant, state)    # 변형 따라잡기는 다음 새 봉 실행에서
         _safe_variant(_finalize_variant2, state)
         _safe_variant(_finalize_variant4, state)
+        _safe_variant(_finalize_variant5, state)
         return
     grid = list(range(since, replay_end + 1, H1))
 
@@ -1382,6 +1502,7 @@ def main() -> None:
             _safe_variant(_finalize_variant, state)
             _safe_variant(_finalize_variant2, state)
             _safe_variant(_finalize_variant4, state)
+            _safe_variant(_finalize_variant5, state)
         return
 
     # 펀딩 — 라이브 구간이 있을 때만 필요 (워밍업 봉엔 포지션이 없다)
@@ -1421,6 +1542,8 @@ def main() -> None:
     _safe_variant(_run_variant3, ex, state, data, fund_ev, since, replay_end)
     # 변형4 셀 E22·E23 — 다섯째 단계 (손익비 1.5:1 익절, 본 팜 지표 스냅숏 상속)
     _safe_variant(_run_variant4, ex, state, data, fund_ev, since, replay_end)
+    # 변형5 셀 E24·E25 — 여섯째 단계 (볼린저 추매 BBADD, 본 팜 지표 스냅숏 상속)
+    _safe_variant(_run_variant5, ex, state, data, fund_ev, since, replay_end)
 
 
 if __name__ == "__main__":
