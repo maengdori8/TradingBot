@@ -5,7 +5,11 @@
 // 기본값: 진입 RSI(14)<30 + 종가>SMA200, 추매 1.0×ATR×3(동결·재귀), 익절 평단+2.0×ATR
 //   (동결·종가 확인형), 손절 평단−1.0×ATR(동결·봉내 터치), 보유 24시간 초과 시 전량 청산.
 // 사이징: 고정 레버리지 모드 = 총 명목 목표 40×자본(트랜치당 1/4씩), R-사이징 모드 선택 가능.
-// ⚠ 40배의 산수 (헤더에 박제): 왕복 수수료 = 0.16%×40 = 자본의 6.4%/거래.
+// ⚠ 수수료 = 편도 0.0375% (바이비트 VIP0 지정가 진입 0.02% + 시장가 청산 0.055% 혼합
+//   — 손절·강제청산·시간청산은 시장가 강제. 순수 메이커 왕복 0.04% 는 낙관 상한).
+//   40배의 산수: 왕복 0.075%×40 = 자본의 3.0%/거래. 참고: 메이커 4bp 요율로도
+//   1,248시행 전수 재검증 결과 생존 0 (PREREGISTRATION_AVGDOWN_FEES) — 요율은 손실
+//   속도만 바꾸고 부호를 못 바꾼다.
 //   강제청산 거리 ≈ 1/40 − 유지증거금 0.5% = 평단 대비 −2.0% (교차 아닌 격리 근사).
 //   TradingView 는 청산을 모델하지 않으므로 본 전략이 청산 근사(liqSim)를 직접 시뮬레이션
 //   — 평단 대비 −(1/실효레버리지 − 0.5%) 도달 시 강제 청산 체결. 펀딩 미포함(레버리지
@@ -15,7 +19,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 strategy("단타 팜 BBADD (추매 사다리)", overlay=true,
      initial_capital=10000, currency=currency.USD,
-     commission_type=strategy.commission.percent, commission_value=0.08,
+     commission_type=strategy.commission.percent, commission_value=0.0375,
      default_qty_type=strategy.percent_of_equity, default_qty_value=8.33,
      pyramiding=4, calc_on_every_tick=false, process_orders_on_close=false)
 
@@ -141,4 +145,4 @@ if barstate.islast
     table.cell(t, 0, 5, "추세 필터", text_size=size.tiny)
     table.cell(t, 1, 5, useTrend ? (close > smaT ? "통과" : "차단") : "OFF", text_size=size.tiny, text_color=useTrend and close <= smaT ? color.new(color.red, 20) : color.new(color.green, 20))
     table.cell(t, 0, 6, "⚠", text_size=size.tiny)
-    table.cell(t, 1, 6, "미검증·왕복비용 " + str.tostring(0.16 * levTarget, "#.#") + "%/거래", text_size=size.tiny, text_color=color.new(#D9A441, 0))
+    table.cell(t, 1, 6, "미검증·왕복비용 " + str.tostring(0.075 * levTarget, "#.#") + "%/거래", text_size=size.tiny, text_color=color.new(#D9A441, 0))
