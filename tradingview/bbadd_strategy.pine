@@ -1,10 +1,18 @@
 //@version=5
 // ─────────────────────────────────────────────────────────────────────────────
-// 단타 팜 BBADD 전략 — 볼린저 하단 진입 + ATR 추매 사다리(최대 3회) + 중심선 익절
-// TradingBot 연구의 E24/E25 규칙 이식본. 수수료 편도 0.08% 포함(왕복 16bp).
-// Strategy Tester 탭에서 승률·순손익·MDD 를 직접 확인하라.
-// 사전 기록된 백테스트(BTC/ETH/SOL 1h, 5.6년): 승률 77.4%, 누적 −49.2% —
-// "승률 ≠ 수익"의 실측. 관측·학습용, 실거래 신호 아님.
+// 단타 팜 BBADD 전략 v2 — 볼린저 하단 진입 + ATR 추매 사다리 + 중심선 익절
+// v2 구조 변경: (1) 추세 필터 기본 ON — 종가>SMA200 일 때만 진입 (하락장 물타기 차단),
+//               (2) 재해 손절 기본 ON — 평단 − 6×ATR, 마지막 체결봉 직전 ATR 로 동결.
+// 레벨 표시는 조건 충족 시에만: 진입 신호 마커 + 포지션 보유 중 평단·익절·손절·다음 추매가.
+// 같은 봉 익절·추매 동시 성립 시 익절 우선(엔진 elif 동형). T1 체결봉은 신호봉 종가 기준
+// 근사 스탑을 선발주하고 체결봉 종가에 동결값으로 교체(추매 체결봉의 스탑 갱신은 1봉 지연).
+// 수수료 편도 0.08% 포함(왕복 16bp). 펀딩 미포함 — 엔진 실측은 펀딩 차감 포함이라
+// Tester 수치가 더 우호적으로 나온다. 아래 수치는 lab 3심볼 바스켓·펀딩·일손실정지 포함
+// 환경의 것으로, 본 스크립트 단일 심볼 Tester 결과와 일치하지 않는다.
+// 장기 실측(BTC/ETH/SOL 1h 5.6년, 탐색적·비승급): v1 필터없음 승률 77.4%/누적 −49.2%,
+// 추세필터만 76.7%/−5.8%, 추세필터+6ATR손절 76.1%/−20.8% — 손절이 회귀할 손실을 실현시켜
+// 오히려 악화. 승률 ≠ 수익의 실측이며 어떤 설정도 비용차감 후 양수 아님(관측·학습용).
+// useTP 모드의 limit+stop 동시 도달 봉은 봉내 OHLC 휴리스틱으로 낙관 체결될 수 있음.
 // ─────────────────────────────────────────────────────────────────────────────
 strategy("단타 팜 BBADD (추매 사다리)", overlay=true,
      initial_capital=10000, currency=currency.USD,
@@ -15,68 +23,81 @@ strategy("단타 팜 BBADD (추매 사다리)", overlay=true,
 // ── 입력 ──
 lenBB    = input.int(20,   "볼린저 기간")
 mulBB    = input.float(2.0,"볼린저 승수")
+lenTrend = input.int(200,  "추세 SMA")
+useTrend = input.bool(true, "추세 필터 (종가>SMA200 일 때만 진입)")
 lenATR   = input.int(24,   "ATR 기간")
 addMult  = input.float(1.0,"추매 간격 (×ATR)")
 maxAdds  = input.int(3,    "최대 추매 횟수", minval=0, maxval=3)
-useTP    = input.bool(false, "1.5R 익절 사용 (기본: 중심선 익절)")
-rrTP     = input.float(1.5,  "익절 손익비 (R)")
-useStop  = input.bool(false, "재해 손절 사용 (평단 − n×ATR)")
+useStop  = input.bool(true, "재해 손절 (평단 − n×ATR, 체결 시 동결)")
 stopMult = input.float(6.0,  "재해 손절 배수")
+useTP    = input.bool(false, "1.5R 익절 사용 (기본: 중심선 익절)")
+rrTP     = input.float(1.5,  "익절 손익비 (R = 재해손절 6×ATR 기준 — 1.5R ≈ +9×ATR)")
 
 // ── 지표 (확정봉 기준 — process_orders_on_close=false 라 신호 확정 후 다음 봉 시가 체결) ──
 basis = ta.sma(close, lenBB)
 dev   = mulBB * ta.stdev(close, lenBB)
 loBB  = basis - dev
+smaT  = ta.sma(close, lenTrend)
 atr   = ta.atr(lenATR)
 
-// ── 상태: 추매 트리거 (체결 시 동결 — 엔진 #a 규칙) ──
+// ── 상태: 추매 트리거·재해손절 (체결 시 동결 — 엔진 #a 규칙) ──
 var float nextAdd = na
-var int   nAdds   = 0
-newFill = strategy.opentrades > strategy.opentrades[1] or (strategy.opentrades == 1 and strategy.opentrades[1] == 0)
+var float dStop   = na
+newFill = strategy.opentrades > 0 and (strategy.opentrades != strategy.opentrades[1] or strategy.closedtrades > strategy.closedtrades[1])
 if newFill
-    nextAdd := open - addMult * atr[1]      // 체결봉 시가 − 직전 확정 ATR
-    nAdds   := strategy.opentrades - 1
+    nextAdd := open - addMult * atr[1]      // 체결봉 시가 − 직전 확정 ATR (동결)
+    dStop   := strategy.position_avg_price - stopMult * atr[1]
 
 flat = strategy.position_size == 0
 if flat
     nextAdd := na
-    nAdds   := 0
+    dStop   := na
 
-// ── 진입: 확정봉 종가 < BB 하단 (다음 봉 시가 체결) ──
-entrySig = close < loBB and flat
+// ── 진입: 확정봉 종가 < BB 하단 + 추세 필터 (다음 봉 시가 체결) ──
+entrySig = flat and close < loBB and (not useTrend or close > smaT)
 if entrySig
     strategy.entry("T1", strategy.long)
+    // 체결봉 무방비 차단: 신호봉 종가 기준 근사 스탑·TP 선발주 → 체결봉 종가에 동결값으로 교체
+    if useStop and not useTP
+        strategy.exit("SL", stop=close - stopMult * atr)
+    if useTP
+        strategy.exit("TP", limit=close + rrTP * stopMult * atr, stop=useStop ? close - stopMult * atr : na)
 
-// ── 추매: 종가 ≤ 동결 트리거 (최대 maxAdds) ──
-addSig = not flat and not na(nextAdd) and close <= nextAdd and strategy.opentrades <= maxAdds
+// ── 청산·추매: 같은 봉 동시 성립 시 익절 우선 (엔진 elif 동형) ──
+avgPx = strategy.position_avg_price
+tpLv  = useTP ? avgPx + rrTP * (avgPx - dStop) : basis
+exitMid = not flat and not useTP and close >= basis
+addSig  = not flat and not exitMid and not na(nextAdd) and close <= nextAdd and strategy.opentrades <= maxAdds
 if addSig
     strategy.entry("T" + str.tostring(strategy.opentrades + 1), strategy.long)
-
-// ── 익절: 종가 ≥ 중심선 → 전량 (또는 1.5R 옵션) ──
-avgPx = strategy.position_avg_price
-exitMid = not flat and close >= basis
-if exitMid and not useTP
+if exitMid
     strategy.close_all(comment="중심선 익절")
-if useTP and not flat
-    rDist = stopMult * atr
-    strategy.exit("TP", limit=avgPx + rrTP * rDist, stop=useStop ? avgPx - stopMult * atr : na)
-if useStop and not useTP and not flat
-    strategy.exit("SL", stop=avgPx - stopMult * atr)
+if not flat and useTP
+    strategy.exit("TP", limit=tpLv, stop=useStop ? dStop : na)
+if not flat and useStop and not useTP
+    strategy.exit("SL", stop=dStop)
 
-// ── 오버레이 ──
+// ── 표시: 조건 충족 시에만 ──
+plotshape(entrySig, "진입 신호", style=shape.labelup, location=location.belowbar, color=color.new(#D9A441, 0), textcolor=color.black, size=size.tiny, text="진입")
 pB = plot(basis + dev, "BB 상단", color=color.new(color.gray, 60))
 pL = plot(loBB,        "BB 하단", color=color.new(color.gray, 60))
 fill(pB, pL, color=color.new(color.gray, 92))
-plot(basis, "중심선(익절)", color=color.new(color.green, 30))
-plot(not flat ? avgPx : na,   "평단",       color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
-plot(not flat ? nextAdd : na, "다음 추매가", color=color.new(color.blue, 20), style=plot.style_linebr)
-plot(useStop and not flat ? avgPx - stopMult * atr : na, "재해 손절", color=color.new(color.red, 20), style=plot.style_linebr)
+plot(basis, "중심선(익절 기준)", color=color.new(color.green, 40))
+plot(useTrend ? smaT : na, "SMA200 (추세 필터)", color=color.new(color.orange, 30), linewidth=2)
+plot(not flat ? avgPx : na, "평단", color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
+plot(not flat ? tpLv : na,  "익절", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(not flat and useStop ? dStop : na, "손절", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(not flat and strategy.opentrades <= maxAdds ? nextAdd : na, "다음 추매가", color=color.new(color.blue, 20), style=plot.style_linebr)
 
-var table t = table.new(position.top_right, 2, 3, border_width=1)
+var table t = table.new(position.top_right, 2, 5, border_width=1)
 if barstate.islast
     table.cell(t, 0, 0, "트랜치", text_size=size.tiny)
     table.cell(t, 1, 0, str.tostring(strategy.opentrades) + "/" + str.tostring(maxAdds + 1), text_size=size.tiny)
     table.cell(t, 0, 1, "평단", text_size=size.tiny)
     table.cell(t, 1, 1, flat ? "—" : str.tostring(avgPx, format.mintick), text_size=size.tiny)
-    table.cell(t, 0, 2, "⚠", text_size=size.tiny)
-    table.cell(t, 1, 2, "관측용·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
+    table.cell(t, 0, 2, "손절/익절", text_size=size.tiny)
+    table.cell(t, 1, 2, flat ? "—" : (useStop ? str.tostring(dStop, format.mintick) : "OFF") + " / " + (useTP ? str.tostring(tpLv, format.mintick) : "중심선"), text_size=size.tiny)
+    table.cell(t, 0, 3, "추세 필터", text_size=size.tiny)
+    table.cell(t, 1, 3, useTrend ? (close > smaT ? "통과" : "차단") : "OFF", text_size=size.tiny, text_color=useTrend and close <= smaT ? color.new(color.red, 20) : color.new(color.green, 20))
+    table.cell(t, 0, 4, "⚠", text_size=size.tiny)
+    table.cell(t, 1, 4, "관측용·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))

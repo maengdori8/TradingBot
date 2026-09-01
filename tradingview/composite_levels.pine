@@ -1,25 +1,32 @@
 //@version=5
 // ─────────────────────────────────────────────────────────────────────────────
-// 단타 팜 컴포짓 지표 — 진입·손절·목표·추매 레벨 (TradingBot 대시보드와 동일 산식)
-// 관측 도구 — 이 지표 조합의 예측력은 검증 결과 우연 수준(SWEEP-2026-08-31).
-// 레벨·상태 표시용이며 매매 신호가 아님. PAPER ONLY 연구의 시각화 이식본.
-// 1시간봉 차트에서 사용 권장 (채널 24/96봉 = 24h/96h).
+// 단타 팜 컴포짓 지표 v2 — 신호 게이트 레벨 (조건 충족 시에만 진입·손절·익절·추매 표시)
+// 신호: 종가 < BB 하단 AND 종가 > SMA200 (BBADD 전략과 동일 조건, 확정봉 기준)
+// 신호 확정 시 레벨 동결: 진입=신호봉 종가(다음 봉 시가 체결 근사), 손절=진입−6×ATR,
+// 익절선=신호 시점 BB 중심선 동결 표시(실제 청산 판정은 동적 중심선 종가 — 엔진 동형),
+// 추매=진입−1/2/3×ATR. 플랜 종료: 손절 터치 / 종가≥동적 중심선 / 타임아웃(기본 96봉).
+// 상태 갱신은 확정봉에서만(리페인트 방지 — 실시간 봉에서는 직전 확정 상태 표시).
+// 알림은 플랜 생성 시에만 확정 틱에서 발화(미확정 봉 거짓 발화 차단).
+// 근사 공개: 추매2·3·손절은 재동결(실체결가·체결시점 ATR) 미반영 — 급락 시 실제
+// 트리거는 표시선보다 낮다. 게이지 테이블은 진행 중 봉 값(대시보드는 확정봉 규약).
+// ⚠ 관측 도구. 이 지표 조합의 예측력은 사전등록 검증 결과 우연 수준(SWEEP-2026-08-31).
+//   수익 신호가 아니라 PAPER ONLY 연구의 규칙 시각화다. 컴포짓 게이지는 대시보드 동결 산식.
+// 1시간봉 차트에서 사용 권장 (ATR 24봉 = 24h).
 // ─────────────────────────────────────────────────────────────────────────────
-indicator("단타 팜 컴포짓 · 레벨", overlay=true, max_labels_count=50)
+indicator("단타 팜 컴포짓 · 레벨", overlay=true)
 
 // ── 입력 ──
 lenBB    = input.int(20,  "볼린저 기간")
 mulBB    = input.float(2.0, "볼린저 승수")
 lenFast  = input.int(20,  "SMA fast")
-lenSlow  = input.int(200, "SMA slow")
+lenSlow  = input.int(200, "SMA slow (추세 필터)")
 lenRSI   = input.int(14,  "RSI")
-lenATR   = input.int(24,  "ATR (스탑·추매)")
-chFast   = input.int(24,  "돌파 채널 (봉)")
-chSlow   = input.int(96,  "장기 채널 (봉)")
+lenATR   = input.int(24,  "ATR (손절·추매)")
+chFast   = input.int(24,  "돌파 채널 (컴포짓용)")
 stopMult = input.float(6.0, "손절 = 진입 − n×ATR")
 addMult  = input.float(1.0, "추매 간격 (×ATR)")
-rrTP     = input.float(1.5, "익절 손익비 (R)")
-showLv   = input.bool(true, "레벨 표시")
+maxAdds  = input.int(3,   "추매 단수", minval=1, maxval=3)
+planBars = input.int(96,  "플랜 유지 최대 봉수")
 
 // ── 지표 (엔진 동일식: 확정봉 기준 — Pine 은 기본이 확정봉) ──
 basis = ta.sma(close, lenBB)
@@ -31,51 +38,101 @@ smaS  = ta.sma(close, lenSlow)
 rsi   = ta.rsi(close, lenRSI)
 atr   = ta.atr(lenATR)                          // Wilder RMA — 엔진과 동일 평활
 chHi  = ta.highest(high, chFast)[1]             // 직전 N봉 (shift 1 — 룩어헤드 방지)
-chLo  = ta.lowest(low,  chFast)[1]
-chHiS = ta.highest(high, chSlow)[1]
 volAvg = ta.sma(volume, 20)[1]
 
-// ── 컴포짓 −100~+100 (대시보드 동결 산식 이식) ──
+// ── 컴포짓 −100~+100 (대시보드 동결 산식 이식 — na/0 은 대시보드처럼 중립 0) ──
 f_clip(x, lim) => math.max(-lim, math.min(lim, x))
-trendRaw = f_clip((close / smaS - 1) * 100, 10) * 1.5 + (smaF > smaS ? 5 : -5)
+alignW  = smaF > smaS ? 5 : smaF < smaS ? -5 : 0
+trendRaw = f_clip((close / smaS - 1) * 100, 10) * 1.5 + alignW
 cTrend  = f_clip(trendRaw, 20)
 cMom    = f_clip((rsi - 50) * 0.4, 20)
 pctB    = (upBB - loBB) > 0 ? (close - loBB) / (upBB - loBB) : 0.5
 cBand   = f_clip((0.5 - pctB) * 40, 20)
 surge   = volAvg > 0 ? volume / volAvg : 1.0
-cVol    = f_clip(math.log(surge) / math.log(2) * 10, 20)
+cVol    = surge > 0 ? f_clip(math.log(surge) / math.log(2) * 10, 20) : 0.0
 dBrk    = chHi > 0 ? (chHi - close) / close * 100 : na
 cBrk    = na(dBrk) ? 0 : (dBrk <= 0 ? 20.0 : 20.0 / (1 + dBrk))
-score   = f_clip(cTrend + cMom + cBand + cVol + cBrk, 100)
+score   = f_clip(nz(cTrend) + nz(cMom) + nz(cBand) + nz(cVol) + nz(cBrk), 100)
 
-// ── 오버레이 ──
+// ── 신호 (BBADD 전략과 동일): BB 하단 이탈 + 추세 필터 ──
+buySetup = not na(loBB) and not na(smaS) and not na(atr) and close < loBB and close > smaS
+
+// ── 플랜 상태 — 확정봉에서만 갱신 (리페인트 방지) ──
+var bool  pActive = false
+var float pEntry = na
+var float pStop  = na
+var float pTP    = na
+var float pAdd1  = na
+var float pAdd2  = na
+var float pAdd3  = na
+var int   pStart = 0
+newPlan = false
+endStop = false
+endTP   = false
+endTime = false
+if barstate.isconfirmed
+    if pActive
+        if low <= pStop
+            endStop := true
+            pActive := false
+        else if close >= basis                   // 엔진 동형: 동적 중심선 종가 청산
+            endTP := true
+            pActive := false
+        else if bar_index - pStart >= planBars
+            endTime := true
+            pActive := false
+    if not pActive and buySetup
+        pActive := true
+        newPlan := true
+        pStart := bar_index
+        pEntry := close
+        pStop  := close - stopMult * atr
+        pTP    := basis
+        pAdd1  := close - 1 * addMult * atr
+        pAdd2  := close - 2 * addMult * atr
+        pAdd3  := close - 3 * addMult * atr
+
+// ── 컨텍스트 오버레이 ──
 pB = plot(upBB, "BB 상단", color=color.new(color.gray, 60))
 pL = plot(loBB, "BB 하단", color=color.new(color.gray, 60))
 fill(pB, pL, color=color.new(color.gray, 92))
-plot(basis, "BB 중심(SMA20)", color=color.new(color.silver, 30))
-plot(smaS,  "SMA200", color=color.new(color.orange, 30), linewidth=2)
-plot(chHi,  "돌파 채널 상단(24)", color=color.new(color.aqua, 40), style=plot.style_linebr)
-plot(chHiS, "장기 채널 상단(96)", color=color.new(color.gray, 70), style=plot.style_linebr)
+plot(basis, "BB 중심", color=color.new(color.silver, 40))
+plot(smaS,  "SMA200 (추세 필터)", color=color.new(color.orange, 30), linewidth=2)
 
-// ── 레벨 (전략 기준: 돌파 진입 가정) ──
-entryLv = chHi
-stopLv  = entryLv - stopMult * atr
-tpLv    = entryLv + rrTP * (entryLv - stopLv)
-add1    = loBB - addMult * atr                   // 볼린저 진입 후 1차 추매 예시
-plot(showLv ? entryLv : na, "진입(돌파)", color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
-plot(showLv ? stopLv  : na, "손절",       color=color.new(color.red, 20), style=plot.style_linebr)
-plot(showLv ? tpLv    : na, "목표(1.5R)", color=color.new(color.green, 20), style=plot.style_linebr)
-plot(showLv ? add1    : na, "추매(BB−1ATR)", color=color.new(color.blue, 30), style=plot.style_linebr)
+// ── 신호 게이트 레벨 (플랜 활성 시에만 표시) ──
+plot(pActive ? pEntry : na, "진입", color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
+plot(pActive ? pStop  : na, "손절", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(pActive ? pTP    : na, "익절(신호 시점 중심선)", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(pActive and maxAdds >= 1 ? pAdd1 : na, "추매1", color=color.new(color.blue, 20), style=plot.style_linebr)
+plot(pActive and maxAdds >= 2 ? pAdd2 : na, "추매2", color=color.new(color.blue, 40), style=plot.style_linebr)
+plot(pActive and maxAdds >= 3 ? pAdd3 : na, "추매3", color=color.new(color.blue, 55), style=plot.style_linebr)
+plotshape(newPlan, "진입 신호", style=shape.labelup, location=location.belowbar, color=color.new(#D9A441, 0), textcolor=color.black, size=size.tiny, text="진입")
+plotshape(endStop, "플랜 종료(손절)", style=shape.xcross, location=location.belowbar, color=color.new(color.red, 0), size=size.tiny)
+plotshape(endTP,   "플랜 종료(익절)", style=shape.circle, location=location.abovebar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(endTime, "플랜 종료(타임아웃)", style=shape.xcross, location=location.abovebar, color=color.new(color.gray, 30), size=size.tiny)
+alertcondition(newPlan, "BBADD 진입 조건 충족", "단타 팜: BB 하단 이탈 + 추세 필터 — 플랜 생성 (관측용·신호아님)")
 
-// ── 게이지 테이블 ──
-var table t = table.new(position.top_right, 7, 2, border_width=1)
+// ── 게이지 + 플랜 테이블 ──
+var table t = table.new(position.top_right, 2, 10, border_width=1)
 if barstate.islast
     col = score > 15 ? color.new(color.green, 60) : score < -15 ? color.new(color.red, 60) : color.new(color.gray, 60)
     table.cell(t, 0, 0, "컴포짓", bgcolor=color.new(color.black, 40), text_color=color.white, text_size=size.small)
-    table.cell(t, 0, 1, str.tostring(score, "#"), bgcolor=col, text_color=color.white)
-    table.cell(t, 1, 0, "추세",   text_size=size.tiny), table.cell(t, 1, 1, str.tostring(cTrend, "#.#"), text_size=size.tiny)
-    table.cell(t, 2, 0, "모멘텀", text_size=size.tiny), table.cell(t, 2, 1, str.tostring(cMom, "#.#"), text_size=size.tiny)
-    table.cell(t, 3, 0, "밴드",   text_size=size.tiny), table.cell(t, 3, 1, str.tostring(cBand, "#.#"), text_size=size.tiny)
-    table.cell(t, 4, 0, "거래량", text_size=size.tiny), table.cell(t, 4, 1, str.tostring(cVol, "#.#"), text_size=size.tiny)
-    table.cell(t, 5, 0, "돌파",   text_size=size.tiny), table.cell(t, 5, 1, str.tostring(cBrk, "#.#"), text_size=size.tiny)
-    table.cell(t, 6, 0, "⚠", text_size=size.tiny), table.cell(t, 6, 1, "관측용·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
+    table.cell(t, 1, 0, str.tostring(score, "#"), bgcolor=col, text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 1, "추세", text_size=size.tiny)
+    table.cell(t, 1, 1, str.tostring(nz(cTrend), "#.#"), text_size=size.tiny)
+    table.cell(t, 0, 2, "모멘텀", text_size=size.tiny)
+    table.cell(t, 1, 2, str.tostring(nz(cMom), "#.#"), text_size=size.tiny)
+    table.cell(t, 0, 3, "밴드", text_size=size.tiny)
+    table.cell(t, 1, 3, str.tostring(nz(cBand), "#.#"), text_size=size.tiny)
+    table.cell(t, 0, 4, "거래량", text_size=size.tiny)
+    table.cell(t, 1, 4, str.tostring(nz(cVol), "#.#"), text_size=size.tiny)
+    table.cell(t, 0, 5, "돌파", text_size=size.tiny)
+    table.cell(t, 1, 5, str.tostring(nz(cBrk), "#.#"), text_size=size.tiny)
+    table.cell(t, 0, 6, "플랜", text_size=size.tiny, bgcolor=color.new(color.black, 40), text_color=color.white)
+    table.cell(t, 1, 6, pActive ? "활성" : "관망", text_size=size.tiny, bgcolor=pActive ? color.new(#D9A441, 40) : color.new(color.gray, 70), text_color=color.white)
+    table.cell(t, 0, 7, "진입/손절", text_size=size.tiny)
+    table.cell(t, 1, 7, pActive ? str.tostring(pEntry, format.mintick) + " / " + str.tostring(pStop, format.mintick) : "—", text_size=size.tiny)
+    table.cell(t, 0, 8, "익절/추매1", text_size=size.tiny)
+    table.cell(t, 1, 8, pActive ? str.tostring(pTP, format.mintick) + " / " + str.tostring(pAdd1, format.mintick) : "—", text_size=size.tiny)
+    table.cell(t, 0, 9, "⚠", text_size=size.tiny)
+    table.cell(t, 1, 9, "관측용·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
