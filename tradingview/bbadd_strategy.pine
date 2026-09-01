@@ -1,16 +1,18 @@
 //@version=5
 // ─────────────────────────────────────────────────────────────────────────────
-// 단타 팜 BBADD 전략 v3 — 딥 진입 + ATR 추매 사다리 + ATR 익절
-// 기본값 = AVGDOWN 사전등록 스윕(2026-09-01, 1,248시행)의 [보정 전] 최고 구조:
-//   진입 RSI(14)<30 + 종가>SMA200, 추매 간격 1.0×ATR 최대 3회(체결 시 동결·재귀),
-//   익절 평단+2.0×ATR(종가 확인형, 마지막 체결 시 동결), 재해 손절 기본 OFF.
-//   해당 시행 실측(15m, 5.64년, 수수료+펀딩): 누적 +24.0%, 연 +3.9%, 승률 99.7%,
-//   MDD −23.9%. ⚠ 판정: 다중검정 보정 후 1,248개 전부 우연과 구별 불가(RC p=0.76,
-//   생존 0) — 이 구조는 "덜 나쁜 노이즈"다. 스윕 실측에서 손절 사용(6/10×ATR)과
-//   추매 횟수 증가(0→3회 단조 악화)는 성적을 해쳤다. 관측·학습용, 실거래 신호 아님.
-// 같은 봉 익절·추매 동시 성립 시 익절 우선(엔진 elif 동형). 손절 ON 시 T1 체결봉은
-// 신호봉 종가 기준 근사 스탑 선발주 후 체결봉 종가에 동결값 교체(추매 갱신 1봉 지연).
-// 수수료 편도 0.08% 포함, 펀딩 미포함(엔진 실측은 펀딩 차감 포함 — Tester 가 더 우호적).
+// 단타 팜 BBADD 전략 v4 — 딥 진입 + ATR 추매 사다리 + 타이트 손절 + R-사이징 레버리지
+// 사용자 요청 구조: "떨어지더라도 최소한의 손해를 보고 손절 + 레버리지 적용".
+// 기본값: 진입 RSI(14)<30 + 종가>SMA200, 추매 1.0×ATR×3(체결 시 동결·재귀),
+//   익절 평단+2.0×ATR(동결·종가 확인형), 손절 평단−1.0×ATR(동결·봉내 터치) = 손익비 2:1,
+//   R-사이징 = 트랜치당 손절 도달 시 손실 ≈ 자본×리스크%(기본 1%)가 되도록 수량 자동
+//   계산(레버리지 내재, 총 명목 상한 10배 캡). 만재 4트랜치 공동 손절이므로 동시
+//   손절 시 손실은 최대 ≈ 4×리스크%.
+// ⚠ 타이트 손절은 AVGDOWN 스윕 격자(손절 없음/6/10×ATR) 밖 — 미검증 구조다.
+//   실측된 방향: 넓은 손절(6/10×ATR)조차 무손절보다 열위였고(회귀할 손실을 실현),
+//   타이트 손절은 손절 빈발이 예상된다. 동일 구조가 팜 셀 E28 로 전향 검증 중(판정 10/31).
+//   예측 동결: 승률 35~45%, 누적 순수익 ≤ 0. 관측·학습용, 실거래 신호 아님.
+// TradingView 는 마진·강제청산을 모델하지 않는다 — 실선물은 이 결과보다 일찍 청산될
+// 수 있다. 수수료 편도 0.08%, 펀딩 미포함(레버리지 시 펀딩 부담도 배수로 커짐).
 // ─────────────────────────────────────────────────────────────────────────────
 strategy("단타 팜 BBADD (추매 사다리)", overlay=true,
      initial_capital=10000, currency=currency.USD,
@@ -31,8 +33,11 @@ lenATR   = input.int(24,   "ATR 기간")
 addMult  = input.float(1.0,"추매 간격 (×ATR)")
 maxAdds  = input.int(3,    "최대 추매 횟수", minval=0, maxval=3)
 tpAtrMult = input.float(2.0, "익절 = 평단 + n×ATR")
-useStop  = input.bool(false, "재해 손절 사용 — 스윕 실측 열위, 기본 OFF (평단 − n×ATR 동결)")
-stopMult = input.float(6.0,  "재해 손절 배수")
+useStop  = input.bool(true,  "타이트 손절 (평단 − n×ATR 동결)")
+stopMult = input.float(1.0,  "손절 배수 (×ATR, 최소손해)")
+useRisk  = input.bool(true,  "R-사이징 (레버리지 자동)")
+riskPct  = input.float(1.0,  "트랜치 리스크 (자본 %)", minval=0.1, maxval=5)
+levCap   = input.float(10.0, "총 명목 상한 (×자본)", minval=1, maxval=25)
 
 // ── 지표 (확정봉 기준 — process_orders_on_close=false 라 신호 확정 후 다음 봉 시가 체결) ──
 basis = ta.sma(close, lenBB)
@@ -49,7 +54,7 @@ var float tpRef   = na
 newFill = strategy.opentrades > 0 and (strategy.opentrades != strategy.opentrades[1] or strategy.closedtrades > strategy.closedtrades[1])
 if newFill
     nextAdd := open - addMult * atr[1]                              // 체결봉 시가 − 직전 확정 ATR (동결)
-    dStop   := strategy.position_avg_price - stopMult * atr[1]      // 평단 − n×ATR (동결)
+    dStop   := strategy.position_avg_price - stopMult * atr[1]      // 평단 − n×ATR (동결·추매 시 이동)
     tpRef   := strategy.position_avg_price + tpAtrMult * atr[1]     // 평단 + n×ATR (동결)
 
 flat = strategy.position_size == 0
@@ -58,13 +63,24 @@ if flat
     dStop   := na
     tpRef   := na
 
+// ── R-사이징: 손절 거리 기준 수량 (레버리지 내재, 명목 상한 캡) ──
+f_qty() =>
+    float q = na
+    stopDist = stopMult * atr
+    if useRisk and useStop and stopDist > 0
+        q := strategy.equity * riskPct / 100 / stopDist         // 손절 시 손실 ≈ 자본×리스크%
+    else
+        q := strategy.equity * 0.0833 / close                   // 폴백: 자본 1/12 명목
+    qCap = strategy.equity * levCap / 4 / close                 // 트랜치 명목 상한 = 총상한/4
+    math.min(q, qCap)
+
 // ── 진입: 확정봉 딥 신호 + 추세 필터 (다음 봉 시가 체결) ──
 entryRSI = entryMode == "RSI<30 (스윕 최고)"
 tpAtrMode = tpMode == "평단+n×ATR (스윕 최고)"
 entryHit = entryRSI ? rsi < rsiTh : close < loBB
 entrySig = flat and entryHit and (not useTrend or close > smaT)
 if entrySig
-    strategy.entry("T1", strategy.long)
+    strategy.entry("T1", strategy.long, qty=f_qty())
     // 체결봉 무방비 차단: 신호봉 종가 기준 근사 스탑 선발주 → 체결봉 종가에 동결값 교체
     if useStop
         strategy.exit("SL", stop=close - stopMult * atr)
@@ -75,7 +91,7 @@ tpLv  = tpAtrMode ? tpRef : basis
 exitTp = not flat and not na(tpLv) and close >= tpLv
 addSig = not flat and not exitTp and not na(nextAdd) and close <= nextAdd and strategy.opentrades <= maxAdds
 if addSig
-    strategy.entry("T" + str.tostring(strategy.opentrades + 1), strategy.long)
+    strategy.entry("T" + str.tostring(strategy.opentrades + 1), strategy.long, qty=f_qty())
 if exitTp
     strategy.close_all(comment=tpAtrMode ? "ATR 익절" : "중심선 익절")
 if not flat and useStop
@@ -90,10 +106,11 @@ plot(basis, "BB 중심선", color=color.new(color.green, 60))
 plot(useTrend ? smaT : na, "SMA200 (추세 필터)", color=color.new(color.orange, 30), linewidth=2)
 plot(not flat ? avgPx : na, "평단", color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
 plot(not flat ? tpLv : na,  "익절", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
-plot(not flat and useStop ? dStop : na, "손절", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(not flat and useStop ? dStop : na, "손절(타이트)", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(not flat and strategy.opentrades <= maxAdds ? nextAdd : na, "다음 추매가", color=color.new(color.blue, 20), style=plot.style_linebr)
 
-var table t = table.new(position.top_right, 2, 5, border_width=1)
+nomLev = flat ? 0.0 : math.abs(strategy.position_size) * close / strategy.equity
+var table t = table.new(position.top_right, 2, 6, border_width=1)
 if barstate.islast
     table.cell(t, 0, 0, "트랜치", text_size=size.tiny)
     table.cell(t, 1, 0, str.tostring(strategy.opentrades) + "/" + str.tostring(maxAdds + 1), text_size=size.tiny)
@@ -101,7 +118,9 @@ if barstate.islast
     table.cell(t, 1, 1, flat ? "—" : str.tostring(avgPx, format.mintick), text_size=size.tiny)
     table.cell(t, 0, 2, "손절/익절", text_size=size.tiny)
     table.cell(t, 1, 2, flat ? "—" : (useStop ? str.tostring(dStop, format.mintick) : "OFF") + " / " + str.tostring(tpLv, format.mintick), text_size=size.tiny)
-    table.cell(t, 0, 3, "추세 필터", text_size=size.tiny)
-    table.cell(t, 1, 3, useTrend ? (close > smaT ? "통과" : "차단") : "OFF", text_size=size.tiny, text_color=useTrend and close <= smaT ? color.new(color.red, 20) : color.new(color.green, 20))
-    table.cell(t, 0, 4, "⚠", text_size=size.tiny)
-    table.cell(t, 1, 4, "보정후 유의성 0·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
+    table.cell(t, 0, 3, "명목/자본", text_size=size.tiny)
+    table.cell(t, 1, 3, flat ? "—" : str.tostring(nomLev, "#.##") + "x", text_size=size.tiny, text_color=nomLev > levCap * 0.8 ? color.new(color.red, 0) : color.new(color.gray, 20))
+    table.cell(t, 0, 4, "추세 필터", text_size=size.tiny)
+    table.cell(t, 1, 4, useTrend ? (close > smaT ? "통과" : "차단") : "OFF", text_size=size.tiny, text_color=useTrend and close <= smaT ? color.new(color.red, 20) : color.new(color.green, 20))
+    table.cell(t, 0, 5, "⚠", text_size=size.tiny)
+    table.cell(t, 1, 5, "미검증 구조·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))

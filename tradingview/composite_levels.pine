@@ -6,8 +6,9 @@
 //   해당 시행 실측(15m, 5.64년): 누적 +24.0%, 연 +3.9%, 승률 99.7%, MDD −23.9%.
 // ⚠ 판정: 다중검정 보정 후 1,248개 전부 우연과 구별 불가 (RC p=0.76, 생존 0) —
 //   이 구조는 "덜 나쁜 노이즈"이며 검증된 엣지가 아니다. 관측·학습용, 매매 신호 아님.
-// 신호 확정 시 레벨 동결: 진입=신호봉 종가(다음 봉 시가 체결 근사), 손절선=진입−6×ATR
-// (참고 표시 전용 — 스윕 실측에서 손절 사용은 성적을 악화시켰음), 익절=진입+2.0×ATR
+// 신호 확정 시 레벨 동결: 진입=신호봉 종가(다음 봉 시가 체결 근사), 손절=진입−1×ATR
+// (사용자 요청 타이트 손절 — 스윕 격자 밖·미검증. 넓은 손절 6/10×ATR 은 실측 열위였고
+//  타이트 손절은 손절 빈발이 예상됨), 익절=진입+2.0×ATR
 // (또는 BB 중심선 옵션), 추매=진입−1/2/3×ATR. 플랜 종료: 종가 익절 확인 / 손절선 터치 /
 // 타임아웃(기본 96봉). 상태 갱신은 확정봉에서만(리페인트 방지). 알림은 플랜 생성 시에만.
 // 근사 공개: 추매2·3·손절·익절은 재동결(실체결가·체결시점 ATR) 미반영, 익절 기준 평단은
@@ -27,7 +28,7 @@ lenRSI   = input.int(14,  "RSI")
 rsiTh    = input.float(30, "RSI 진입 임계")
 lenATR   = input.int(24,  "ATR (손절·추매·익절)")
 chFast   = input.int(24,  "돌파 채널 (컴포짓용)")
-stopMult = input.float(6.0, "손절선 = 진입 − n×ATR (참고 표시)")
+stopMult = input.float(1.0, "손절 = 진입 − n×ATR (최소손해 타이트)")
 addMult  = input.float(1.0, "추매 간격 (×ATR)")
 maxAdds  = input.int(3,   "추매 단수", minval=1, maxval=3)
 tpAtrMult = input.float(2.0, "익절 = 진입 + n×ATR")
@@ -109,7 +110,7 @@ plot(smaS,  "SMA200 (추세 필터)", color=color.new(color.orange, 30), linewid
 
 // ── 신호 게이트 레벨 (플랜 활성 시에만 표시) ──
 plot(pActive ? pEntry : na, "진입", color=color.new(#D9A441, 0), linewidth=2, style=plot.style_linebr)
-plot(pActive ? pStop  : na, "손절선(참고)", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(pActive ? pStop  : na, "손절(타이트)", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
 plot(pActive ? pTP    : na, "익절", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
 plot(pActive and maxAdds >= 1 ? pAdd1 : na, "추매1", color=color.new(color.blue, 20), style=plot.style_linebr)
 plot(pActive and maxAdds >= 2 ? pAdd2 : na, "추매2", color=color.new(color.blue, 40), style=plot.style_linebr)
@@ -138,7 +139,7 @@ if barstate.islast
     table.cell(t, 1, 5, str.tostring(rsi, "#.#"), text_size=size.tiny, text_color=rsi < rsiTh ? color.new(#D9A441, 0) : color.new(color.gray, 20))
     table.cell(t, 0, 6, "플랜", text_size=size.tiny, bgcolor=color.new(color.black, 40), text_color=color.white)
     table.cell(t, 1, 6, pActive ? "활성" : "관망", text_size=size.tiny, bgcolor=pActive ? color.new(#D9A441, 40) : color.new(color.gray, 70), text_color=color.white)
-    table.cell(t, 0, 7, "진입/손절선", text_size=size.tiny)
+    table.cell(t, 0, 7, "진입/손절", text_size=size.tiny)
     table.cell(t, 1, 7, pActive ? str.tostring(pEntry, format.mintick) + " / " + str.tostring(pStop, format.mintick) : "—", text_size=size.tiny)
     table.cell(t, 0, 8, "익절/추매1", text_size=size.tiny)
     table.cell(t, 1, 8, pActive ? str.tostring(pTP, format.mintick) + " / " + str.tostring(pAdd1, format.mintick) : "—", text_size=size.tiny)
