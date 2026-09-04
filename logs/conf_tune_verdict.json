@@ -1,0 +1,160 @@
+{
+  "spec": "CONF-TUNE-2026-09-04",
+  "generated_at": "2026-09-04T11:11:46.866740+00:00",
+  "bootstrap": {
+    "seed": 20260904,
+    "n_paths": 1000,
+    "chunk": 500,
+    "mean_block_days": 5.0,
+    "T": 2056
+  },
+  "criteria": "RC p < 0.05 AND StepM 기각 >= 1 AND DSR >= 0.95",
+  "primary_window": "full sample (권한 있음)",
+  "main": {
+    "n_trials": 14976,
+    "n_days": 2056,
+    "rc_p": 0.7922077922077922,
+    "rc_reject": false,
+    "critical_stat_at_95": 3.6423156710404627,
+    "obs_max_stat": 2.096421418902803,
+    "obs_max_sharpe_ann": 0.8833106470274366,
+    "best_trial_id": "CT|e=E2|f=1|sp=1|k=2|tp=A0.5|sl=-|cv=invR|1h",
+    "n_degenerate": 0,
+    "stepm_n_rejected": 0,
+    "stepm_steps": 1,
+    "sr0_daily": 0.1514067595953315,
+    "var_sr_daily": 0.00146309532803857,
+    "n_passing_dsr": 0,
+    "survivors": [],
+    "passing": []
+  },
+  "conviction_contrasts": {
+    "gateA": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": 0.28898374545080197,
+      "ann_diff_pct": 1.0603577962418953,
+      "t_like": 1.8267155662231402,
+      "p_two_sided": 0.04995004995004995,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.05732796763700376,
+      "frac_pairs_test_better": 0.7443910256410257
+    },
+    "gateAp": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": 0.5195076402057621,
+      "ann_diff_pct": 1.9142447913528482,
+      "t_like": 2.096674364621937,
+      "p_two_sided": 0.012987012987012988,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.03278436431922327,
+      "frac_pairs_test_better": 0.782051282051282
+    },
+    "invR": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.6725299941988394,
+      "ann_diff_pct": -2.424931438428257,
+      "t_like": -0.8781346214004581,
+      "p_two_sided": 0.37962037962037964,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.18640633165656467,
+      "frac_pairs_test_better": 0.2532051282051282
+    },
+    "plcR3": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.24958934413885278,
+      "ann_diff_pct": -0.9068753292927223,
+      "t_like": -0.8959087622777338,
+      "p_two_sided": 0.37362637362637363,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.14611485506435107,
+      "frac_pairs_test_better": 0.30528846153846156
+    },
+    "ramp3": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.4362884436581318,
+      "ann_diff_pct": -1.5798745181353158,
+      "t_like": -1.2618525962182858,
+      "p_two_sided": 0.21678321678321677,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.15978307786600465,
+      "frac_pairs_test_better": 0.20032051282051283
+    },
+    "ramp4": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.5465616690255376,
+      "ann_diff_pct": -1.9752360744251019,
+      "t_like": -1.2606597503333068,
+      "p_two_sided": 0.21178821178821178,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.18127561871075354,
+      "frac_pairs_test_better": 0.20352564102564102
+    },
+    "x2A": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.318628224133944,
+      "ann_diff_pct": -1.1562747093391668,
+      "t_like": -1.362485503308831,
+      "p_two_sided": 0.18981018981018982,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.13159383911556716,
+      "frac_pairs_test_better": 0.1907051282051282
+    },
+    "x2Ap": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.14714490689820744,
+      "ann_diff_pct": -0.535643150270404,
+      "t_like": -1.3931765930177447,
+      "p_two_sided": 0.17782217782217782,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.11716912563963483,
+      "frac_pairs_test_better": 0.20512820512820512
+    },
+    "x3A": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.4822615884363739,
+      "ann_diff_pct": -1.7448945226932633,
+      "t_like": -0.9004750914687781,
+      "p_two_sided": 0.3646353646353646,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.17828333742007724,
+      "frac_pairs_test_better": 0.20673076923076922
+    },
+    "x3Ap": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.2629599891755396,
+      "ann_diff_pct": -0.9552250427312003,
+      "t_like": -1.1742839876649545,
+      "p_two_sided": 0.24875124875124874,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.14410815534445864,
+      "frac_pairs_test_better": 0.2203525641025641
+    },
+    "x4Ap": {
+      "n_pairs": 1248,
+      "mean_daily_diff_bp": -0.3720437288069813,
+      "ann_diff_pct": -1.3488058540973569,
+      "t_like": -1.1791021750161217,
+      "p_two_sided": 0.24375624375624375,
+      "median_cum_base": -0.09016297855628103,
+      "median_cum_test": -0.16559733062547044,
+      "frac_pairs_test_better": 0.22756410256410256
+    }
+  },
+  "is_oos_diagnostic": {
+    "IS": {
+      "n_days": 1457,
+      "rc_p": 0.8761238761238761,
+      "obs_max_sharpe_ann": 0.9368374056429544,
+      "best_trial_id": "CT|e=E2|f=1|sp=0.5|k=2|tp=A2.0|sl=-|cv=ramp4|1h",
+      "authority": "none — 진단 전용"
+    },
+    "OOS": {
+      "n_days": 599,
+      "rc_p": 0.23776223776223776,
+      "obs_max_sharpe_ann": 2.2190919491170598,
+      "best_trial_id": "CT|e=E2|f=1|sp=2|k=2|tp=A0.5|sl=10|cv=plcR3|15m",
+      "authority": "none — 진단 전용"
+    }
+  },
+  "verdict_pass": false
+}
