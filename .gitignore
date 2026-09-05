@@ -18,3 +18,9 @@ research/out/
 # 연구 파생 데이터 (동결본 lab/frozen만 커밋)
 lab/data/
 logs/h2_fills/2026-08-27/fills.jsonl.gz
+
+# CONF-TUNE 대용량 중간산출 (요약 CSV·판정 JSON 만 커밋)
+logs/conf_tune_returns.npz
+
+# RISK-2026-09-04 대용량 중간산출 (요약 CSV·판정 JSON 만 커밋)
+logs/risk_tune_returns.npz
