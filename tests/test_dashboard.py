@@ -1736,16 +1736,18 @@ class TestCompositeScore:
         assert "SWEEP-2026-08-31" in r["note"]
 
     def test_모멘텀_경계(self):
-        part = lambda rsi: dash._composite_score(
-            None, None, None, rsi, None, None, None)["parts"]["momentum"]
+        def part(rsi):
+            return dash._composite_score(
+                None, None, None, rsi, None, None, None)["parts"]["momentum"]
         assert part(100.0) == 20.0
         assert part(0.0) == -20.0
         assert part(50.0) == 0.0
         assert part(75.0) == 10.0
 
     def test_밴드는_낮을수록_매수측_플러스(self):
-        part = lambda pctb: dash._composite_score(
-            None, None, None, None, pctb, None, None)["parts"]["band"]
+        def part(pctb):
+            return dash._composite_score(
+                None, None, None, None, pctb, None, None)["parts"]["band"]
         assert part(0.0) == 20.0                # 하단 = 매수측 +
         assert part(1.0) == -20.0               # 상단 = 매도측 −
         assert part(0.5) == 0.0
@@ -1753,8 +1755,9 @@ class TestCompositeScore:
         assert part(1.5) == -20.0
 
     def test_거래량_로그_스케일(self):
-        part = lambda sg: dash._composite_score(
-            None, None, None, None, None, sg, None)["parts"]["volume"]
+        def part(sg):
+            return dash._composite_score(
+                None, None, None, None, None, sg, None)["parts"]["volume"]
         assert part(1.0) == 0.0
         assert part(2.0) == pytest.approx(10.0)
         assert part(4.0) == pytest.approx(20.0)
@@ -1764,8 +1767,9 @@ class TestCompositeScore:
         assert part(-1.0) == 0.0
 
     def test_돌파_역수_캡(self):
-        part = lambda d: dash._composite_score(
-            None, None, None, None, None, None, d)["parts"]["breakout"]
+        def part(d):
+            return dash._composite_score(
+                None, None, None, None, None, None, d)["parts"]["breakout"]
         assert part(-2.0) == 20.0               # 이미 돌파 — 캡
         assert part(0.0) == 20.0
         assert part(1.0) == pytest.approx(10.0)
@@ -1773,8 +1777,9 @@ class TestCompositeScore:
         assert part(99.0) == pytest.approx(0.2)  # 원거리 → 0 수렴 (음수 없음)
 
     def test_추세_정배열_가중과_클립(self):
-        part = lambda c, s20, s200: dash._composite_score(
-            c, s20, s200, None, None, None, None)["parts"]["trend"]
+        def part(c, s20, s200):
+            return dash._composite_score(
+                c, s20, s200, None, None, None, None)["parts"]["trend"]
         assert part(110.0, 105.0, 100.0) == 20.0    # base +15 + 정배열 +5
         assert part(120.0, 105.0, 100.0) == 20.0    # base 클립 ±10 → 여전히 20
         assert part(95.0, 90.0, 100.0) == pytest.approx(-12.5)  # −7.5 − 5

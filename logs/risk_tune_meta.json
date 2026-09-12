@@ -1,0 +1,203 @@
+{
+  "spec": "RISK-2026-09-04",
+  "generated_at": "2026-09-04T12:02:33.150679+00:00",
+  "returns_npz_sha256": "3df58b2279f13fd40aac5d037115160b8e1ae6df50b3d80b2bdb435598d0c864",
+  "n_trials": 7488,
+  "n_struct": 208,
+  "risk_rules": {
+    "base": {
+      "stop": null,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "동결 기준 — 무손절·상수 사이즈"
+    },
+    "shr75": {
+      "stop": null,
+      "size": 0.75,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "대조: 명목 ×0.75"
+    },
+    "shr50": {
+      "stop": null,
+      "size": 0.5,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "대조: 명목 ×0.50"
+    },
+    "shr33": {
+      "stop": null,
+      "size": 0.33,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "대조: 명목 ×0.33"
+    },
+    "shr25": {
+      "stop": null,
+      "size": 0.25,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "대조: 명목 ×0.25"
+    },
+    "stop2": {
+      "stop": 2.0,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "평단 −2×ATR (격자 밖 타이트)"
+    },
+    "stop3": {
+      "stop": 3.0,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "평단 −3×ATR (격자 밖)"
+    },
+    "stop6": {
+      "stop": 6.0,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "평단 −6×ATR (AVGDOWN 격자)"
+    },
+    "stop10": {
+      "stop": 10.0,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "평단 −10×ATR (AVGDOWN 격자)"
+    },
+    "time24": {
+      "stop": null,
+      "size": 1.0,
+      "hours": 24,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "보유 24시간 초과 시 전량 청산"
+    },
+    "time96": {
+      "stop": null,
+      "size": 1.0,
+      "hours": 96,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "보유 96시간 초과 시 전량 청산"
+    },
+    "vt": {
+      "stop": null,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": [
+        0.25,
+        4.0
+      ],
+      "placebo": false,
+      "note": "명목 ∝ 30일중앙ATR비 / 현재ATR비"
+    },
+    "vtT": {
+      "stop": null,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": [
+        0.5,
+        2.0
+      ],
+      "placebo": false,
+      "note": "같은 규칙, 타이트 클립"
+    },
+    "ddt10": {
+      "stop": null,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": 0.1,
+      "dd_stop": 0.2,
+      "vt": null,
+      "placebo": false,
+      "note": "낙폭 10% ×0.5 · 20% 진입정지"
+    },
+    "ddt05": {
+      "stop": null,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": 0.05,
+      "dd_stop": 0.1,
+      "vt": null,
+      "placebo": false,
+      "note": "낙폭 5% ×0.5 · 10% 진입정지"
+    },
+    "s3_time": {
+      "stop": 3.0,
+      "size": 1.0,
+      "hours": 24,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": null,
+      "placebo": false,
+      "note": "손절3 + 시간24"
+    },
+    "full": {
+      "stop": 3.0,
+      "size": 1.0,
+      "hours": 24,
+      "dd_half": 0.1,
+      "dd_stop": 0.2,
+      "vt": [
+        0.25,
+        4.0
+      ],
+      "placebo": false,
+      "note": "손절3 + 시간24 + 변동성타깃 + 스로틀"
+    },
+    "plcvt": {
+      "stop": null,
+      "size": 1.0,
+      "hours": null,
+      "dd_half": null,
+      "dd_stop": null,
+      "vt": [
+        0.25,
+        4.0
+      ],
+      "placebo": true,
+      "note": "위약: vt 와 배수 분포 동일, 봉 해시로 무작위 재배정"
+    }
+  },
+  "placebo_seed": 20260904,
+  "elapsed_s": 107.65487337112427
+}
