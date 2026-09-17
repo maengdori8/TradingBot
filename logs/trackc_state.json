@@ -35,7 +35,7 @@
   "unknown_coins": [
    "AAVE"
   ],
-  "last_attempt_utc": "2026-09-15T05:12:42.504093+00:00",
+  "last_attempt_utc": "2026-09-17T05:11:16.071464+00:00",
   "pending_days": [
    "2026-08-29",
    "2026-08-30",
@@ -50,6 +50,6 @@
   ],
   "last_success_day": "2026-08-28",
   "blocked_since": "2026-08-30T05:41:16.907159+00:00",
-  "retry_count": 17
+  "retry_count": 18
  }
 }
