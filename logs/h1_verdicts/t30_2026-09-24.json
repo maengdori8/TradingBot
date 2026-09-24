@@ -1,0 +1,536 @@
+{
+  "kind": "h1_verdict",
+  "spec": "H1 판정 평가기 v1 (2026-08-29 동결) — docs/TRADER_PERSISTENCE_STUDY.md",
+  "generated_at_utc": "2026-09-24T03:17:14.785897+00:00",
+  "t0_date": "2026-08-25",
+  "judgment_date": "2026-09-24",
+  "evaluated_on": "2026-09-24",
+  "horizon_days": 30,
+  "analysis_status": "official",
+  "gate_eligible": true,
+  "calendar_day_resolution": true,
+  "decision_basis": "H1 문서 원문 단측 α=0.05 (거버넌스 α=0.025 는 소급 미적용·병기 — 오케스트레이터 지시, 2026-08-29)",
+  "params": {
+    "clip": [
+      -0.95,
+      5.0
+    ],
+    "span_gate_days": [
+      25.0,
+      35.0
+    ],
+    "n_perm": 10000,
+    "seed": 20260827,
+    "perm_rule": "p=(1+#{perm>=obs})/(n_perm+1), 단측",
+    "mc_se_at_p05": 0.00218,
+    "ic_min": 0.05,
+    "spread_min": 0.03,
+    "alpha_doc": 0.05,
+    "alpha_governance": 0.025,
+    "endpoint_rule": "지갑별 마지막 유효 행 ≤ 판정일 (H1 고유 — H2 24h 규칙과 다름을 명시), 스팬 게이트+정규화"
+  },
+  "code": {
+    "h1_sha256": "2f84a7607edcba28632755879141c84805517c3905db19f9d95ffeb3d0e33dfb",
+    "h2_sha256": "e953af8fdd21286a3507e3f9855e5007271321c173891391060911141f198b64"
+  },
+  "inputs": {
+    "cohort": {
+      "path": "logs/trader_cohort.json.gz",
+      "sha256": "349a7ce19ed67f5a4e65365294c15cf5f3fdd327767123a2adcb98a9fee0d033"
+    },
+    "t0_daily": {
+      "path": "logs/trader_daily/2026-08-25.csv.gz",
+      "sha256": "3bf00ab167205b02110f28d8befce45ff7fe6d0aa97a9ca0f1bb191cb01c57f2",
+      "valid_rows": 5790,
+      "rejects": {}
+    },
+    "daily_files": [
+      {
+        "date": "2026-08-26",
+        "path": "logs/trader_daily/2026-08-26.csv.gz",
+        "sha256": "036801d28f92f811345f5f5ef032bb1c4cf0a869a74404191b467bc8440ad721",
+        "valid_rows": 5778,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-27",
+        "path": "logs/trader_daily/2026-08-27.csv.gz",
+        "sha256": "d412653475fabaac2945c4c0896af71c5bd116327893f3c6f6367912a4098a6e",
+        "valid_rows": 5767,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-29",
+        "path": "logs/trader_daily/2026-08-29.csv.gz",
+        "sha256": "26d0ad4e11631f3dcaffed30f2ad7846a48b119d8c616e5f95b28c5fdafbc619",
+        "valid_rows": 5745,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-30",
+        "path": "logs/trader_daily/2026-08-30.csv.gz",
+        "sha256": "72db63b3af0111bc0bbede95b3c003e1fbfe7be45247aa829c9fd99788c7fc04",
+        "valid_rows": 5749,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-31",
+        "path": "logs/trader_daily/2026-08-31.csv.gz",
+        "sha256": "2adf632091d50390fcf315d4d87845261b460e9b5d480e66a5a44631ebef3f17",
+        "valid_rows": 5740,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-01",
+        "path": "logs/trader_daily/2026-09-01.csv.gz",
+        "sha256": "55d8a44cddbd91943abece55ad5a55a0e6df42a9943fe41eb347ab17a8c0c446",
+        "valid_rows": 5745,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-02",
+        "path": "logs/trader_daily/2026-09-02.csv.gz",
+        "sha256": "7bc57c45941f74ef438c26f89d8c0eddaad5d32236d7599352a220a0746a0369",
+        "valid_rows": 5734,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-03",
+        "path": "logs/trader_daily/2026-09-03.csv.gz",
+        "sha256": "39aa0983e8535f340d8d23e36a2ceb6b7719fca43841383cdc0b40103bb4dce2",
+        "valid_rows": 5732,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-04",
+        "path": "logs/trader_daily/2026-09-04.csv.gz",
+        "sha256": "cb452f259b1877e607ee84bafec507c8ba9a6865ed38479021b8d64dee40250f",
+        "valid_rows": 5735,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-05",
+        "path": "logs/trader_daily/2026-09-05.csv.gz",
+        "sha256": "9fcffa54329ca6fbb5b5bfdf3858414a786d73983b57517cf971c34bf0e2fd29",
+        "valid_rows": 5729,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-06",
+        "path": "logs/trader_daily/2026-09-06.csv.gz",
+        "sha256": "06312139d593bc74dbab5059a0a7de641946acff716cdfdd585600b7fd818ae0",
+        "valid_rows": 5726,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-07",
+        "path": "logs/trader_daily/2026-09-07.csv.gz",
+        "sha256": "6d5706ac0cca649bb915f82aaf7e3b04bcb965b86151f438b5c468f6c89d9b56",
+        "valid_rows": 5723,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-08",
+        "path": "logs/trader_daily/2026-09-08.csv.gz",
+        "sha256": "61d3c500394402861984ccce2638a7c0302727c7d427322181ec739a2f2d4257",
+        "valid_rows": 5719,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-09",
+        "path": "logs/trader_daily/2026-09-09.csv.gz",
+        "sha256": "b3632be61774d52f6185a41691d658c6faa14f269cf50d62365888271e33a25a",
+        "valid_rows": 5715,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-10",
+        "path": "logs/trader_daily/2026-09-10.csv.gz",
+        "sha256": "e545c421f579e997aa7e32f1b6f246dd7d1dd5fd8bfdd5c0a6d2252a0cb87131",
+        "valid_rows": 5711,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-11",
+        "path": "logs/trader_daily/2026-09-11.csv.gz",
+        "sha256": "0295e782712045d4f70cf89afc43f717b8c83b7bd90f21bcf1310c446bfe153a",
+        "valid_rows": 5702,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-12",
+        "path": "logs/trader_daily/2026-09-12.csv.gz",
+        "sha256": "eb34fe7944240726498688f3c04e7ec46d386c33d507e1934fea7abd40450f7a",
+        "valid_rows": 5700,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-13",
+        "path": "logs/trader_daily/2026-09-13.csv.gz",
+        "sha256": "8f7ee6aa9a4adcb6dddc2492e9f3b08347ce6253abdc9650909326304b595e96",
+        "valid_rows": 5700,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-14",
+        "path": "logs/trader_daily/2026-09-14.csv.gz",
+        "sha256": "f898bbde9703259acfff21f401f3368766e5bd9f08a5d1587e8d0f05dd6de8db",
+        "valid_rows": 5695,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-15",
+        "path": "logs/trader_daily/2026-09-15.csv.gz",
+        "sha256": "176404713d762357d6f9127b5312e77d83a5bf1df63976b44fc9bf477a2b7719",
+        "valid_rows": 5692,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-16",
+        "path": "logs/trader_daily/2026-09-16.csv.gz",
+        "sha256": "f597f060b32baefa0322ea548f2ae0430180277580609f23e73543088c2cbe0a",
+        "valid_rows": 5686,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-17",
+        "path": "logs/trader_daily/2026-09-17.csv.gz",
+        "sha256": "8b7aeaccb1ee400d66ff4ca2516fa4e5e178c172896cdd19ad9377b4feaa884b",
+        "valid_rows": 5689,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-18",
+        "path": "logs/trader_daily/2026-09-18.csv.gz",
+        "sha256": "6343ad83c223e8532645b43c84e3f070969740ec09764af24b5882017d05b9c8",
+        "valid_rows": 5693,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-19",
+        "path": "logs/trader_daily/2026-09-19.csv.gz",
+        "sha256": "62d1f59ae193dc83c7f611a2d30ec24ccd79204f4464248ab7c135ab4cce21da",
+        "valid_rows": 5691,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-20",
+        "path": "logs/trader_daily/2026-09-20.csv.gz",
+        "sha256": "0514944141949f8784a09d2b65cf042b41905e2f6e3833f23237aa87108ce385",
+        "valid_rows": 5688,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-21",
+        "path": "logs/trader_daily/2026-09-21.csv.gz",
+        "sha256": "855aa0e40f795badc05beea6a79e42fb67197c90e9e2a0feeb0dc67e92e65df6",
+        "valid_rows": 5684,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-22",
+        "path": "logs/trader_daily/2026-09-22.csv.gz",
+        "sha256": "ab7bdd329403983cc0fea4f3dc667142dfb21582317950ef320653b23993c62a",
+        "valid_rows": 5687,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-23",
+        "path": "logs/trader_daily/2026-09-23.csv.gz",
+        "sha256": "d2008a684f8e533e0d01a7799e3d0689c9773746036c25fedc0946720cd37f8d",
+        "valid_rows": 5682,
+        "rejects": {}
+      }
+    ],
+    "missing_dates_in_window": [
+      "2026-08-28",
+      "2026-09-24"
+    ],
+    "known_missing_days": [
+      "2026-08-28"
+    ],
+    "known_missing_recovered": []
+  },
+  "n_cohort": 5790,
+  "boundary_ties": {
+    "d1_d2": {
+      "boundary_score": 1.0334652303,
+      "tied_wallets": 0
+    },
+    "d9_d10": {
+      "boundary_score": -0.3454556599,
+      "tied_wallets": 0
+    }
+  },
+  "missingness": {
+    "missing_rate": 0.01623488773747841,
+    "rho": -0.006528468214018552,
+    "p": 0.616938306169383,
+    "indeterminate": false,
+    "n_missing": 94,
+    "reasons": {
+      "span_out": 90,
+      "no_th": 4
+    },
+    "decile_missing": [
+      8,
+      8,
+      5,
+      11,
+      10,
+      11,
+      14,
+      14,
+      8,
+      5
+    ],
+    "decile_rate": [
+      0.013816925734024179,
+      0.013816925734024179,
+      0.008635578583765112,
+      0.018998272884283247,
+      0.017271157167530225,
+      0.018998272884283247,
+      0.024179620034542316,
+      0.024179620034542316,
+      0.013816925734024179,
+      0.008635578583765112
+    ],
+    "omnibus": {
+      "stat": 0.1595854922279793,
+      "p": 0.34396560343965604
+    }
+  },
+  "indeterminate": false,
+  "note": "H1 최종 게이트 = T+30 AND T+60 모두 통과 (--combine 모드로 결합)",
+  "primary": {
+    "n": 5696,
+    "ic": 0.3322928056208616,
+    "decile_medians": [
+      0.24900049577966854,
+      0.22033750857810463,
+      0.20185442809905474,
+      0.161438049121016,
+      0.08183324457407111,
+      0.06003973195401781,
+      0.012837540642740267,
+      -0.004145340399404431,
+      -0.05295041275048106,
+      -0.1945870934597745
+    ],
+    "decile_n_obs": [
+      571,
+      571,
+      574,
+      568,
+      569,
+      568,
+      565,
+      565,
+      571,
+      574
+    ],
+    "spread": 0.4435875892394431,
+    "top_median": 0.24900049577966854,
+    "all_median": 0.05749695303548903,
+    "p_unstratified": 9.999000099990002e-05,
+    "perm_ge": 0
+  },
+  "criteria": {
+    "ic_ge_005": true,
+    "p_lt_005": true,
+    "p_lt_0025": true,
+    "spread_ge_3pp": true,
+    "top_gt_all": true,
+    "all_pass_doc_alpha": true,
+    "all_pass_strict_alpha": true
+  },
+  "status": "pass",
+  "status_strict": "pass",
+  "passed": true,
+  "passed_strict": true,
+  "mde": {
+    "alpha05": 0.03295440730408025,
+    "alpha025": 0.03713070639640522
+  },
+  "sensitivity": {
+    "stratified_recut": {
+      "label": "층화+재절단(감도)",
+      "n": 5696,
+      "ic": 0.3322928056208616,
+      "p": 9.999000099990002e-05,
+      "perm_ge": 0,
+      "decile_medians": [
+        0.2501565226127092,
+        0.22116276213606234,
+        0.2024554777360787,
+        0.16181425763120372,
+        0.08117806051500959,
+        0.061252072449953725,
+        0.012382936312565299,
+        -0.0034472604814128486,
+        -0.059656127425003425,
+        -0.19296875280197776
+      ],
+      "spread": 0.44312527541468694,
+      "top_median": 0.2501565226127092,
+      "all_median": 0.05749695303548903
+    },
+    "unclipped_ic": 0.332610880027651,
+    "pnl_rank_ic": 0.34890351776583545,
+    "fresh_same_day": {
+      "n": 0,
+      "ic": null,
+      "decile_medians": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "decile_n_obs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "spread": null,
+      "top_median": null,
+      "all_median": null
+    },
+    "stale_fallback": {
+      "n": 5696,
+      "ic": 0.3322928056208616,
+      "decile_medians": [
+        0.24900049577966854,
+        0.22033750857810463,
+        0.20185442809905474,
+        0.161438049121016,
+        0.08183324457407111,
+        0.06003973195401781,
+        0.012837540642740267,
+        -0.004145340399404431,
+        -0.05295041275048106,
+        -0.1945870934597745
+      ],
+      "decile_n_obs": [
+        571,
+        571,
+        574,
+        568,
+        569,
+        568,
+        565,
+        565,
+        571,
+        574
+      ],
+      "spread": 0.4435875892394431,
+      "top_median": 0.24900049577966854,
+      "all_median": 0.05749695303548903
+    },
+    "locf": {
+      "n": 5786,
+      "ic": 0.3289458686457774,
+      "decile_medians": [
+        0.2282300903575605,
+        0.2103719631265743,
+        0.19454607784091013,
+        0.15442736406690583,
+        0.07791900437973973,
+        0.056397520348333015,
+        0.011188723512718653,
+        -0.002994034924559297,
+        -0.05111943183224327,
+        -0.1846445479256074
+      ],
+      "decile_n_obs": [
+        579,
+        579,
+        579,
+        579,
+        578,
+        577,
+        578,
+        579,
+        579,
+        579
+      ],
+      "spread": 0.4128746382831679,
+      "top_median": 0.2282300903575605,
+      "all_median": 0.053222925042572006
+    },
+    "y_minus_locf": {
+      "decile_medians": [
+        0.008300016525988968,
+        0.0073445836192701786,
+        0.006728480936635167,
+        0.005381268304033876,
+        0.002727774819135706,
+        0.002001324398467265,
+        0.0004279180214246756,
+        -0.00013817801331348148,
+        -0.0017650137583493722,
+        -0.006509114784427533
+      ],
+      "spearman_vs_score": 0.3322966585280132
+    }
+  },
+  "diagnostics": {
+    "flow_median_by_decile": [
+      -0.03505658389882268,
+      -0.02260592553333161,
+      -0.0022506009144395763,
+      -2.7705549357517653e-07,
+      -7.335267223141767e-17,
+      -8.359598477343561e-17,
+      -3.505875082927186e-17,
+      -4.184475500425659e-17,
+      0.0,
+      4.053641433689836e-16
+    ],
+    "flow_unavailable_evaluable": 0,
+    "clip_count_by_decile": [
+      33,
+      20,
+      13,
+      1,
+      7,
+      8,
+      5,
+      16,
+      34,
+      108
+    ],
+    "endpoint_age_days_hist": {
+      "1": 5682,
+      "2": 6,
+      "3": 2,
+      "4": 4,
+      "5": 2
+    },
+    "stale_count_by_decile": [
+      571,
+      571,
+      574,
+      568,
+      569,
+      568,
+      565,
+      565,
+      571,
+      574
+    ]
+  }
+}
