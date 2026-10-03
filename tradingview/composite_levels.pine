@@ -1,11 +1,33 @@
 //@version=5
 // ─────────────────────────────────────────────────────────────────────────────
-// 단타 팜 컴포짓 지표 v3 — 신호 게이트 레벨 (조건 충족 시에만 진입·손절·익절·추매 표시)
+// 단타 팜 컴포짓 지표 v4 — 신호 게이트 레벨 + 컨플루언스 등급·비중 표시
 // 기본 신호·레벨 = AVGDOWN 스윕(사전등록 2026-09-01, 1,248시행)의 [보정 전] 최고 구조:
 //   진입 RSI(14)<30 + 종가>SMA200, 추매 진입−1/2/3×ATR, 익절 평단+2.0×ATR, 손절 없음.
 //   해당 시행 실측(15m, 5.64년): 누적 +24.0%, 연 +3.9%, 승률 99.7%, MDD −23.9%.
 // ⚠ 판정: 다중검정 보정 후 1,248개 전부 우연과 구별 불가 (RC p=0.76, 생존 0) —
 //   이 구조는 "덜 나쁜 노이즈"이며 검증된 엣지가 아니다. 관측·학습용, 매매 신호 아님.
+//
+// v4 추가 — 컨플루언스 등급 (CONF-TUNE-2026-09-04)
+//   "모든 조건이 맞아떨어지는 자리에서 비중을 키운다"를 화면에 표시한다. 조건 10종 중
+//   Pine 이 가격·거래량만으로 계산 가능한 9종을 채점하고(FUND_OK 는 거래소 펀딩 원장이
+//   필요해 수동 입력), 등급 B / A / A+ 와 그 등급의 비중 배수·명목을 함께 보여준다.
+//   등급 임계는 파이썬 엔진(lab/confluence_tune.py)이 IS 구간 원신호 39,147건의
+//   9종 점수 분포에서 고정한 값이다: A = 5점 이상(상위 27.8%), A+ = 6점 이상(상위 12.6%).
+//   9종이 전부 정렬(9/9)하는 봉은 원신호의 0.01% (39,147건 중 4건)이라 사실상 거래
+//   불가능하다. 그래서 "완전정렬"은 별도 배지로만 표시하고 실사용 등급은 A+ 로 둔다.
+//
+// ⚠⚠ 컨플루언스 등급의 검정 결과 (docs/TRADINGVIEW_CONFLUENCE_TUNING.md · 14,976시행)
+//   ① 거래단위: 진입 시점 변동성(ATR/가격)을 통제하면 점수와 거래수익의 부분상관은
+//      +0.004 (p=0.95, n=295) — 등급의 정보량은 0 이다. 통제 전 −0.29 는 익절이
+//      평단+2×ATR 이라 저변동 봉일수록 목표가 가까운 기계적 산물일 뿐이다.
+//   ② 짝지은 대조: A+ 증량 규칙(x2Ap~x4Ap·ramp3·ramp4) 전부 flat 대비 일평균 수익이
+//      음수였고, 1,248개 짝 중 개선된 것은 19~23% 뿐이다.
+//   ③ 등급을 뒤집은 대조(invR)와 등급을 무작위로 섞은 위약(plcR3)이 원시 누적수익
+//      상위를 차지했다 — 증량이 올린 숫자는 등급이 아니라 레버리지다.
+//   ④ 전체 14,976시행 White RC p = 0.7922, StepM 기각 0, DSR 통과 0 — 실패.
+//   따라서 아래 비중 배수는 "검증된 증량 근거"가 아니라 사용자가 지정한 표시값이다.
+//   증량은 누적수익과 낙폭을 같은 비율로 키운다 (기준 MDD −23.9% → 배수 3 에서 −70%대).
+//
 // 신호 확정 시 레벨 동결: 진입=신호봉 종가(다음 봉 시가 체결 근사), 손절=진입−1×ATR
 // (사용자 요청 타이트 손절 — 스윕 격자 밖·미검증. 넓은 손절 6/10×ATR 은 실측 열위였고
 //  타이트 손절은 손절 빈발이 예상됨), 익절=진입+2.0×ATR
@@ -15,7 +37,7 @@
 // 진입가로 근사(실제 평단은 추매 시 하락). 게이지 테이블은 진행 중 봉 값.
 // 컴포짓 게이지는 대시보드 동결 산식(예측력 우연 수준 — SWEEP-2026-08-31).
 // ─────────────────────────────────────────────────────────────────────────────
-indicator("단타 팜 컴포짓 · 레벨", overlay=true)
+indicator("단타 팜 컴포짓 · 레벨 · 컨플루언스", overlay=true, max_labels_count=500, max_bars_back=5000)
 
 // ── 입력 ──
 entryMode = input.string("RSI<30 (스윕 최고)", "진입 신호", options=["RSI<30 (스윕 최고)", "BB 하단 이탈"])
@@ -34,9 +56,24 @@ maxAdds  = input.int(3,   "추매 단수", minval=1, maxval=3)
 tpAtrMult = input.float(2.0, "익절 = 진입 + n×ATR")
 planBars = input.int(96,  "플랜 유지 최대 봉수")
 
+// ── 컨플루언스 입력 ──
+string GC = "컨플루언스 (CONF-TUNE-2026-09-04)"
+showConf  = input.bool(true, "컨플루언스 표시", group=GC)
+btcSym    = input.symbol("BYBIT:BTCUSDT.P", "BTC 레짐 심볼", group=GC, tooltip="시장 전체 레짐 조건(BTC 종가 > BTC SMA200)에 쓴다.")
+thrA      = input.int(5, "A 등급 최소 점수 (9점 만점)", minval=1, maxval=9, group=GC, tooltip="파이썬 엔진 동결값 5 = IS 원신호 상위 27.8%.")
+thrAp     = input.int(6, "A+ 등급 최소 점수", minval=1, maxval=9, group=GC, tooltip="파이썬 엔진 동결값 6 = IS 원신호 상위 12.6%.")
+multA     = input.float(2.0, "A 등급 비중 배수", minval=0.0, maxval=10.0, step=0.5, group=GC)
+multAp    = input.float(3.0, "A+ 등급 비중 배수", minval=0.0, maxval=10.0, step=0.5, group=GC, tooltip="CONF-TUNE-2026-09-04 판정: 등급의 정보량 0 (변동성 통제 후 부분상관 +0.004, p=0.95). 1.0 초과는 검증된 증량이 아니라 순수 레버리지이며 낙폭도 같은 비율로 커진다.")
+fundOk    = input.bool(false, "FUND_OK — 직전 72h 펀딩 누계 <= 0.0004 (외부 확인 후 수동)", group=GC, tooltip="Pine 은 거래소 펀딩 정산 원장을 읽을 수 없다. 가격으로 대체하지 않는다.")
+lenVolOv  = input.int(0, "저변동·고가 창 (봉, 0 = 타임프레임 자동 30일)", minval=0, maxval=5000, group=GC)
+eqIn      = input.float(10000.0, "계좌 자본 (비중 표시용)", minval=0.0, group=GC)
+baseFrac  = input.float(0.0833333333, "기본 트랜치 비중 (자본 대비)", minval=0.0, maxval=1.0, step=0.0001, group=GC, tooltip="동결 위험모델의 equity × 1/12.")
+showCond  = input.bool(true, "조건 체크리스트 표시", group=GC)
+
 // ── 지표 (엔진 동일식: 확정봉 기준 — Pine 은 기본이 확정봉) ──
 basis = ta.sma(close, lenBB)
-dev   = mulBB * ta.stdev(close, lenBB)          // ddof=0 동일 (Pine stdev = 모표준편차)
+sd20  = ta.stdev(close, lenBB)                  // ddof=0 동일 (Pine stdev = 모표준편차)
+dev   = mulBB * sd20
 upBB  = basis + dev
 loBB  = basis - dev
 smaF  = ta.sma(close, lenFast)
@@ -60,6 +97,48 @@ dBrk    = chHi > 0 ? (chHi - close) / close * 100 : na
 cBrk    = na(dBrk) ? 0 : (dBrk <= 0 ? 20.0 : 20.0 / (1 + dBrk))
 score   = f_clip(nz(cTrend) + nz(cMom) + nz(cBand) + nz(cVol) + nz(cBrk), 100)
 
+// ── 컨플루언스 조건 9종 (lab/confluence_tune.py CONDITIONS 와 같은 식) ──
+// 전부 지금 확정 중인 봉의 값만 쓴다 = 파이썬 엔진의 확정봉 [i-1] 과 같은 시점이다.
+int barsPerDay  = math.max(1, int(86400 / timeframe.in_seconds()))
+int lenWinAuto  = math.min(5000, math.max(100, barsPerDay * 30))
+int lenWin      = lenVolOv > 0 ? lenVolOv : lenWinAuto
+
+smaHTF  = ta.sma(close, lenSlow * 4)
+btcC    = request.security(btcSym, timeframe.period, close, lookahead=barmerge.lookahead_off)
+btcMA   = request.security(btcSym, timeframe.period, ta.sma(close, lenSlow), lookahead=barmerge.lookahead_off)
+atrRat  = close > 0 ? atr / close : na
+atrMed  = ta.median(atrRat, lenWin)
+volMA20 = ta.sma(volume, 20)
+barRng  = high - low
+hiWin   = ta.highest(high, lenWin)
+
+cTrSlope = not na(smaS) and not na(smaS[lenSlow]) and smaS > smaS[lenSlow]
+cHtf     = not na(smaHTF) and close > smaHTF
+cBtcReg  = not na(btcC) and not na(btcMA) and btcC > btcMA
+cLowVol  = not na(atrRat) and not na(atrMed) and atrRat <= atrMed
+cDeep    = not na(sd20) and sd20 > 0 and (close - basis) / sd20 <= -2.5
+cClimax  = not na(volMA20) and volume >= volMA20 * 1.5
+cWick    = barRng > 0 and (close - low) >= barRng * 0.5
+cNearHi  = not na(hiWin) and hiWin > 0 and close >= hiWin * 0.80
+cRsiUp   = not na(rsi) and not na(rsi[1]) and rsi > rsi[1]
+
+f_i(b) => b ? 1 : 0
+priceScore = f_i(cTrSlope) + f_i(cHtf) + f_i(cBtcReg) + f_i(cLowVol) + f_i(cDeep) + f_i(cClimax) + f_i(cWick) + f_i(cNearHi) + f_i(cRsiUp)
+allAligned = priceScore == 9                          // 문자 그대로 "전부 정렬" — 원신호의 0.01%
+tier       = priceScore >= thrAp ? 2 : priceScore >= thrA ? 1 : 0
+tierName   = tier == 2 ? "A+" : tier == 1 ? "A" : "B"
+convMult   = tier == 2 ? multAp : tier == 1 ? multA : 1.0
+trancheNot = eqIn * baseFrac * convMult
+fullNot    = trancheNot * (maxAdds + 1)
+// 동결 위험모델의 heat 캡: 명목 × HEAT_FRAC(5%) <= HEAT_CAP(6%) × 자본 → 명목 <= 1.2 × 자본.
+// 배수를 올려도 엔진은 이 한도 위로는 체결하지 않으므로 표시 명목도 같은 한도를 적용한다.
+capNot     = 1.2 * eqIn
+heatCapped = fullNot > capNot
+fullNotEff = math.min(fullNot, capNot)
+// 검정된 격자는 15m·1h 뿐이다 (lab/confluence_tune.py TFS). 다른 TF 는 창 길이·플랜
+// 타임아웃(96봉 = 15m 기준 24h)의 의미가 조용히 달라진다.
+tfOk       = timeframe.isminutes and (timeframe.multiplier == 15 or timeframe.multiplier == 60)
+
 // ── 신호: 진입 모드 + 추세 필터 (확정봉) ──
 entryRSI = entryMode == "RSI<30 (스윕 최고)"
 tpAtr    = tpMode == "평단+2.0×ATR (스윕 최고)"
@@ -75,6 +154,10 @@ var float pAdd1  = na
 var float pAdd2  = na
 var float pAdd3  = na
 var int   pStart = 0
+var int   pScore = 0
+var int   pTier  = 0
+var float pMult  = 1.0
+var float pNot   = 0.0
 newPlan = false
 endStop = false
 endTP   = false
@@ -100,6 +183,11 @@ if barstate.isconfirmed
         pAdd1  := close - 1 * addMult * atr
         pAdd2  := close - 2 * addMult * atr
         pAdd3  := close - 3 * addMult * atr
+        // 확신도는 진입 봉에서 동결한다 — 보유 중 재채점 금지 (엔진과 동일 규약)
+        pScore := priceScore
+        pTier  := tier
+        pMult  := convMult
+        pNot   := trancheNot
 
 // ── 컨텍스트 오버레이 ──
 pB = plot(upBB, "BB 상단", color=color.new(color.gray, 60))
@@ -115,16 +203,32 @@ plot(pActive ? pTP    : na, "익절", color=color.new(color.green, 0), linewidth
 plot(pActive and maxAdds >= 1 ? pAdd1 : na, "추매1", color=color.new(color.blue, 20), style=plot.style_linebr)
 plot(pActive and maxAdds >= 2 ? pAdd2 : na, "추매2", color=color.new(color.blue, 40), style=plot.style_linebr)
 plot(pActive and maxAdds >= 3 ? pAdd3 : na, "추매3", color=color.new(color.blue, 55), style=plot.style_linebr)
-plotshape(newPlan, "진입 신호", style=shape.labelup, location=location.belowbar, color=color.new(#D9A441, 0), textcolor=color.black, size=size.tiny, text="진입")
+
+// ── 진입 표시 — 등급별로 구분한다 ──
+planB  = newPlan and pTier == 0
+planA  = newPlan and pTier == 1
+planAp = newPlan and pTier == 2
+plotshape(planB,  "진입 B등급", style=shape.labelup, location=location.belowbar, color=color.new(color.gray, 20),  textcolor=color.white, size=size.tiny,   text="B")
+plotshape(planA,  "진입 A등급", style=shape.labelup, location=location.belowbar, color=color.new(#D9A441, 0),      textcolor=color.black, size=size.small,  text="A")
+plotshape(planAp, "진입 A+등급 (비중 확대)", style=shape.labelup, location=location.belowbar, color=color.new(color.lime, 0), textcolor=color.black, size=size.normal, text="A+")
+bgcolor(showConf and planAp ? color.new(color.lime, 88) : na, title="A+ 정렬 배경")
+
+// A+ 진입 봉에 점수·배수·명목을 라벨로 남긴다 (전조건 정렬이면 배지 추가)
+if showConf and planAp and not na(pEntry)
+    label.new(bar_index, low, text=(pScore == 9 ? "★ 전조건 정렬 9/9\n" : "") + "A+ " + str.tostring(pScore) + "/9\n비중 ×" + str.tostring(pMult, "#.#") + "\n트랜치 " + str.tostring(pNot, "#.##") + "\n(등급 정보량 0 · 신호아님)", yloc=yloc.belowbar, style=label.style_label_up, color=color.new(color.lime, 10), textcolor=color.black, size=size.small)
+
 plotshape(endStop, "플랜 종료(손절선)", style=shape.xcross, location=location.belowbar, color=color.new(color.red, 0), size=size.tiny)
 plotshape(endTP,   "플랜 종료(익절)", style=shape.circle, location=location.abovebar, color=color.new(color.green, 0), size=size.tiny)
 plotshape(endTime, "플랜 종료(타임아웃)", style=shape.xcross, location=location.abovebar, color=color.new(color.gray, 30), size=size.tiny)
 alertcondition(newPlan, "단타 팜 진입 조건 충족", "단타 팜: 진입 조건 + 추세 필터 — 플랜 생성 (관측용·신호아님)")
+alertcondition(planAp,  "A+ 컨플루언스 정렬", "단타 팜: A+ 등급 (가격조건 6/9 이상) — 비중 확대 후보. 관측용·주문 신호 아님. 펀딩 조건은 외부 확인 필요.")
+alertcondition(newPlan and priceScore == 9, "전조건 정렬 9/9", "단타 팜: 가격조건 9/9 전부 정렬 (원신호의 0.01%). 관측용·주문 신호 아님.")
 
 // ── 게이지 + 플랜 테이블 ──
-var table t = table.new(position.top_right, 2, 10, border_width=1)
+var table t = table.new(position.top_right, 2, 15, border_width=1)
 if barstate.islast
     col = score > 15 ? color.new(color.green, 60) : score < -15 ? color.new(color.red, 60) : color.new(color.gray, 60)
+    tcol = tier == 2 ? color.new(color.lime, 30) : tier == 1 ? color.new(#D9A441, 30) : color.new(color.gray, 60)
     table.cell(t, 0, 0, "컴포짓", bgcolor=color.new(color.black, 40), text_color=color.white, text_size=size.small)
     table.cell(t, 1, 0, str.tostring(score, "#"), bgcolor=col, text_color=color.white, text_size=size.small)
     table.cell(t, 0, 1, "추세", text_size=size.tiny)
@@ -137,11 +241,49 @@ if barstate.islast
     table.cell(t, 1, 4, str.tostring(nz(cVol), "#.#"), text_size=size.tiny)
     table.cell(t, 0, 5, "RSI", text_size=size.tiny)
     table.cell(t, 1, 5, str.tostring(rsi, "#.#"), text_size=size.tiny, text_color=rsi < rsiTh ? color.new(#D9A441, 0) : color.new(color.gray, 20))
-    table.cell(t, 0, 6, "플랜", text_size=size.tiny, bgcolor=color.new(color.black, 40), text_color=color.white)
-    table.cell(t, 1, 6, pActive ? "활성" : "관망", text_size=size.tiny, bgcolor=pActive ? color.new(#D9A441, 40) : color.new(color.gray, 70), text_color=color.white)
-    table.cell(t, 0, 7, "진입/손절", text_size=size.tiny)
-    table.cell(t, 1, 7, pActive ? str.tostring(pEntry, format.mintick) + " / " + str.tostring(pStop, format.mintick) : "—", text_size=size.tiny)
-    table.cell(t, 0, 8, "익절/추매1", text_size=size.tiny)
-    table.cell(t, 1, 8, pActive ? str.tostring(pTP, format.mintick) + " / " + str.tostring(pAdd1, format.mintick) : "—", text_size=size.tiny)
-    table.cell(t, 0, 9, "⚠", text_size=size.tiny)
-    table.cell(t, 1, 9, "보정후 유의성 0·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
+    table.cell(t, 0, 6, "컨플루언스", bgcolor=color.new(color.black, 40), text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 6, tierName + " " + str.tostring(priceScore) + "/9" + (fundOk ? " +펀딩" : ""), bgcolor=tcol, text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 7, "비중 배수", text_size=size.tiny)
+    table.cell(t, 1, 7, "×" + str.tostring(convMult, "#.#") + (allAligned ? "  ★9/9" : ""), text_size=size.tiny, text_color=tier == 2 ? color.new(color.lime, 0) : color.new(color.gray, 10))
+    table.cell(t, 0, 8, "트랜치/총명목", text_size=size.tiny)
+    table.cell(t, 1, 8, str.tostring(trancheNot, "#.#") + " / " + str.tostring(fullNotEff, "#.#") + (heatCapped ? " (heat캡)" : ""), text_size=size.tiny, text_color=heatCapped ? color.new(color.orange, 0) : color.new(color.gray, 10))
+    table.cell(t, 0, 9, "플랜", text_size=size.tiny, bgcolor=color.new(color.black, 40), text_color=color.white)
+    table.cell(t, 1, 9, pActive ? "활성 " + (pTier == 2 ? "A+" : pTier == 1 ? "A" : "B") : "관망", text_size=size.tiny, bgcolor=pActive ? color.new(#D9A441, 40) : color.new(color.gray, 70), text_color=color.white)
+    table.cell(t, 0, 10, "진입/손절", text_size=size.tiny)
+    table.cell(t, 1, 10, pActive ? str.tostring(pEntry, format.mintick) + " / " + str.tostring(pStop, format.mintick) : "—", text_size=size.tiny)
+    table.cell(t, 0, 11, "익절/추매1", text_size=size.tiny)
+    table.cell(t, 1, 11, pActive ? str.tostring(pTP, format.mintick) + " / " + str.tostring(pAdd1, format.mintick) : "—", text_size=size.tiny)
+    table.cell(t, 0, 12, "타임프레임", text_size=size.tiny)
+    table.cell(t, 1, 12, tfOk ? str.tostring(timeframe.period) + " (검정 범위)" : str.tostring(timeframe.period) + " ⚠ 격자 밖", text_size=size.tiny, text_color=tfOk ? color.new(color.gray, 10) : color.new(color.red, 0))
+    table.cell(t, 0, 13, "등급 검정", text_size=size.tiny, bgcolor=color.new(color.black, 40), text_color=color.white)
+    table.cell(t, 1, 13, "정보량 0 (부분상관 +0.004)", text_size=size.tiny, text_color=color.new(color.red, 0))
+    table.cell(t, 0, 14, "⚠", text_size=size.tiny)
+    table.cell(t, 1, 14, "보정후 유의성 0·신호아님", text_size=size.tiny, text_color=color.new(#D9A441, 0))
+
+// ── 조건 체크리스트 — 어떤 조건이 맞아떨어졌는지 그대로 보여준다 ──
+var table ct = table.new(position.bottom_right, 2, 11, border_width=1)
+f_mark(b) => b ? "✔" : "✘"
+f_col(b) => b ? color.new(color.lime, 0) : color.new(color.gray, 40)
+if showConf and showCond and barstate.islast
+    table.cell(ct, 0, 0, "컨플루언스 조건", bgcolor=color.new(color.black, 30), text_color=color.white, text_size=size.tiny)
+    table.cell(ct, 1, 0, str.tostring(priceScore) + "/9", bgcolor=color.new(color.black, 30), text_color=color.white, text_size=size.tiny)
+    table.cell(ct, 0, 1, "추세 기울기 (SMA200↑)", text_size=size.tiny)
+    table.cell(ct, 1, 1, f_mark(cTrSlope), text_size=size.tiny, text_color=f_col(cTrSlope))
+    table.cell(ct, 0, 2, "상위추세 (>SMA800)", text_size=size.tiny)
+    table.cell(ct, 1, 2, f_mark(cHtf), text_size=size.tiny, text_color=f_col(cHtf))
+    table.cell(ct, 0, 3, "BTC 레짐", text_size=size.tiny)
+    table.cell(ct, 1, 3, f_mark(cBtcReg), text_size=size.tiny, text_color=f_col(cBtcReg))
+    table.cell(ct, 0, 4, "저변동 (ATR≤중앙값)", text_size=size.tiny)
+    table.cell(ct, 1, 4, f_mark(cLowVol), text_size=size.tiny, text_color=f_col(cLowVol))
+    table.cell(ct, 0, 5, "되돌림 깊이 (≤−2.5σ)", text_size=size.tiny)
+    table.cell(ct, 1, 5, f_mark(cDeep), text_size=size.tiny, text_color=f_col(cDeep))
+    table.cell(ct, 0, 6, "투매 거래량 (≥1.5×)", text_size=size.tiny)
+    table.cell(ct, 1, 6, f_mark(cClimax), text_size=size.tiny, text_color=f_col(cClimax))
+    table.cell(ct, 0, 7, "아래꼬리 거부 (≥0.5)", text_size=size.tiny)
+    table.cell(ct, 1, 7, f_mark(cWick), text_size=size.tiny, text_color=f_col(cWick))
+    table.cell(ct, 0, 8, "고가 근접 (≥0.80×)", text_size=size.tiny)
+    table.cell(ct, 1, 8, f_mark(cNearHi), text_size=size.tiny, text_color=f_col(cNearHi))
+    table.cell(ct, 0, 9, "RSI 반등", text_size=size.tiny)
+    table.cell(ct, 1, 9, f_mark(cRsiUp), text_size=size.tiny, text_color=f_col(cRsiUp))
+    table.cell(ct, 0, 10, "펀딩 72h ≤4bp (외부)", text_size=size.tiny)
+    table.cell(ct, 1, 10, fundOk ? "✔ 수동" : "미확인", text_size=size.tiny, text_color=fundOk ? color.new(color.lime, 0) : color.new(color.orange, 0))
