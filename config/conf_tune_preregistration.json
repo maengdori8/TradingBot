@@ -1,0 +1,220 @@
+{
+ "protocol": "conf_tune_confluence_conviction_sizing_forward_validation",
+ "version": "1.0.0",
+ "spec": "CONF-TUNE-2026-09-04",
+ "frozen_at_utc": "2026-09-04T11:20:00Z",
+ "forward_data_start_utc": "2026-09-05T00:00:00Z",
+ "earliest_calendar_decision_utc": "2027-09-05T00:00:00Z",
+ "decision_mode": "all_required_gates_must_pass",
+ "live_trading_automatic_promotion": false,
+ "declaration": {
+  "historical_discovery_data_already_observed": true,
+  "historical_classification": "DISCOVERY_ONLY_NOT_PREREGISTERED",
+  "historical_gate_status": "FAIL",
+  "historical_statistical_conditions_pass": false,
+  "historical_results_cannot_be_reused_for_forward_pass": true,
+  "process_deviation_disclosed": "AVGDOWN-2026-09-01 §8.1 과 SWEEP-2026-08-31 §9.1 은 엔진·판정·명세 문서를 커밋·태그한 뒤에만 격자를 1회 실행하도록 요구한다. 본 격자는 그 순서를 지키지 않고 코드 커밋 전에 실행했다. 따라서 본 실행의 역사 결과는 결과와 무관하게 discovery 등급이며, 어떤 사전등록 담보도 갖지 않는다. 판정이 실패(FAIL)라서 이 위반이 어떤 긍정 주장도 부풀리지 않았음을 함께 공시한다. 본 파일은 사후에 고정한 **전향 검정용** 명세이지 완료된 실행의 사전등록이 아니다.",
+  "profit_guarantee": false,
+  "pine_execution_authority": false,
+  "pine_actionable": false,
+  "pine_watch_only": true,
+  "conviction_multiplier_validated": false
+ },
+ "universe": {
+  "exchange": "Bybit linear perpetual",
+  "symbols": [
+   "BTC/USDT:USDT",
+   "ETH/USDT:USDT",
+   "SOL/USDT:USDT"
+  ],
+  "timeframes": [
+   "15m",
+   "1h"
+  ],
+  "long_only": true,
+  "shorts_allowed": false,
+  "sol_1h_source": "resampled from sol_15m (lab/data/sol_1h.parquet absent); BTC check: mean rel close diff 3.874e-07, max 9.653e-04, n=49467"
+ },
+ "fixed_denominator": {
+  "principle": "conviction sizing must not remove any raw signal from the denominator",
+  "raw_signal": "E1 (close < BB(20,2) lower) OR E2 (RSI14 < 30), on confirmed bar [i-1]",
+  "gates_are_comparison_arms_only": [
+   "gateA",
+   "gateAp"
+  ]
+ },
+ "conditions": {
+  "TR_SLOPE": "SMA200 이 200봉 전보다 높다 — 추세가 실제로 상승 중",
+  "HTF_TREND": "종가 > SMA800 (상위 시간대 추세 대용)",
+  "BTC_REG": "같은 시각 BTC 종가 > BTC SMA200 — 시장 전체 레짐",
+  "LOWVOL": "ATR24/종가 <= 자기 30일 중앙값 — 저변동 국면 (PRECISION_V6 최강 게이트)",
+  "DEEP": "(종가-SMA20)/σ20 <= -2.5 — 되돌림 깊이",
+  "VOLCLIMAX": "거래량 >= 직전 20봉 평균 × 1.5 — 투매 소진",
+  "WICK": "아래꼬리 >= 봉 레인지 × 0.5 — 하방 거부",
+  "NEARHIGH": "종가 >= 최근 30일 고가 × 0.80 — 낙하하는 칼이 아님",
+  "FUND_OK": "직전 72시간 펀딩 누계 <= 0.0004 — 롱 캐리 비용 낮음",
+  "RSI_UP": "RSI14 가 직전 봉보다 상승 — 모멘텀 반전 시작"
+ },
+ "tiering": {
+  "source": "IS raw-signal score distribution frequency only (never PnL)",
+  "is_end_utc": "2024-12-31 23:59:00+00:00",
+  "q_A": 0.7,
+  "q_Ap": 0.9,
+  "pine_scale": "9 conditions (FUND_OK excluded — Pine cannot read exchange funding ledger)",
+  "pine_thresholds": {
+   "A": 5,
+   "Ap": 6
+  },
+  "pine_measured_frequency": {
+   "ge5": 0.2777,
+   "ge6": 0.126,
+   "ge7": 0.036,
+   "eq9": 0.0001
+  }
+ },
+ "conviction_rules": {
+  "flat": {
+   "mult_B": 1.0,
+   "mult_A": 1.0,
+   "mult_Ap": 1.0,
+   "tier_source": "real"
+  },
+  "gateA": {
+   "mult_B": 0.0,
+   "mult_A": 1.0,
+   "mult_Ap": 1.0,
+   "tier_source": "real"
+  },
+  "gateAp": {
+   "mult_B": 0.0,
+   "mult_A": 0.0,
+   "mult_Ap": 1.0,
+   "tier_source": "real"
+  },
+  "x2Ap": {
+   "mult_B": 1.0,
+   "mult_A": 1.0,
+   "mult_Ap": 2.0,
+   "tier_source": "real"
+  },
+  "x3Ap": {
+   "mult_B": 1.0,
+   "mult_A": 1.0,
+   "mult_Ap": 3.0,
+   "tier_source": "real"
+  },
+  "x4Ap": {
+   "mult_B": 1.0,
+   "mult_A": 1.0,
+   "mult_Ap": 4.0,
+   "tier_source": "real"
+  },
+  "x2A": {
+   "mult_B": 1.0,
+   "mult_A": 2.0,
+   "mult_Ap": 2.0,
+   "tier_source": "real"
+  },
+  "x3A": {
+   "mult_B": 1.0,
+   "mult_A": 3.0,
+   "mult_Ap": 3.0,
+   "tier_source": "real"
+  },
+  "ramp3": {
+   "mult_B": 1.0,
+   "mult_A": 2.0,
+   "mult_Ap": 3.0,
+   "tier_source": "real"
+  },
+  "ramp4": {
+   "mult_B": 1.0,
+   "mult_A": 2.0,
+   "mult_Ap": 4.0,
+   "tier_source": "real"
+  },
+  "invR": {
+   "mult_B": 3.0,
+   "mult_A": 2.0,
+   "mult_Ap": 1.0,
+   "tier_source": "real"
+  },
+  "plcR3": {
+   "mult_B": 1.0,
+   "mult_A": 2.0,
+   "mult_Ap": 3.0,
+   "tier_source": "placebo"
+  }
+ },
+ "falsification_controls": {
+  "inverted": "invR — 3x on the WORST tier. If tiering is informative this must lose to flat.",
+  "placebo": "plcR3 — tier labels randomly reassigned, per-tier frequency exactly preserved, seed 20260904. If placebo matches the real rule, the gain is leverage, not confluence.",
+  "required_reporting": "both controls must be reported alongside every conviction result"
+ },
+ "risk_model": {
+  "tranche_frac": 0.08333333333333333,
+  "gross_cap": 10.0,
+  "heat_cap": 0.06,
+  "heat_frac": 0.05,
+  "daily_halt": -0.05,
+  "cost_one_side": 0.0008,
+  "funding": "daily sum, pre-deducted at day start, long pays",
+  "implied_notional_cap_multiple_of_equity": 1.2,
+  "not_modelled": [
+   "forced liquidation",
+   "partial fills",
+   "margin calls",
+   "MTM margin"
+  ]
+ },
+ "statistics": {
+  "seed": 20260904,
+  "n_paths": 1000,
+  "chunk": 500,
+  "mean_block_days": 5.0,
+  "rc_alpha": 0.05,
+  "fwer": 0.05,
+  "dsr_min": 0.95,
+  "n_days": 2056,
+  "statistic": "White fixed-scale T_k = sqrt(T)*mean(r_k)/omega_hat_k, omega_hat estimated once on the original sample",
+  "primary_window": "full sample — RC authority lives here only",
+  "is_oos": "diagnostic only, no authority"
+ },
+ "forward_gates_all_required": {
+  "min_months": 12,
+  "min_raw_signals": 300,
+  "min_Ap_entries": 100,
+  "rc_p_below": 0.05,
+  "stepm_rejections_at_least": 1,
+  "dsr_at_least": 0.95,
+  "paired_vs_flat_positive": true,
+  "must_beat_placebo": "real conviction rule must beat plcR3 on risk-equalised cum AND Sharpe",
+  "inverted_must_lose": "invR must underperform flat",
+  "partial_correlation_score_pnl_controlling_volatility_positive": true,
+  "note": "파라미터·유니버스·조건·등급 임계를 바꾸는 수정은 새 버전으로 분리하고 전향 시계를 초기화한다."
+ },
+ "historical_result": {
+  "n_trials": 14976,
+  "rc_p": 0.7922077922077922,
+  "stepm_rejected": 0,
+  "dsr_passing": 0,
+  "best_trial_id": "CT|e=E2|f=1|sp=1|k=2|tp=A0.5|sl=-|cv=invR|1h",
+  "best_trial_is_falsification_control": true,
+  "verdict": "FAIL"
+ },
+ "artifact_hashes": {
+  "code": {
+   "lab/confluence_tune.py": "dc9e4e62600dd214c507b5208a0f011ab80410ea6a0881f12f61f1661d834f36",
+   "lab/confluence_verdict.py": "ffdf668ee5473f144460e9d54aea7072ae27ed3794b53598f4fb35c4ebc90f56"
+  },
+  "data": {
+   "lab/data/btc_15m.parquet": "861eb947ba59244e627538345f3f65f08dafef67f62f52d9b5c2bedb9b3c5164",
+   "lab/data/eth_15m.parquet": "42a3067a8b5a5f58f2c1a136101255db8c0106d5c2c64c590db82aacae39b9ad",
+   "lab/data/sol_15m.parquet": "08bfa833b35caddda6d5ada60dd5491ae269bf924368eecd8e271805c8e2c0b8",
+   "lab/frozen/perp_1h.parquet": "c06a3301457dfec8f68b184e1f8ac8797acc49874fa96c409a6a57e6743ebac0",
+   "lab/frozen/funding.parquet": "534642ee677424abb949492a7b8f21e43ea635bd0eb9f980e12f829f89a0a128"
+  },
+  "returns_npz": "1af80c0fa9a4380a153b83977f22d7acd67b5dfbdb86ffe73ab09e6b4d364f7c",
+  "summary_csv": "499f9be15395680b7932685846e6f2d577400db60b8560e0982ee9f7cae23efb"
+ }
+}
