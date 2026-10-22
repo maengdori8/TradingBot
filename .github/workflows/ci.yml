@@ -23,7 +23,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install test tools
-        run: pip install pytest-cov ruff
+        # ruff 버전 고정 — 미고정 시 새 규칙이 추가될 때마다 CI 가 조용히 깨진다
+        # (2026-09-01 ~ 09-04 main 15회 연속 실패의 원인).
+        run: pip install pytest-cov 'ruff==0.15.8'
 
       - name: Create config from examples
         run: |

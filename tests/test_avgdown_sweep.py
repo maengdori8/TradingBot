@@ -11,7 +11,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,13 +35,13 @@ def _flat_df(n: int, spike_at: int, bars: dict[int, tuple[float, float, float, f
     """평탄 100 시계열 + 지정 봉 오버라이드 (o, h, l, c)."""
     o = np.full(n, 100.0)
     h = np.full(n, 100.0)
-    l = np.full(n, 100.0)
+    lo = np.full(n, 100.0)
     c = np.full(n, 100.0)
     bars = {spike_at: (100.0, 100.0, 90.0, 90.0), **bars}
     for i, (oo, hh, ll, cc) in bars.items():
-        o[i], h[i], l[i], c[i] = oo, hh, ll, cc
+        o[i], h[i], lo[i], c[i] = oo, hh, ll, cc
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="utc")
-    return pd.DataFrame({"open": o, "high": h, "low": l, "close": c,
+    return pd.DataFrame({"open": o, "high": h, "low": lo, "close": c,
                          "volume": np.ones(n)}, index=idx)
 
 
@@ -139,9 +138,9 @@ def test_lookahead_control_differs():
     o[0] = c[0]
     o[1:] = c[:-1] * (1 + rng.normal(0, 1e-3, n - 1))
     h = np.maximum(o, c) * 1.005
-    l = np.minimum(o, c) * 0.995
+    lo = np.minimum(o, c) * 0.995
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="utc")
-    df = pd.DataFrame({"open": o, "high": h, "low": l, "close": c,
+    df = pd.DataFrame({"open": o, "high": h, "low": lo, "close": c,
                        "volume": np.ones(n)}, index=idx)
     ta = ads.trial_arrays([ads.Trial("E1", 0, 1.0, 3, "MID", None, "1h")])
     a = ads.simulate_sleeve(df, ZERO_FUND, ta, causal=True)
