@@ -1,0 +1,776 @@
+{
+  "kind": "h1_verdict",
+  "spec": "H1 판정 평가기 v1 (2026-08-29 동결) — docs/TRADER_PERSISTENCE_STUDY.md",
+  "generated_at_utc": "2026-10-24T03:15:41.640542+00:00",
+  "t0_date": "2026-08-25",
+  "judgment_date": "2026-10-24",
+  "evaluated_on": "2026-10-24",
+  "horizon_days": 60,
+  "analysis_status": "official",
+  "gate_eligible": true,
+  "calendar_day_resolution": true,
+  "decision_basis": "H1 문서 원문 단측 α=0.05 (거버넌스 α=0.025 는 소급 미적용·병기 — 오케스트레이터 지시, 2026-08-29)",
+  "params": {
+    "clip": [
+      -0.95,
+      5.0
+    ],
+    "span_gate_days": [
+      55.0,
+      65.0
+    ],
+    "n_perm": 10000,
+    "seed": 20260827,
+    "perm_rule": "p=(1+#{perm>=obs})/(n_perm+1), 단측",
+    "mc_se_at_p05": 0.00218,
+    "ic_min": 0.05,
+    "spread_min": 0.03,
+    "alpha_doc": 0.05,
+    "alpha_governance": 0.025,
+    "endpoint_rule": "지갑별 마지막 유효 행 ≤ 판정일 (H1 고유 — H2 24h 규칙과 다름을 명시), 스팬 게이트+정규화"
+  },
+  "code": {
+    "h1_sha256": "2f84a7607edcba28632755879141c84805517c3905db19f9d95ffeb3d0e33dfb",
+    "h2_sha256": "e953af8fdd21286a3507e3f9855e5007271321c173891391060911141f198b64"
+  },
+  "inputs": {
+    "cohort": {
+      "path": "logs/trader_cohort.json.gz",
+      "sha256": "349a7ce19ed67f5a4e65365294c15cf5f3fdd327767123a2adcb98a9fee0d033"
+    },
+    "t0_daily": {
+      "path": "logs/trader_daily/2026-08-25.csv.gz",
+      "sha256": "3bf00ab167205b02110f28d8befce45ff7fe6d0aa97a9ca0f1bb191cb01c57f2",
+      "valid_rows": 5790,
+      "rejects": {}
+    },
+    "daily_files": [
+      {
+        "date": "2026-08-26",
+        "path": "logs/trader_daily/2026-08-26.csv.gz",
+        "sha256": "036801d28f92f811345f5f5ef032bb1c4cf0a869a74404191b467bc8440ad721",
+        "valid_rows": 5778,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-27",
+        "path": "logs/trader_daily/2026-08-27.csv.gz",
+        "sha256": "d412653475fabaac2945c4c0896af71c5bd116327893f3c6f6367912a4098a6e",
+        "valid_rows": 5767,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-29",
+        "path": "logs/trader_daily/2026-08-29.csv.gz",
+        "sha256": "26d0ad4e11631f3dcaffed30f2ad7846a48b119d8c616e5f95b28c5fdafbc619",
+        "valid_rows": 5745,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-30",
+        "path": "logs/trader_daily/2026-08-30.csv.gz",
+        "sha256": "72db63b3af0111bc0bbede95b3c003e1fbfe7be45247aa829c9fd99788c7fc04",
+        "valid_rows": 5749,
+        "rejects": {}
+      },
+      {
+        "date": "2026-08-31",
+        "path": "logs/trader_daily/2026-08-31.csv.gz",
+        "sha256": "2adf632091d50390fcf315d4d87845261b460e9b5d480e66a5a44631ebef3f17",
+        "valid_rows": 5740,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-01",
+        "path": "logs/trader_daily/2026-09-01.csv.gz",
+        "sha256": "55d8a44cddbd91943abece55ad5a55a0e6df42a9943fe41eb347ab17a8c0c446",
+        "valid_rows": 5745,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-02",
+        "path": "logs/trader_daily/2026-09-02.csv.gz",
+        "sha256": "7bc57c45941f74ef438c26f89d8c0eddaad5d32236d7599352a220a0746a0369",
+        "valid_rows": 5734,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-03",
+        "path": "logs/trader_daily/2026-09-03.csv.gz",
+        "sha256": "39aa0983e8535f340d8d23e36a2ceb6b7719fca43841383cdc0b40103bb4dce2",
+        "valid_rows": 5732,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-04",
+        "path": "logs/trader_daily/2026-09-04.csv.gz",
+        "sha256": "cb452f259b1877e607ee84bafec507c8ba9a6865ed38479021b8d64dee40250f",
+        "valid_rows": 5735,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-05",
+        "path": "logs/trader_daily/2026-09-05.csv.gz",
+        "sha256": "9fcffa54329ca6fbb5b5bfdf3858414a786d73983b57517cf971c34bf0e2fd29",
+        "valid_rows": 5729,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-06",
+        "path": "logs/trader_daily/2026-09-06.csv.gz",
+        "sha256": "06312139d593bc74dbab5059a0a7de641946acff716cdfdd585600b7fd818ae0",
+        "valid_rows": 5726,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-07",
+        "path": "logs/trader_daily/2026-09-07.csv.gz",
+        "sha256": "6d5706ac0cca649bb915f82aaf7e3b04bcb965b86151f438b5c468f6c89d9b56",
+        "valid_rows": 5723,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-08",
+        "path": "logs/trader_daily/2026-09-08.csv.gz",
+        "sha256": "61d3c500394402861984ccce2638a7c0302727c7d427322181ec739a2f2d4257",
+        "valid_rows": 5719,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-09",
+        "path": "logs/trader_daily/2026-09-09.csv.gz",
+        "sha256": "b3632be61774d52f6185a41691d658c6faa14f269cf50d62365888271e33a25a",
+        "valid_rows": 5715,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-10",
+        "path": "logs/trader_daily/2026-09-10.csv.gz",
+        "sha256": "e545c421f579e997aa7e32f1b6f246dd7d1dd5fd8bfdd5c0a6d2252a0cb87131",
+        "valid_rows": 5711,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-11",
+        "path": "logs/trader_daily/2026-09-11.csv.gz",
+        "sha256": "0295e782712045d4f70cf89afc43f717b8c83b7bd90f21bcf1310c446bfe153a",
+        "valid_rows": 5702,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-12",
+        "path": "logs/trader_daily/2026-09-12.csv.gz",
+        "sha256": "eb34fe7944240726498688f3c04e7ec46d386c33d507e1934fea7abd40450f7a",
+        "valid_rows": 5700,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-13",
+        "path": "logs/trader_daily/2026-09-13.csv.gz",
+        "sha256": "8f7ee6aa9a4adcb6dddc2492e9f3b08347ce6253abdc9650909326304b595e96",
+        "valid_rows": 5700,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-14",
+        "path": "logs/trader_daily/2026-09-14.csv.gz",
+        "sha256": "f898bbde9703259acfff21f401f3368766e5bd9f08a5d1587e8d0f05dd6de8db",
+        "valid_rows": 5695,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-15",
+        "path": "logs/trader_daily/2026-09-15.csv.gz",
+        "sha256": "176404713d762357d6f9127b5312e77d83a5bf1df63976b44fc9bf477a2b7719",
+        "valid_rows": 5692,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-16",
+        "path": "logs/trader_daily/2026-09-16.csv.gz",
+        "sha256": "f597f060b32baefa0322ea548f2ae0430180277580609f23e73543088c2cbe0a",
+        "valid_rows": 5686,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-17",
+        "path": "logs/trader_daily/2026-09-17.csv.gz",
+        "sha256": "8b7aeaccb1ee400d66ff4ca2516fa4e5e178c172896cdd19ad9377b4feaa884b",
+        "valid_rows": 5689,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-18",
+        "path": "logs/trader_daily/2026-09-18.csv.gz",
+        "sha256": "6343ad83c223e8532645b43c84e3f070969740ec09764af24b5882017d05b9c8",
+        "valid_rows": 5693,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-19",
+        "path": "logs/trader_daily/2026-09-19.csv.gz",
+        "sha256": "62d1f59ae193dc83c7f611a2d30ec24ccd79204f4464248ab7c135ab4cce21da",
+        "valid_rows": 5691,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-20",
+        "path": "logs/trader_daily/2026-09-20.csv.gz",
+        "sha256": "0514944141949f8784a09d2b65cf042b41905e2f6e3833f23237aa87108ce385",
+        "valid_rows": 5688,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-21",
+        "path": "logs/trader_daily/2026-09-21.csv.gz",
+        "sha256": "855aa0e40f795badc05beea6a79e42fb67197c90e9e2a0feeb0dc67e92e65df6",
+        "valid_rows": 5684,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-22",
+        "path": "logs/trader_daily/2026-09-22.csv.gz",
+        "sha256": "ab7bdd329403983cc0fea4f3dc667142dfb21582317950ef320653b23993c62a",
+        "valid_rows": 5687,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-23",
+        "path": "logs/trader_daily/2026-09-23.csv.gz",
+        "sha256": "d2008a684f8e533e0d01a7799e3d0689c9773746036c25fedc0946720cd37f8d",
+        "valid_rows": 5682,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-24",
+        "path": "logs/trader_daily/2026-09-24.csv.gz",
+        "sha256": "496af614af3e7ba42a16cc59feffaf7be2aebfac62be8e50b1fba7a344463844",
+        "valid_rows": 5684,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-25",
+        "path": "logs/trader_daily/2026-09-25.csv.gz",
+        "sha256": "8410da4e57cddb5034e8b060c0938347b71c6018b84269bb40b54c126fdc1824",
+        "valid_rows": 5681,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-26",
+        "path": "logs/trader_daily/2026-09-26.csv.gz",
+        "sha256": "ff13dbdbd75f2b18da499b0f56b8f59d2b4937f85c32c98af4fa6ee909006412",
+        "valid_rows": 5681,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-27",
+        "path": "logs/trader_daily/2026-09-27.csv.gz",
+        "sha256": "52efbcfa53aadfac9308e581e11403b65c34cfb1cb890007b0951d1c974f0f03",
+        "valid_rows": 5681,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-28",
+        "path": "logs/trader_daily/2026-09-28.csv.gz",
+        "sha256": "1497882811a379f9d6876f5994e38e049c4a43847c12781e8d1d3505e7fc0e8f",
+        "valid_rows": 5677,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-29",
+        "path": "logs/trader_daily/2026-09-29.csv.gz",
+        "sha256": "b5e7f1349a34676a4288187b3270753d4cde2fe38867934d691077b3ba874de4",
+        "valid_rows": 5676,
+        "rejects": {}
+      },
+      {
+        "date": "2026-09-30",
+        "path": "logs/trader_daily/2026-09-30.csv.gz",
+        "sha256": "5fc1176e3b4c72c05568c3492d0feae74d539a29541d8739ef4cd984fcb657e5",
+        "valid_rows": 5678,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-01",
+        "path": "logs/trader_daily/2026-10-01.csv.gz",
+        "sha256": "d0676a82563c7194e4379fe24c826632f8d75581e7fc9f7df5d9becf52daa7bc",
+        "valid_rows": 5677,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-02",
+        "path": "logs/trader_daily/2026-10-02.csv.gz",
+        "sha256": "7bad538ef60663b8c7445cd8362065169e39ec587503dae15b6b2d6a96241a81",
+        "valid_rows": 5675,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-03",
+        "path": "logs/trader_daily/2026-10-03.csv.gz",
+        "sha256": "fab13f776b35baab4fa0e0b8700c93c6eb8e15dfa85e631471e16019ac256ce2",
+        "valid_rows": 5675,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-04",
+        "path": "logs/trader_daily/2026-10-04.csv.gz",
+        "sha256": "c163dc0aaf2db03d1ae380470b059faa5282ffa8e1c9e42d4ff4811f6797f552",
+        "valid_rows": 5677,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-05",
+        "path": "logs/trader_daily/2026-10-05.csv.gz",
+        "sha256": "7f45e40294694d0f45b04536758e580238f6fa6f1b58133a751a21d5d12e6f8a",
+        "valid_rows": 5674,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-06",
+        "path": "logs/trader_daily/2026-10-06.csv.gz",
+        "sha256": "6db066e5107232ec67d8dd80d54065a9a98fd288c2e94a1c1c6b909b48b5d8eb",
+        "valid_rows": 5669,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-07",
+        "path": "logs/trader_daily/2026-10-07.csv.gz",
+        "sha256": "10285ec09d959ef6864b22b4c96bc5b0f8893daa1ff99d70d912c354cc014c6a",
+        "valid_rows": 5669,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-08",
+        "path": "logs/trader_daily/2026-10-08.csv.gz",
+        "sha256": "c7a7d6e8e9247b45cc9062c36b2e1e45e476829ee5ca8357e2ce4f59e01673b5",
+        "valid_rows": 5667,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-09",
+        "path": "logs/trader_daily/2026-10-09.csv.gz",
+        "sha256": "3e536571650e79b747e85e633d417eb8151fd3e0f7b4cb7c75262a5aad340d7d",
+        "valid_rows": 5666,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-10",
+        "path": "logs/trader_daily/2026-10-10.csv.gz",
+        "sha256": "e70c0e5f44a39fdd2fc0dd5244d05b033cd5d4048ff901ed159b84814bc85447",
+        "valid_rows": 5666,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-11",
+        "path": "logs/trader_daily/2026-10-11.csv.gz",
+        "sha256": "15a174207b42614ed960e9987775ab3b54369abdedf6534af0180807a7536aa3",
+        "valid_rows": 5665,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-12",
+        "path": "logs/trader_daily/2026-10-12.csv.gz",
+        "sha256": "66a521c0debf87d1b4e102a09304ccfb8a778ffcd98cfcf996dc2a6e69b9b5ed",
+        "valid_rows": 5666,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-13",
+        "path": "logs/trader_daily/2026-10-13.csv.gz",
+        "sha256": "93ea56dff3cca3798e04b9f743851359c36751342d202675769049ed9f68f74c",
+        "valid_rows": 5662,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-14",
+        "path": "logs/trader_daily/2026-10-14.csv.gz",
+        "sha256": "35baa7fc572d5e22d00fe9880ed77b01e9465b2e9c3408f432fa78d502d2ea43",
+        "valid_rows": 5658,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-15",
+        "path": "logs/trader_daily/2026-10-15.csv.gz",
+        "sha256": "0e0bd95aa88700b93898a9f87a0ffcd5358cca44fef2ba435873b0de6e588123",
+        "valid_rows": 5649,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-16",
+        "path": "logs/trader_daily/2026-10-16.csv.gz",
+        "sha256": "53fa002caa460e496ce7eaec5a3d206e17d3c837641607b8cbf28a952f0fb012",
+        "valid_rows": 5650,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-17",
+        "path": "logs/trader_daily/2026-10-17.csv.gz",
+        "sha256": "65f4a6b5d7042673427d809d3834303627cf17243cdad0c29c820e146e306449",
+        "valid_rows": 5650,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-18",
+        "path": "logs/trader_daily/2026-10-18.csv.gz",
+        "sha256": "d8258742cb61567a23e66ff71631b849126a559af56e9d6cc0714108fcfb0291",
+        "valid_rows": 5650,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-19",
+        "path": "logs/trader_daily/2026-10-19.csv.gz",
+        "sha256": "dc24b2c735d58594f45a15d984d18ea5a61f7907ae4df1b3a500e97a2568fca3",
+        "valid_rows": 5651,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-20",
+        "path": "logs/trader_daily/2026-10-20.csv.gz",
+        "sha256": "2547664213e9a71928d42d8eb2d28b6495017c305ecd0aecee6f86c5ec3066a6",
+        "valid_rows": 5649,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-21",
+        "path": "logs/trader_daily/2026-10-21.csv.gz",
+        "sha256": "1cee783680273d7444f88ef8f55e5e78beb626235b3be6a3b3c82a14d66ff0f3",
+        "valid_rows": 5651,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-22",
+        "path": "logs/trader_daily/2026-10-22.csv.gz",
+        "sha256": "d243f4ac021134ae87ebdbf6b1d3057e0cf1ad2ea1172e664897f129fdf93ed3",
+        "valid_rows": 5652,
+        "rejects": {}
+      },
+      {
+        "date": "2026-10-23",
+        "path": "logs/trader_daily/2026-10-23.csv.gz",
+        "sha256": "4c098d6ccb378ba1f13b38d2372f6796f5ccf955826a04abccb1bef93386ff32",
+        "valid_rows": 5652,
+        "rejects": {}
+      }
+    ],
+    "missing_dates_in_window": [
+      "2026-08-28",
+      "2026-10-24"
+    ],
+    "known_missing_days": [
+      "2026-08-28"
+    ],
+    "known_missing_recovered": []
+  },
+  "n_cohort": 5790,
+  "boundary_ties": {
+    "d1_d2": {
+      "boundary_score": 1.0334652303,
+      "tied_wallets": 0
+    },
+    "d9_d10": {
+      "boundary_score": -0.3454556599,
+      "tied_wallets": 0
+    }
+  },
+  "missingness": {
+    "missing_rate": 0.0229706390328152,
+    "rho": -0.005493537489114344,
+    "p": 0.671032896710329,
+    "indeterminate": false,
+    "n_missing": 133,
+    "reasons": {
+      "span_out": 129,
+      "no_th": 4
+    },
+    "decile_missing": [
+      10,
+      11,
+      6,
+      13,
+      17,
+      20,
+      28,
+      14,
+      10,
+      4
+    ],
+    "decile_rate": [
+      0.017271157167530225,
+      0.018998272884283247,
+      0.010362694300518135,
+      0.022452504317789293,
+      0.02936096718480138,
+      0.03454231433506045,
+      0.04835924006908463,
+      0.024179620034542316,
+      0.017271157167530225,
+      0.0069084628670120895
+    ],
+    "omnibus": {
+      "stat": 0.7635578583765112,
+      "p": 0.00019998000199980003
+    }
+  },
+  "indeterminate": false,
+  "note": "H1 최종 게이트 = T+30 AND T+60 모두 통과 (--combine 모드로 결합)",
+  "primary": {
+    "n": 5657,
+    "ic": 0.031039486454601254,
+    "decile_medians": [
+      -0.17583246633178834,
+      -0.027067446616441993,
+      -0.023995340579986583,
+      -0.016638857365746017,
+      -0.010106630673009096,
+      0.0016094592248161088,
+      -1.3965706320127428e-09,
+      -0.031140442502553115,
+      -0.05956914584788233,
+      -0.17593961139328756
+    ],
+    "decile_n_obs": [
+      569,
+      568,
+      573,
+      566,
+      562,
+      559,
+      551,
+      565,
+      569,
+      575
+    ],
+    "spread": 0.00010714506149922531,
+    "top_median": -0.17583246633178834,
+    "all_median": -0.02543327663093436,
+    "p_unstratified": 0.011898810118988102,
+    "perm_ge": 118
+  },
+  "criteria": {
+    "ic_ge_005": false,
+    "p_lt_005": true,
+    "p_lt_0025": true,
+    "spread_ge_3pp": false,
+    "top_gt_all": false,
+    "all_pass_doc_alpha": false,
+    "all_pass_strict_alpha": false
+  },
+  "status": "fail",
+  "status_strict": "fail",
+  "passed": false,
+  "passed_strict": false,
+  "mde": {
+    "alpha05": 0.03306786796945722,
+    "alpha025": 0.03725854588733521
+  },
+  "sensitivity": {
+    "stratified_recut": {
+      "label": "층화+재절단(감도)",
+      "n": 5657,
+      "ic": 0.031039486454601254,
+      "p": 0.34326567343265674,
+      "perm_ge": 3432,
+      "decile_medians": [
+        -0.17371319694370774,
+        -0.029575573916540913,
+        -0.02241056628850864,
+        -0.01874958929397994,
+        -0.009547715442484467,
+        0.0012417567770801334,
+        0.0,
+        -0.03270481491637631,
+        -0.06077276259110808,
+        -0.18266846076366902
+      ],
+      "spread": 0.008955263819961284,
+      "top_median": -0.17371319694370774,
+      "all_median": -0.02543327663093436
+    },
+    "unclipped_ic": 0.032227591170265926,
+    "pnl_rank_ic": 0.08648279909489492,
+    "fresh_same_day": {
+      "n": 0,
+      "ic": null,
+      "decile_medians": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "decile_n_obs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "spread": null,
+      "top_median": null,
+      "all_median": null
+    },
+    "stale_fallback": {
+      "n": 5657,
+      "ic": 0.031039486454601254,
+      "decile_medians": [
+        -0.17583246633178834,
+        -0.027067446616441993,
+        -0.023995340579986583,
+        -0.016638857365746017,
+        -0.010106630673009096,
+        0.0016094592248161088,
+        -1.3965706320127428e-09,
+        -0.031140442502553115,
+        -0.05956914584788233,
+        -0.17593961139328756
+      ],
+      "decile_n_obs": [
+        569,
+        568,
+        573,
+        566,
+        562,
+        559,
+        551,
+        565,
+        569,
+        575
+      ],
+      "spread": 0.00010714506149922531,
+      "top_median": -0.17583246633178834,
+      "all_median": -0.02543327663093436
+    },
+    "locf": {
+      "n": 5786,
+      "ic": 0.03023503123520208,
+      "decile_medians": [
+        -0.16445326825969953,
+        -0.025405994572248826,
+        -0.023305071407317437,
+        -0.014286368738570034,
+        -0.007765646747479566,
+        0.0017575337185182424,
+        0.0,
+        -0.028178214123547332,
+        -0.05857632675041763,
+        -0.17068589695728156
+      ],
+      "decile_n_obs": [
+        579,
+        579,
+        579,
+        579,
+        578,
+        577,
+        578,
+        579,
+        579,
+        579
+      ],
+      "spread": 0.006232628697582038,
+      "top_median": -0.16445326825969953,
+      "all_median": -0.02281693517542148
+    },
+    "y_minus_locf": {
+      "decile_medians": [
+        -0.002930541105529788,
+        -0.0004511241102740319,
+        -0.0003999223429997749,
+        -0.00027731428942909947,
+        -0.00016844384455015106,
+        2.6824320413601846e-05,
+        -2.32761772002123e-11,
+        -0.000519007375042551,
+        -0.000992819097464702,
+        -0.0029323268565547844
+      ],
+      "spearman_vs_score": 0.031076064886115133
+    },
+    "rolling_30_60": {
+      "n": 5610,
+      "ic": -0.2675411931082738,
+      "decile_medians": [
+        -0.3410148993144959,
+        -0.1846504376584512,
+        -0.15240298106998357,
+        -0.11648802949885813,
+        -0.0658779915484561,
+        -0.0375414459410646,
+        -0.013352741033684355,
+        -0.004867930126042643,
+        -0.00052434799748438,
+        0.0
+      ],
+      "decile_n_obs": [
+        564,
+        563,
+        568,
+        561,
+        557,
+        556,
+        548,
+        561,
+        565,
+        567
+      ],
+      "spread": -0.3410148993144959,
+      "top_median": -0.3410148993144959,
+      "all_median": -0.07867551020159727
+    }
+  },
+  "diagnostics": {
+    "flow_median_by_decile": [
+      -0.1386517633824066,
+      -0.07597543786312333,
+      -0.030448699979220752,
+      -0.027388780275276525,
+      -0.03268679555295442,
+      -0.012335932663961924,
+      -0.003520394113152059,
+      -0.0010486515023936855,
+      -1.1502897524950887e-16,
+      4.915028968132234e-17
+    ],
+    "flow_unavailable_evaluable": 0,
+    "clip_count_by_decile": [
+      78,
+      41,
+      23,
+      17,
+      15,
+      9,
+      10,
+      20,
+      43,
+      114
+    ],
+    "endpoint_age_days_hist": {
+      "1": 5652,
+      "2": 3,
+      "4": 1,
+      "5": 1
+    },
+    "stale_count_by_decile": [
+      569,
+      568,
+      573,
+      566,
+      562,
+      559,
+      551,
+      565,
+      569,
+      575
+    ]
+  }
+}
