@@ -1,0 +1,76 @@
+{
+  "kind": "h2_verdict",
+  "generated_at_utc": "2026-10-26T05:03:40.788962+00:00",
+  "horizon_days": 60.0,
+  "judgment_utc": "2026-10-26T05:03:33+00:00",
+  "inputs": {
+    "h2_cohort": {
+      "path": "logs/h2_cohort.json.gz",
+      "sha256": "36805632c8e874fab033943bf6f8112e57a71ec2be6be02da5fce52977f5aa94"
+    },
+    "t0": {
+      "path": "logs/h2_snapshots/2026-08-27.jsonl.gz",
+      "sha256": "97ab3ff6b11ebdf9177ddec20a66a4406af61b067d83ffcc12b675b693e2f766",
+      "label": "t0"
+    },
+    "th": {
+      "path": "logs/h2_snapshots/2026-10-26.jsonl.gz",
+      "sha256": "6f794d41eca3ac1070898458bcbdbbe0b8434b10a7f61270a624537829c5c3e3",
+      "label": "verdict"
+    }
+  },
+  "n_ranked": 136,
+  "missingness": {
+    "missing_rate": 0.022058823529411766,
+    "rho": 0.10839180564645981,
+    "p": 0.21827817218278173,
+    "indeterminate": false,
+    "n_missing": 3,
+    "reasons": {
+      "bad_a0": 3
+    },
+    "decile_missing": [
+      1,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  "indeterminate": false,
+  "main": {
+    "label": "1차 (층화)",
+    "n": 133,
+    "ic": 0.1650267035998638,
+    "p": 0.007699230076992301,
+    "perm_ge": 76,
+    "decile_medians": [
+      0.04414361050436971,
+      0.03553860965924032,
+      -0.017087116281380287,
+      0.03176328572433797,
+      0.003200206373258432,
+      -0.16127165547236247,
+      -0.23998324180763014,
+      0.04876193044082373,
+      -0.01920217429373522,
+      -0.28784742782528094
+    ],
+    "spread": 0.33199103832965066,
+    "top_median": 0.04414361050436971,
+    "all_median": 0.0009554724559300412
+  },
+  "mde_ic": 0.24571525910202838,
+  "criteria": {
+    "ic_ge_min": true,
+    "p_lt_alpha": true,
+    "spread_ge_min": true,
+    "top_gt_all": true
+  },
+  "passed": true
+}
