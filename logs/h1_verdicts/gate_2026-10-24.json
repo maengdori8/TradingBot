@@ -1,0 +1,25 @@
+{
+  "kind": "h1_gate",
+  "generated_at_utc": "2026-10-24T03:16:11.887258+00:00",
+  "decision_basis": "H1 문서 원문 단측 α=0.05 (거버넌스 α=0.025 는 소급 미적용·병기 — 오케스트레이터 지시, 2026-08-29)",
+  "rule": "T+30 AND T+60 모두 pass — fail > indeterminate > pass",
+  "inputs": {
+    "t30": {
+      "path": "logs/h1_verdicts/t30_2026-09-24.json",
+      "sha256": "46821d7a439ba1db301704030f3ba96361ddefb7a5a143801f0bc41952a5ddfb"
+    },
+    "t60": {
+      "path": "logs/h1_verdicts/t60_2026-10-24.json",
+      "sha256": "e101469137b25e21f8009cb41e882a3dde2ede20ff2411e8e645b380b42aff92"
+    }
+  },
+  "statuses": {
+    "t30": "pass",
+    "t60": "fail",
+    "t30_strict": "pass",
+    "t60_strict": "fail"
+  },
+  "problems": [],
+  "overall": "fail",
+  "overall_strict": "fail"
+}
